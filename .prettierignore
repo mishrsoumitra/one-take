@@ -5,3 +5,4 @@ package-lock.json
 packages/e2e/out
 packages/e2e/fixtures
 *.md
+.claude/

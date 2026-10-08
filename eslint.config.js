@@ -13,6 +13,7 @@ export default defineConfig(
       '**/dist/**',
       '**/dist-types/**',
       '**/node_modules/**',
+      '.claude/**',
       'packages/e2e/out/**',
       'packages/e2e/fixtures/**',
       'e2e-out/**',

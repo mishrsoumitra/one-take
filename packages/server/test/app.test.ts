@@ -1,0 +1,231 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { buildApp, hostIsLoopback, originIsLoopback } from '../src/app.js';
+import { JobManager } from '../src/services/jobs.js';
+
+let tmp: string;
+let staticDir: string;
+
+beforeAll(async () => {
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'one-take-app-'));
+  staticDir = path.join(tmp, 'static');
+  await fs.mkdir(path.join(staticDir, 'assets'), { recursive: true });
+  await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html><title>One Take</title>');
+  await fs.writeFile(path.join(staticDir, 'assets', 'app.js'), 'console.log(1)');
+});
+
+afterAll(async () => {
+  await fs.rm(tmp, { recursive: true, force: true });
+});
+
+function makeApp(allowRemote = false) {
+  return buildApp({
+    config: {
+      host: '127.0.0.1',
+      port: 0,
+      staticDir,
+      defaultDirectory: tmp,
+      ffmpegPath: null,
+      ffprobePath: null,
+      logLevel: 'silent',
+      allowRemote,
+    },
+    jobs: new JobManager({ ffmpeg: null }),
+    capabilities: () => ({
+      name: 'one-take-server',
+      version: 't',
+      platform: 'test',
+      homeDirectory: tmp,
+      defaultDirectory: tmp,
+      ffmpeg: null,
+      ffprobePath: null,
+      shortcuts: [],
+    }),
+  });
+}
+
+describe('loopback checks', () => {
+  it('recognises loopback hosts', () => {
+    expect(hostIsLoopback('localhost:4317')).toBe(true);
+    expect(hostIsLoopback('127.0.0.1')).toBe(true);
+    expect(hostIsLoopback('[::1]:4317')).toBe(true);
+    expect(hostIsLoopback('app.localhost')).toBe(true);
+    expect(hostIsLoopback('evil.example.com')).toBe(false);
+    expect(hostIsLoopback(undefined)).toBe(false);
+    expect(originIsLoopback(undefined)).toBe(true);
+    expect(originIsLoopback('http://localhost:5173')).toBe(true);
+    expect(originIsLoopback('https://evil.example.com')).toBe(false);
+  });
+});
+
+describe('app', () => {
+  it('answers health and capabilities', async () => {
+    const app = makeApp();
+    const res = await app.inject({ method: 'GET', url: '/api/health', headers: { host: 'localhost:4317' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true });
+    const caps = await app.inject({
+      method: 'GET',
+      url: '/api/capabilities',
+      headers: { host: 'localhost:4317' },
+    });
+    expect(caps.json()).toMatchObject({ name: 'one-take-server', ffmpeg: null });
+    await app.close();
+  });
+
+  it('rejects foreign hosts and origins', async () => {
+    const app = makeApp();
+    const bad = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { host: 'evil.example.com' },
+    });
+    expect(bad.statusCode).toBe(403);
+    const badOrigin = await app.inject({
+      method: 'POST',
+      url: '/api/fs/mkdir',
+      headers: { host: 'localhost', origin: 'https://evil.example.com' },
+      payload: { path: tmp },
+    });
+    expect(badOrigin.statusCode).toBe(403);
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/fs/mkdir',
+      headers: { host: 'localhost', origin: 'http://localhost:4317' },
+      payload: { path: path.join(tmp, 'new') },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ exists: true, writable: true });
+    await app.close();
+  });
+
+  it('lists folders', async () => {
+    const app = makeApp();
+    await fs.mkdir(path.join(tmp, 'b-folder'));
+    await fs.mkdir(path.join(tmp, 'a-folder'));
+    await fs.writeFile(path.join(tmp, 'file.txt'), 'x');
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/fs/list?path=${encodeURIComponent(tmp)}`,
+      headers: { host: 'localhost' },
+    });
+    const names = res
+      .json<{ entries: { name: string; kind: string }[] }>()
+      .entries.map((e) => `${e.kind}:${e.name}`);
+    expect(names).toContain('directory:a-folder');
+    expect(names).not.toContain('file:file.txt');
+    const withFiles = await app.inject({
+      method: 'GET',
+      url: `/api/fs/list?path=${encodeURIComponent(tmp)}&files=1`,
+      headers: { host: 'localhost' },
+    });
+    expect(withFiles.json<{ entries: { name: string }[] }>().entries.map((e) => e.name)).toContain(
+      'file.txt',
+    );
+    const missing = await app.inject({
+      method: 'GET',
+      url: `/api/fs/list?path=${encodeURIComponent(path.join(tmp, 'nope'))}`,
+      headers: { host: 'localhost' },
+    });
+    expect(missing.json()).toMatchObject({ exists: false });
+    await app.close();
+  });
+
+  it('validates export requests and reports unknown jobs', async () => {
+    const app = makeApp();
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/exports',
+      headers: { host: 'localhost' },
+      payload: { fileName: '' },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toMatchObject({ error: { code: 'bad_request' } });
+    const unknown = await app.inject({
+      method: 'GET',
+      url: '/api/exports/nope',
+      headers: { host: 'localhost' },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toMatchObject({ error: { code: 'job_not_found' } });
+    await app.close();
+  });
+
+  it('runs a direct export through the HTTP API', async () => {
+    const app = makeApp();
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/exports',
+      headers: { host: 'localhost' },
+      payload: {
+        fileName: 'api test',
+        directory: tmp,
+        overwrite: false,
+        upload: {
+          container: 'mp4',
+          videoCodec: 'avc',
+          audioCodec: 'aac',
+          width: 640,
+          height: 360,
+          fps: 5,
+          durationSec: 1,
+          estimatedBytes: 10,
+        },
+        processing: null,
+      },
+    });
+    expect(create.statusCode).toBe(201);
+    const { id } = create.json<{ id: string }>();
+    const part1 = await app.inject({
+      method: 'PUT',
+      url: `/api/exports/${id}/data?offset=0`,
+      headers: { host: 'localhost', 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('hello '),
+    });
+    expect(part1.json()).toEqual({ received: 6 });
+    const part2 = await app.inject({
+      method: 'PUT',
+      url: `/api/exports/${id}/data?offset=6`,
+      headers: { host: 'localhost', 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('world'),
+    });
+    expect(part2.json()).toEqual({ received: 11 });
+    const finish = await app.inject({
+      method: 'POST',
+      url: `/api/exports/${id}/finish`,
+      headers: { host: 'localhost' },
+      payload: { totalBytes: 11 },
+    });
+    expect(finish.statusCode).toBe(200);
+    for (let i = 0; i < 50; i++) {
+      const job = (
+        await app.inject({ method: 'GET', url: `/api/exports/${id}`, headers: { host: 'localhost' } })
+      ).json<{ state: string }>();
+      if (job.state === 'done') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(await fs.readFile(path.join(tmp, 'api test.mp4'), 'utf8')).toBe('hello world');
+    const list = await app.inject({ method: 'GET', url: '/api/exports', headers: { host: 'localhost' } });
+    expect(list.json<{ id: string }[]>().map((j) => j.id)).toContain(id);
+    await app.close();
+  });
+
+  it('serves the built client with an SPA fallback', async () => {
+    const app = makeApp();
+    const index = await app.inject({ method: 'GET', url: '/', headers: { host: 'localhost' } });
+    expect(index.statusCode).toBe(200);
+    expect(index.body).toContain('One Take');
+    const asset = await app.inject({ method: 'GET', url: '/assets/app.js', headers: { host: 'localhost' } });
+    expect(asset.statusCode).toBe(200);
+    const deep = await app.inject({ method: 'GET', url: '/some/route', headers: { host: 'localhost' } });
+    expect(deep.statusCode).toBe(200);
+    expect(deep.body).toContain('One Take');
+    const api404 = await app.inject({ method: 'GET', url: '/api/nothing', headers: { host: 'localhost' } });
+    expect(api404.statusCode).toBe(404);
+    await app.close();
+  });
+});

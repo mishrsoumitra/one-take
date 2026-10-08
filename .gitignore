@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-types/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+/tmp/
+/e2e-out/
+/packages/e2e/out/
+/packages/e2e/fixtures/

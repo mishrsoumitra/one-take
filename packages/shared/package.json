@@ -1,0 +1,22 @@
+{
+  "name": "@one-take/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Types, schemas and export planning shared by the One Take client and server.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}

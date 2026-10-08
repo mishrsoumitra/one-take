@@ -1,0 +1,11 @@
+{
+  "name": "@one-take/e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end check of One Take in headless Chrome with a fake microphone.",
+  "type": "module",
+  "scripts": {
+    "fixtures": "node src/make-fixtures.js",
+    "run": "node src/run.js"
+  }
+}

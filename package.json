@@ -1,0 +1,46 @@
+{
+  "name": "one-take",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One Take: record a lecture video from slides and your voice, with pauses removed, then export to MP4, WebM, MKV, MOV, HLS or DASH at any quality.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build:shared && npm run build:server && npm run build:client",
+    "build:shared": "tsc -b packages/shared",
+    "build:server": "tsc -b packages/server",
+    "build:client": "npm run build --workspace @one-take/client",
+    "dev": "npm run build:shared && concurrently -n shared,server,client -c blue,green,magenta \"tsc -b packages/shared --watch --preserveWatchOutput\" \"npm run dev --workspace @one-take/server\" \"npm run dev --workspace @one-take/client\"",
+    "start": "node packages/server/dist/index.js",
+    "typecheck": "tsc -b packages/shared packages/server packages/client packages/e2e",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run build:shared && vitest run",
+    "test:watch": "vitest",
+    "e2e": "npm run build && node packages/e2e/src/run.js",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.4",
+    "concurrently": "^10.0.5",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-import-x": "^4.17.1",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}

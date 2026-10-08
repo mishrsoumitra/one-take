@@ -718,6 +718,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 - **Prettier** with a print width of 110, single quotes and trailing commas.
 - **Vitest 5** with three projects. Server tests have a 60 s timeout because some of them run real ffmpeg.
 - **Vite 8** for the client, targeting ES2022, with `pdfjs` and `mediabunny` split into their own chunks and the AudioWorklet loaded through `?worker&url`.
+- **npm 11** blocks dependency install scripts unless `allowScripts` in the root `package.json` approves them. The three that have one (`esbuild`, `unrs-resolver`, `fsevents`) are approved there, pinned to the versions reviewed; after upgrading one of them, run `npm install-scripts ls`, read what changed, and `npm install-scripts approve <pkg>` again. `overrides` keeps `image-size` on the patched 2.x line: `pptxgenjs` (used only to build test decks) still declares the vulnerable 1.x but never loads it. `npm install` should finish with `found 0 vulnerabilities` and no warnings; if it does not, `npm audit` names the package.
 
 ### Unit tests
 

@@ -151,6 +151,9 @@ export class App {
     this.wire();
     this.syncSliders();
     this.drawMeter();
+    // both side panels show their placeholder from the first paint
+    this.film.render([]);
+    this.list.render([], [], false);
     void this.listMics();
     if (!('mediaDevices' in navigator)) {
       this.toast.show('This browser cannot use the microphone here. Open the app in Chrome.');

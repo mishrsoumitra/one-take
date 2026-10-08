@@ -10,7 +10,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 /** Slides are rasterised at most this large; exports above it are upscaled from here. */
 export const MAX_SLIDE_WIDTH = 2560;
 export const MAX_SLIDE_HEIGHT = 1440;
-const THUMB_WIDTH = 240;
+/** Filmstrip cards are up to ~280 CSS px wide, so this keeps them sharp on a 2x display. */
+const THUMB_WIDTH = 560;
 
 export type SlideProgress = (done: number, total: number) => void;
 

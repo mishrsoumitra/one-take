@@ -29,10 +29,12 @@ import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { ProjectStore } from '../storage/db.js';
-import { loadPrefs, savePrefs, type Prefs } from '../storage/prefs.js';
+import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
+import { setLabel, syncRangeFill } from '../ui/dom.js';
 import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
+import { setButtonIcon } from '../ui/icon.js';
 import { installKeyboard } from '../ui/keyboard.js';
 import { buildLayout, type LayoutRefs } from '../ui/layout.js';
 import { LevelMeter } from '../ui/meter.js';
@@ -87,6 +89,7 @@ export class App {
 
   constructor(root: HTMLElement) {
     this.refs = buildLayout(root);
+    this.applyTheme(this.prefs.theme);
     this.toast = new Toast(document.body);
     this.meter = new LevelMeter(this.refs.meter, this.refs.meterNote);
     this.film = new Filmstrip(this.refs.film, this.refs.filmInfo, (i) => this.goTo(i));
@@ -243,6 +246,11 @@ export class App {
       r.fileInput.value = '';
     };
     r.btnHelp.onclick = () => this.openWelcome();
+    r.btnTheme.onclick = () => {
+      this.prefs = savePrefs({ theme: this.prefs.theme === 'dark' ? 'light' : 'dark' });
+      this.applyTheme(this.prefs.theme);
+      this.drawMeter();
+    };
     r.btnEmptyHelp.onclick = () => this.openWelcome();
     r.btnCoachClose.onclick = () => {
       this.prefs = savePrefs({ tips: false });
@@ -409,7 +417,7 @@ export class App {
       this.refs.overlay.hidden = false;
       this.refs.btnArm.disabled = false;
       this.refs.btnArm.title = 'Start listening (R)';
-      this.refs.btnLoad.textContent = 'Change slides';
+      setLabel(this.refs.btnLoad, 'Change slides');
       this.refs.deckName.textContent = this.deckLabel(source, slides.length);
       this.refs.deckName.title = this.refs.deckName.textContent;
       this.refs.deckName.hidden = false;
@@ -769,11 +777,13 @@ export class App {
     }
     this.refs.statusText.textContent = text;
     this.refs.capFlag.classList.toggle('on', s.armed && s.speaking && !s.muted && !s.previewing);
-    this.refs.btnArm.textContent = s.armed ? 'Stop mic' : 'Start mic';
+    setLabel(this.refs.btnArm, s.armed ? 'Stop mic' : 'Start mic');
+    setButtonIcon(this.refs.btnArm, s.armed ? 'square-filled' : 'mic');
     this.refs.btnArm.classList.toggle('rec', s.armed);
     this.refs.btnArm.classList.toggle('primary', !s.armed);
     if (s.slides.length > 0) this.refs.btnArm.title = s.armed ? 'Stop listening (R)' : 'Start listening (R)';
-    this.refs.btnMute.textContent = s.muted ? 'Unmute' : 'Mute';
+    setLabel(this.refs.btnMute, s.muted ? 'Unmute' : 'Mute');
+    setButtonIcon(this.refs.btnMute, s.muted ? 'mic' : 'micmute');
     this.refs.btnMute.title = s.muted ? 'Unmute (M)' : 'Mute (M)';
     this.updateSteps();
     this.updateCoach();
@@ -801,6 +811,17 @@ export class App {
     });
   }
 
+  /** grauity's dark or light theme: the class on <html> scopes every token, the button shows the other one. */
+  private applyTheme(theme: Theme): void {
+    const html = document.documentElement;
+    html.classList.toggle('grauity-theme-dark', theme === 'dark');
+    html.classList.toggle('grauity-theme-light', theme === 'light');
+    const other = theme === 'dark' ? 'light' : 'dark';
+    this.refs.btnTheme.title = `Switch to the ${other} theme`;
+    this.refs.btnTheme.setAttribute('aria-label', this.refs.btnTheme.title);
+    setButtonIcon(this.refs.btnTheme, theme === 'dark' ? 'sun' : 'moon');
+  }
+
   private syncSliders(): void {
     const r = this.refs;
     const st = this.store.settings;
@@ -810,6 +831,7 @@ export class App {
     r.gapV.textContent = `${(st.gapMs / 1000).toFixed(2)} s`;
     r.hang.value = String(st.hangoverMs);
     r.hangV.textContent = `${(st.hangoverMs / 1000).toFixed(2)} s`;
+    for (const slider of [r.thr, r.gap, r.hang]) syncRangeFill(slider);
   }
 
   private showLoading(text: string): void {
@@ -836,7 +858,8 @@ export class App {
     if (this.vad) this.vad.gate = this.gateOpen();
     this.updateStatus();
     this.refs.previewFlag.classList.add('on');
-    this.refs.btnPreview.textContent = 'Stop preview';
+    setLabel(this.refs.btnPreview, 'Stop preview');
+    setButtonIcon(this.refs.btnPreview, 'square-filled');
     await this.preview.start(tl, fromIndex);
   }
 
@@ -856,7 +879,8 @@ export class App {
     this.preview.stop();
     this.list.setPlaying(null);
     this.refs.previewFlag.classList.remove('on');
-    this.refs.btnPreview.textContent = 'Preview';
+    setLabel(this.refs.btnPreview, 'Preview');
+    setButtonIcon(this.refs.btnPreview, 'play');
     if (this.vad) this.vad.gate = this.gateOpen();
     this.updateStatus();
   }
@@ -945,7 +969,7 @@ export class App {
     this.refs.slideTime.textContent = '';
     this.refs.btnArm.disabled = true;
     this.refs.btnArm.title = 'Load your slides first';
-    this.refs.btnLoad.textContent = 'Load slides';
+    setLabel(this.refs.btnLoad, 'Load slides');
     this.refs.deckName.hidden = true;
     this.refs.deckName.textContent = '';
     this.list.render([], [], false);

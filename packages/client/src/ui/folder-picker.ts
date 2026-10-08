@@ -3,6 +3,7 @@ import { formatBytes, type DirectoryListing, type ServerCapabilities } from '@on
 import { type ApiClient } from '../api/client.js';
 
 import { clear, h } from './dom.js';
+import { icon } from './icon.js';
 
 /** Browses folders on the computer running the server and returns the chosen path. */
 export class FolderPicker {
@@ -26,8 +27,8 @@ export class FolderPicker {
     this.list = h('div', { class: 'folders' });
     this.shortcuts = h('div', { class: 'shortcuts' });
     this.status = h('div', { class: 'hint status' });
-    this.btnChoose = h('button', { class: 'primary' }, 'Choose this folder');
-    this.btnUp = h('button', { title: 'Parent folder' }, '↑ Up');
+    this.btnChoose = h('button', { class: 'primary' }, icon('check'), 'Choose this folder');
+    this.btnUp = h('button', { title: 'Parent folder' }, icon('arrow-up', 16), 'Up');
     this.newName = h('input', { type: 'text', placeholder: 'New folder name' });
     this.newRow = h(
       'div',
@@ -79,6 +80,7 @@ export class FolderPicker {
                 },
               },
             },
+            icon('plus'),
             'New folder…',
           ),
           h('div', { class: 'spacer' }),
@@ -150,7 +152,12 @@ export class FolderPicker {
       }
       for (const entry of listing.entries) {
         this.list.appendChild(
-          h('div', { class: 'folder', on: { click: () => void this.load(entry.path) } }, '📁 ', entry.name),
+          h(
+            'div',
+            { class: 'folder', on: { click: () => void this.load(entry.path) } },
+            icon('folder', 16),
+            entry.name,
+          ),
         );
       }
       const free = listing.freeBytes === null ? '' : ` · ${formatBytes(listing.freeBytes)} free`;

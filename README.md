@@ -24,6 +24,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - [System check and performance mode](#system-check-and-performance-mode)
 - [What counts as speech](#what-counts-as-speech)
 - [Saving your work and resuming](#saving-your-work-and-resuming)
+- [Design system](#design-system)
 - [The server](#the-server)
 - [HTTP API](#http-api)
 - [Project layout](#project-layout)
@@ -98,7 +99,7 @@ Fonts come from the system font folders (plus Office's bundled fonts on a Mac). 
 
 ## How to use it
 
-The first time you open the app, a short welcome tour lists the three steps: load slides, start the mic and talk, preview and export. Click **Help** in the top bar to see it again at any time. The top bar shows the same three steps as numbered badges: the next thing to do is blue, finished steps get a green tick. While you work, a tip at the bottom of the stage says what to do next; close it with its ✕ (or untick *Show tips while I work* in the tour) if you don't need it.
+The first time you open the app, a short welcome tour lists the three steps: load slides, start the mic and talk, preview and export. Click **Help** in the top bar to see it again at any time. The top bar shows the same three steps as numbered badges: the next thing to do is blue, finished steps get a green tick. While you work, a tip at the bottom of the stage says what to do next; close it with its ✕ (or untick *Show tips while I work* in the tour) if you don't need it. The app opens in a dark theme; the sun / moon button at the right of the top bar switches to the light one and back, and the choice is remembered.
 
 ### 1. Load your slides
 
@@ -449,6 +450,19 @@ Everything is written to IndexedDB (database `one-take`) the moment it exists:
 
 Reload the tab or close it and come back, and you continue where you left off. **New** clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
 
+## Design system
+
+The interface is built on [grauity](https://github.com/Newton-School/grauity), Newton School's design system (`@newtonschool/grauity` on npm), and carries the Newton School mark.
+
+- **Colours, spacing, radii and type** come from grauity's token stylesheet (`@newtonschool/grauity/tokens.css`), which defines the primitives (`--brand-500`, `--neutral-900`, `--spacing-8px`, `--corner-radius-8px`, …) and the semantic tokens (`--bg-subtle-primary-default`, `--text-emphasis-brand-default`, `--border-subtle-primary-default`, …) for a light and a dark theme. The class on `<html>` (`grauity-theme-dark` or `grauity-theme-light`) picks the theme; nothing else changes. `packages/client/src/styles/theme.css` gives the handful of tokens the app uses most a short name (`--panel`, `--accent`, `--rec`, `--ok`, …) so the layout stylesheet reads plainly.
+- **Components.** grauity ships React components, which this framework-free app cannot mount, so `packages/client/src/styles/grauity.css` carries the same recipes in plain CSS: the button variants and sizes (`NSButton`, `NSIconButton`), status pills (`NSPill`), chips (`NSChip`), the dialog and its overlay (`NSModal`, `NSOverlay`), the slider (`NSRangeInput`), text fields and selects, alerts and the progress bar. The class names are the app's own (`button.primary`, `.pill`, `.modal`), the colours and measurements are grauity's.
+- **Icons** are grauity's icon font (`@newtonschool/grauity/css/grauity-icons.scss`, compiled by Vite with `sass-embedded`): `<i class="grauity-icon-mic">`. `packages/client/src/ui/icon.ts` lists the names the app uses.
+- **The Newton School mark** in the top bar, the welcome tour and the browser tab is the outline of that font's `nst` glyph, so it is the same drawing the design system uses.
+- **Mona Sans**, grauity's typeface, is bundled in `packages/client/public/fonts/` (variable weight, SIL Open Font License) so the app never fetches a font from the network.
+- **The stage and the level meter stay dark in both themes.** Slides are projected on black, and the meter is an instrument whose white speech line should stay white.
+
+To restyle, change the aliases in `theme.css` or upgrade `@newtonschool/grauity`; the app has no colour values of its own apart from the black stage.
+
 ## The server
 
 The server (`packages/server`) is a small [Fastify](https://fastify.dev) app. It serves the built client, browses folders for the picker, receives uploads, and runs ffmpeg.
@@ -684,8 +698,9 @@ one-take/
     │       ├── storage/          IndexedDB project store (idb)
     │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, export dialog, folder picker, film strip, timeline list, meter, keyboard, toast
-    │       └── styles/app.css
+    │       ├── ui/               layout, export dialog, folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
+    │   └── public/fonts/         Mona Sans (variable weight, OFL)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
         └── src/
             ├── run.ts            boots server + headless Chrome, records, exports, probes with ffprobe
@@ -693,7 +708,7 @@ one-take/
             └── make-fixtures.ts  writes a 4-page PDF and a WAV that imitates speech with pauses
 ```
 
-Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
+Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
 
 ## Development
 
@@ -719,7 +734,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 - **ESLint 10** with `typescript-eslint` `strictTypeChecked` and `stylisticTypeChecked`, `eslint-plugin-import-x` ordering (builtin, external, internal, parent, sibling, index, type, alphabetised with blank lines between groups), inline type imports, `eqeqeq`, exhaustive switches, no floating promises.
 - **Prettier** with a print width of 110, single quotes and trailing commas.
 - **Vitest 5** with three projects. Server tests have a 60 s timeout because some of them run real ffmpeg.
-- **Vite 8** for the client, targeting ES2022, with `pdfjs` and `mediabunny` split into their own chunks and the AudioWorklet loaded through `?worker&url`.
+- **Vite 8** for the client, targeting ES2022, with `pdfjs` and `mediabunny` split into their own chunks and the AudioWorklet loaded through `?worker&url`. `sass-embedded` is there only to compile grauity's icon stylesheet.
 - **npm 11** blocks dependency install scripts unless `allowScripts` in the root `package.json` approves them. The three that have one (`esbuild`, `unrs-resolver`, `fsevents`) are approved there, pinned to the versions reviewed; after upgrading one of them, run `npm install-scripts ls`, read what changed, and `npm install-scripts approve <pkg>` again. `overrides` keeps `image-size` on the patched 2.x line: `pptxgenjs` (used only to build test decks) still declares the vulnerable 1.x but never loads it. `npm install` should finish with `found 0 vulnerabilities` and no warnings; if it does not, `npm audit` names the package.
 
 ### Unit tests

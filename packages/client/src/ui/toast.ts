@@ -7,7 +7,7 @@ export class Toast {
   private timer = 0;
 
   constructor(parent: HTMLElement) {
-    this.el = h('div', { id: 'toast' }, this.text, this.button);
+    this.el = h('div', { id: 'toast', class: 'toast', attrs: { role: 'status' } }, this.text, this.button);
     parent.appendChild(this.el);
   }
 

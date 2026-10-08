@@ -45,9 +45,10 @@ async function slideFromCanvas(canvas: HTMLCanvasElement, index: number): Promis
 }
 
 async function renderPdf(blob: Blob, onProgress: SlideProgress): Promise<Slide[]> {
-  const doc = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  const loadingTask = pdfjs.getDocument({ data: await blob.arrayBuffer() });
   const slides: Slide[] = [];
   try {
+    const doc = await loadingTask.promise;
     for (let i = 1; i <= doc.numPages; i++) {
       onProgress(i, doc.numPages);
       const page = await doc.getPage(i);
@@ -61,13 +62,14 @@ async function renderPdf(blob: Blob, onProgress: SlideProgress): Promise<Slide[]
       if (!ctx) throw new Error('Canvas 2D is not available');
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+      await page.render({ canvas, viewport }).promise;
       slides.push(await slideFromCanvas(canvas, i - 1));
       page.cleanup();
     }
   } finally {
-    // Not awaited: tearing down the worker can stall in some browsers, and nothing depends on it.
-    void doc.destroy().catch(() => undefined);
+    // pdf.js 6 tears the document down through its loading task. Not awaited: stopping the worker can
+    // stall in some browsers, and nothing depends on it.
+    void loadingTask.destroy().catch(() => undefined);
   }
   return slides;
 }

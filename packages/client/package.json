@@ -13,7 +13,7 @@
     "@one-take/shared": "1.0.0",
     "idb": "^8.0.4",
     "mediabunny": "^1.61.3",
-    "pdfjs-dist": "^5.7.284"
+    "pdfjs-dist": "^6.4.299"
   },
   "devDependencies": {
     "@types/wicg-file-system-access": "^2023.10.7",

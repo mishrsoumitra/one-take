@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildApp, hostIsLoopback, originIsLoopback } from '../src/app.js';
+import { PptxConverter, presentationSupport, type ConverterService } from '../src/services/convert.js';
 import { JobManager } from '../src/services/jobs.js';
 
 let tmp: string;
@@ -22,7 +23,7 @@ afterAll(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
-function makeApp(allowRemote = false) {
+function makeApp(allowRemote = false, converter: ConverterService = new PptxConverter({ inline: true })) {
   return buildApp({
     config: {
       host: '127.0.0.1',
@@ -31,10 +32,12 @@ function makeApp(allowRemote = false) {
       defaultDirectory: tmp,
       ffmpegPath: null,
       ffprobePath: null,
+      fontDirectories: [],
       logLevel: 'silent',
       allowRemote,
     },
     jobs: new JobManager({ ffmpeg: null }),
+    converter,
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
@@ -44,8 +47,22 @@ function makeApp(allowRemote = false) {
       ffmpeg: null,
       ffprobePath: null,
       shortcuts: [],
+      presentations: converter.support(),
     }),
   });
+}
+
+/** Pretends to convert: answers with a tiny PDF and records what it was given. */
+function fakeConverter(): ConverterService & { inputs: { name: string; body: string }[] } {
+  const inputs: { name: string; body: string }[] = [];
+  return {
+    inputs,
+    support: () => presentationSupport,
+    convert(file, name) {
+      inputs.push({ name, body: file.toString('utf8') });
+      return Promise.resolve({ pdf: Buffer.from('%PDF-1.4 fake'), pages: 3, warnings: ['a note'] });
+    },
+  };
 }
 
 describe('loopback checks', () => {
@@ -59,6 +76,70 @@ describe('loopback checks', () => {
     expect(originIsLoopback(undefined)).toBe(true);
     expect(originIsLoopback('http://localhost:5173')).toBe(true);
     expect(originIsLoopback('https://evil.example.com')).toBe(false);
+  });
+});
+
+describe('convert', () => {
+  it('turns a presentation into a PDF through the converter', async () => {
+    const converter = fakeConverter();
+    const app = makeApp(false, converter);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/convert?name=${encodeURIComponent('My Lecture.PPTX')}`,
+      headers: { host: 'localhost', 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('not really a deck'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.headers['x-one-take-pages']).toBe('3');
+    expect(JSON.parse(decodeURIComponent(String(res.headers['x-one-take-warnings'])))).toEqual(['a note']);
+    expect(res.body).toBe('%PDF-1.4 fake');
+    expect(converter.inputs).toEqual([{ name: 'My Lecture.PPTX', body: 'not really a deck' }]);
+    const caps = await app.inject({
+      method: 'GET',
+      url: '/api/capabilities',
+      headers: { host: 'localhost' },
+    });
+    expect(caps.json()).toMatchObject({ presentations: { extensions: ['pptx', 'ppsx', 'pptm'] } });
+    await app.close();
+  });
+
+  it('refuses files that are not presentations', async () => {
+    const app = makeApp(false, fakeConverter());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/convert?name=slides.pdf',
+      headers: { host: 'localhost', 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('x'),
+    });
+    expect(res.statusCode).toBe(415);
+    expect(res.json()).toMatchObject({ error: { code: 'unsupported_file' } });
+    await app.close();
+  });
+
+  it('reports a file that is not really a deck', async () => {
+    const app = makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/convert?name=deck.pptx',
+      headers: { host: 'localhost', 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('this is not a zip file'),
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ error: { code: 'unreadable_presentation' } });
+    await app.close();
+  });
+
+  it('wants the file as a raw body', async () => {
+    const app = makeApp(false, fakeConverter());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/convert?name=deck.pptx',
+      headers: { host: 'localhost' },
+      payload: { nope: true },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
   });
 });
 

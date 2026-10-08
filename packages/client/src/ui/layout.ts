@@ -1,3 +1,5 @@
+import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
+
 import { h } from './dom.js';
 
 export interface LayoutRefs {
@@ -18,6 +20,8 @@ export interface LayoutRefs {
   stage: HTMLElement;
   empty: HTMLElement;
   drop: HTMLElement;
+  /** Under the drop zone: which deck formats the server can convert right now. */
+  dropHint: HTMLElement;
   slideImg: HTMLImageElement;
   navPrev: HTMLButtonElement;
   navNext: HTMLButtonElement;
@@ -57,7 +61,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const fileInput = h('input', {
     type: 'file',
     id: 'fileIn',
-    accept: 'application/pdf,image/*',
+    accept: ['application/pdf', 'image/*', ...PRESENTATION_EXTENSIONS.map((e) => `.${e}`)].join(','),
     multiple: true,
     hidden: true,
   });
@@ -106,12 +110,17 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     btnNew,
   );
 
+  const dropHint = h(
+    'span',
+    { class: 'hint', id: 'dropHint' },
+    'PowerPoint files are converted by the local server. Keynote or Google Slides: export as PDF first.',
+  );
   const drop = h(
     'div',
     { id: 'drop' },
-    'Drop a PDF here, or a set of slide images (PNG / JPG)',
+    'Drop a PDF or PowerPoint file here, or a set of slide images (PNG / JPG)',
     h('br'),
-    h('span', { class: 'hint' }, 'PowerPoint, Keynote or Google Slides: export as PDF first.'),
+    dropHint,
   );
   const empty = h(
     'div',
@@ -270,6 +279,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stage,
     empty,
     drop,
+    dropHint,
     slideImg,
     navPrev,
     navNext,

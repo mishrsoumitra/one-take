@@ -13,6 +13,8 @@ export interface ServerConfig {
   defaultDirectory: string;
   ffmpegPath: string | null;
   ffprobePath: string | null;
+  /** Extra folders with fonts for drawing PowerPoint slides, searched before the system font folders. */
+  fontDirectories: string[];
   logLevel: string;
   /** Accept requests whose Host header is not loopback (only for trusted networks). */
   allowRemote: boolean;
@@ -39,6 +41,7 @@ export function loadConfig(
       dir: { type: 'string', short: 'd' },
       ffmpeg: { type: 'string' },
       ffprobe: { type: 'string' },
+      fonts: { type: 'string' },
       'log-level': { type: 'string' },
       'allow-remote': { type: 'boolean' },
       'no-static': { type: 'boolean' },
@@ -50,6 +53,11 @@ export function loadConfig(
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid port: ${values.port ?? env.ONE_TAKE_PORT ?? ''}`);
   }
+  const fontDirectories = (values.fonts ?? env.ONE_TAKE_FONTS ?? '')
+    .split(path.delimiter)
+    .map((dir) => dir.trim())
+    .filter((dir) => dir.length > 0)
+    .map((dir) => path.resolve(dir));
   const defaultDirectory = path.resolve(
     values.dir ?? env.ONE_TAKE_DIR ?? path.join(os.homedir(), 'Movies', 'One Take'),
   );
@@ -60,6 +68,7 @@ export function loadConfig(
     defaultDirectory,
     ffmpegPath: values.ffmpeg ?? env.FFMPEG_PATH ?? null,
     ffprobePath: values.ffprobe ?? env.FFPROBE_PATH ?? null,
+    fontDirectories,
     logLevel: values['log-level'] ?? env.ONE_TAKE_LOG_LEVEL ?? 'info',
     allowRemote: values['allow-remote'] ?? env.ONE_TAKE_ALLOW_REMOTE === '1',
   };

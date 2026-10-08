@@ -37,7 +37,7 @@ import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
 
 import { Store } from './store.js';
-import { DEFAULT_SETTINGS, type ProjectMeta, type SlideSource } from './types.js';
+import { DEFAULT_SETTINGS, type PresentationPick, type ProjectMeta, type SlideSource } from './types.js';
 
 const BLOCK_MS = 10;
 const CONFIRM_WINDOW_MS = 5000;
@@ -94,7 +94,10 @@ export class App {
       refreshServer: () => this.refreshServer(),
       timeline: (order) => this.timeline(order),
       slides: () => this.store.state.slides,
-      suggestedName: () => stripExtension(this.store.state.slideSource?.files[0]?.name ?? '') || 'lecture',
+      suggestedName: () => {
+        const source = this.store.state.slideSource;
+        return stripExtension(source?.origin?.name ?? source?.files[0]?.name ?? '') || 'lecture';
+      },
       initialRequest: () => this.exportRequest ?? defaultExportRequest(null),
       onRequestChange: (request) => {
         this.exportRequest = request;
@@ -164,8 +167,9 @@ export class App {
         : 'Server (no ffmpeg)'
       : 'Server offline';
     pill.title = this.serverCaps
-      ? `Saves to ${this.serverCaps.defaultDirectory}${this.serverCaps.ffmpeg ? `\nffmpeg ${this.serverCaps.ffmpeg.version} at ${this.serverCaps.ffmpeg.path}` : '\nInstall ffmpeg for HLS, DASH and compression'}`
+      ? `Saves to ${this.serverCaps.defaultDirectory}${this.serverCaps.ffmpeg ? `\nffmpeg ${this.serverCaps.ffmpeg.version} at ${this.serverCaps.ffmpeg.path}` : '\nInstall ffmpeg for HLS, DASH and compression'}\nPowerPoint files: converted with ${this.serverCaps.presentations.renderer}`
       : 'Start the local server with "npm start" to save into any folder, or export in the browser.';
+    this.refs.dropHint.textContent = this.convertHint();
     if (this.serverCaps) {
       if (this.exportRequest === null)
         this.exportRequest = defaultExportRequest(this.serverCaps.defaultDirectory);
@@ -177,6 +181,16 @@ export class App {
       }
     }
     return this.serverCaps;
+  }
+
+  /** One line under the drop zone saying which deck formats can be loaded directly right now. */
+  private convertHint(): string {
+    const caps = this.serverCaps;
+    if (!caps) {
+      return 'PowerPoint files are converted by the local server; start it with "npm start". Keynote or Google Slides: export as PDF or .pptx first.';
+    }
+    const exts = caps.presentations.extensions.map((e) => `.${e}`).join(', ');
+    return `${exts} files are converted to PDF by the local server. Keynote or Google Slides: export as PDF or .pptx first.`;
   }
 
   private wire(): void {
@@ -258,15 +272,61 @@ export class App {
   /* ------------------------------------------------------------------ */
 
   async filesChosen(fileList: Iterable<File>): Promise<void> {
-    const source = slideSourceFromFiles(fileList);
-    if (!source) {
-      this.toast.show('Please choose a PDF or image files');
+    const picked = slideSourceFromFiles(fileList);
+    if (!picked) {
+      this.toast.show('Please choose a PDF, a PowerPoint file or slide images');
       return;
     }
     if (this.store.state.segments.length > 0 && !this.confirmTwice('replace')) return;
+    const source = picked.kind === 'presentation' ? await this.convertPresentation(picked) : picked;
+    if (!source) return;
     await this.loadSlideSource(source);
     await this.db.putSlideSource(source);
     this.saveMeta();
+  }
+
+  /**
+   * Sends a PowerPoint file to the local server, whose JavaScript renderer turns it into a PDF, and
+   * returns that PDF as a slide source that remembers the original file name. Explains what is missing
+   * (the server, or support for this file type) instead of returning a source.
+   */
+  private async convertPresentation(pick: PresentationPick): Promise<SlideSource | null> {
+    const caps = this.serverCaps ?? (await this.refreshServer());
+    if (!caps) {
+      this.toast.show(
+        `${pick.file.name} needs the local server to be converted. Start it with "npm start", or export the deck as PDF.`,
+      );
+      return null;
+    }
+    if (!caps.presentations.extensions.includes(pick.extension)) {
+      this.toast.show(
+        `This server cannot read .${pick.extension} files (it takes ${caps.presentations.extensions.map((e) => `.${e}`).join(', ')}). Export the deck as PDF or .pptx.`,
+      );
+      return null;
+    }
+    this.showLoading(`Converting ${pick.file.name} to PDF…`);
+    try {
+      const result = await this.api.convertToPdf(pick.file);
+      if (result.warnings.length > 0) {
+        console.warn(`Converting ${pick.file.name}:`, result.warnings);
+        this.toast.show(
+          `${pick.file.name}: ${result.warnings.length} ${result.warnings.length === 1 ? 'thing' : 'things'} could not be drawn exactly (details in the browser console)`,
+        );
+      }
+      return {
+        kind: 'pdf',
+        files: [
+          { name: `${stripExtension(pick.file.name)}.pdf`, type: 'application/pdf', blob: result.blob },
+        ],
+        origin: { name: pick.file.name, type: pick.file.type, warnings: result.warnings },
+      };
+    } catch (error) {
+      console.error(error);
+      this.toast.show(`Could not convert ${pick.file.name}: ${(error as Error).message}`);
+      return null;
+    } finally {
+      this.hideLoading();
+    }
   }
 
   async loadSlideSource(source: SlideSource): Promise<void> {

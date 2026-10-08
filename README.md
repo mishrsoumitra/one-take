@@ -26,13 +26,19 @@ npm run build
 npm start          # http://127.0.0.1:4317
 ```
 
-Open the address in Chrome, load a PDF (export PowerPoint, Keynote or Google Slides as PDF) or a set of images, click **Start mic** and talk.
+Open the address in Chrome, load a PDF, a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) or a set of images, click **Start mic** and talk. Keynote and Google Slides: export as PDF or `.pptx` first.
 
-Server options: `npm start -- --port 4317 --dir ~/Movies/One\ Take --ffmpeg /opt/homebrew/bin/ffmpeg`. Environment variables `ONE_TAKE_PORT`, `ONE_TAKE_DIR`, `FFMPEG_PATH`, `FFPROBE_PATH` and `ONE_TAKE_LOG_LEVEL` do the same. The server answers only requests addressed to localhost; pass `--allow-remote` to change that on a trusted network.
+Server options: `npm start -- --port 4317 --dir ~/Movies/One\ Take --ffmpeg /opt/homebrew/bin/ffmpeg --fonts ~/Fonts/MonaSans`. Environment variables `ONE_TAKE_PORT`, `ONE_TAKE_DIR`, `FFMPEG_PATH`, `FFPROBE_PATH`, `ONE_TAKE_FONTS` and `ONE_TAKE_LOG_LEVEL` do the same. The server answers only requests addressed to localhost; pass `--allow-remote` to change that on a trusted network.
+
+### PowerPoint files
+
+A `.pptx` dropped on the page goes to the local server, which turns it into a PDF with plain JavaScript ([pptxtojson](https://github.com/pipipi-pikachu/pptxtojson) reads the deck, [pdfkit](https://pdfkit.org) draws it) and sends the PDF back; the browser then renders it like any other PDF. Nothing else has to be installed and no application opens. Text keeps its font, size, colour, bold/italic, bullets, alignment and spacing; shapes, pictures (PNG and JPEG), tables, simple bar, line and pie charts, groups and slide backgrounds are drawn where the deck put them. Things PDF drawing cannot do faithfully (3-D effects, soft shadows, embedded video, SmartArt animation, GIF or SVG pictures) are approximated or skipped, and the app shows how many such notes the renderer made; the details are in the browser console.
+
+Fonts come from the system font folders (plus Office's bundled fonts on a Mac). A font the deck uses but the machine does not have is replaced by a stand-in with the same weight and style, which changes line breaks slightly. Put the font files in a folder and pass it with `--fonts` (several folders separated by `:`) to use the real thing. Rendering happens in a worker thread, so exports keep streaming progress while a deck converts.
 
 ## How to use it
 
-1. **Load slides.** A PDF is best. Images are ordered by file name.
+1. **Load slides.** A PDF or a PowerPoint file; images are ordered by file name.
 2. **Start mic.** The level meter shows your voice against the white *speech line*. Your voice should go clearly past it; room noise should stay under it. Adjust *Speech threshold* if not.
 3. **Talk.** While you speak a red *RECORDING* flag shows and the phrase grows in the timeline. Pause as long as you like.
 4. **Change slides** with `→` `←`, `PageDown` `PageUp`, `Space`, a presenter clicker, or by clicking a thumbnail. Changing slides mid-sentence keeps the sentence intact across both slides.
@@ -77,12 +83,13 @@ Tips: slides are still images, so 10–15 fps looks identical to 30 and exports 
 
 ```
 packages/shared   types, zod schemas for the API, container/codec catalog, presets, the export planner
-packages/server   Fastify server: job manager, chunk uploads, ffmpeg detection and command builder, SSE progress, folder browsing
+packages/server   Fastify server: job manager, chunk uploads, ffmpeg detection and command builder, SSE progress, folder browsing,
+                  PowerPoint-to-PDF renderer (services/pptx: text html → paragraphs, line layout, font lookup, pdfkit drawing, worker thread)
 packages/client   Vite + TypeScript app: AudioWorklet capture, energy VAD, timeline, preview, WebCodecs export, UI
 packages/e2e      end-to-end runner: real server, headless Chrome with a synthetic microphone, ffprobe checks
 ```
 
-API (all JSON unless noted): `GET /api/capabilities`, `GET /api/fs/list?path=`, `POST /api/fs/mkdir`, `POST /api/exports`, `PUT /api/exports/:id/data?offset=` (octet-stream), `POST /api/exports/:id/finish`, `GET /api/exports/:id/events` (server-sent events), `DELETE /api/exports/:id`, `POST /api/exports/:id/reveal`.
+API (all JSON unless noted): `GET /api/capabilities`, `GET /api/fs/list?path=`, `POST /api/fs/mkdir`, `POST /api/convert?name=deck.pptx` (octet-stream in, `application/pdf` out, notes in the `x-one-take-warnings` header), `POST /api/exports`, `PUT /api/exports/:id/data?offset=` (octet-stream), `POST /api/exports/:id/finish`, `GET /api/exports/:id/events` (server-sent events), `DELETE /api/exports/:id`, `POST /api/exports/:id/reveal`.
 
 ## Development
 

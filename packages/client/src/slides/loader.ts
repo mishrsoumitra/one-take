@@ -1,8 +1,9 @@
+import { presentationExtension } from '@one-take/shared';
 import * as pdfjs from 'pdfjs-dist';
 // eslint-disable-next-line import-x/default -- Vite's ?url import has a default export
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-import { type Slide, type SlideSource } from '../app/types.js';
+import { type PresentationPick, type Slide, type SlideSource } from '../app/types.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -116,11 +117,18 @@ function naturalCompare(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
-/** Turns a drop or file-input selection into a slide source, or null when nothing usable was chosen. */
-export function slideSourceFromFiles(fileList: Iterable<File>): SlideSource | null {
+/**
+ * Turns a drop or file-input selection into a slide source, a presentation that still needs converting,
+ * or null when nothing usable was chosen. A PDF wins over a presentation, which wins over images.
+ */
+export function slideSourceFromFiles(fileList: Iterable<File>): SlideSource | PresentationPick | null {
   const files = [...fileList];
   const pdf = files.find((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
   if (pdf) return { kind: 'pdf', files: [{ name: pdf.name, type: 'application/pdf', blob: pdf }] };
+  for (const file of files) {
+    const extension = presentationExtension(file.name);
+    if (extension) return { kind: 'presentation', file, extension };
+  }
   const images = files
     .filter((f) => f.type.startsWith('image/'))
     .sort((a, b) => naturalCompare(a.name, b.name));

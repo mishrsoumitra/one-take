@@ -6,14 +6,17 @@ import Fastify, { LogController, type FastifyInstance } from 'fastify';
 
 import { type ServerConfig } from './config.js';
 import { registerCapabilityRoutes } from './routes/capabilities.js';
+import { registerConvertRoutes } from './routes/convert.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
+import { type ConverterService } from './services/convert.js';
 import { type JobManager } from './services/jobs.js';
 import { ApiError, errorMessage } from './util/errors.js';
 
 export interface AppDependencies {
   config: ServerConfig;
   jobs: JobManager;
+  converter: ConverterService;
   capabilities: () => ServerCapabilities;
 }
 
@@ -98,6 +101,7 @@ export function buildApp(deps: AppDependencies): FastifyInstance {
   registerCapabilityRoutes(app, deps);
   registerFsRoutes(app);
   registerExportRoutes(app, deps);
+  registerConvertRoutes(app, deps);
 
   if (config.staticDir) {
     void app.register(fastifyStatic, {

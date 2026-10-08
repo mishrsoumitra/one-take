@@ -80,6 +80,38 @@ export class ApiClient {
     await this.json('POST', `/api/exports/${id}/reveal`);
   }
 
+  /** Sends a PowerPoint file to the server's renderer and gets the PDF back, with any notes it made. */
+  async convertToPdf(
+    file: File,
+    signal?: AbortSignal,
+  ): Promise<{ blob: Blob; pages: number; warnings: string[] }> {
+    const res = await fetch(`${this.base}/api/convert?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: file,
+      signal: signal ?? null,
+    });
+    if (!res.ok) {
+      await this.parse(res);
+      throw new ApiRequestError(res.status, 'http_error', `${res.status} ${res.statusText}`);
+    }
+    let warnings: string[] = [];
+    try {
+      const raw = res.headers.get('x-one-take-warnings');
+      if (raw) {
+        const parsed: unknown = JSON.parse(decodeURIComponent(raw));
+        if (Array.isArray(parsed)) warnings = parsed.filter((w): w is string => typeof w === 'string');
+      }
+    } catch {
+      // notes are optional
+    }
+    return {
+      blob: new Blob([await res.arrayBuffer()], { type: 'application/pdf' }),
+      pages: Number(res.headers.get('x-one-take-pages') ?? '0') || 0,
+      warnings,
+    };
+  }
+
   /**
    * Follows a job over server-sent events until it reaches a final state. Falls back to polling when the
    * event stream drops. Resolves with the final job; rejects only on abort.

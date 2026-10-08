@@ -1,8 +1,41 @@
-/** Builds test fixtures: a 4-page 16:9 PDF and a WAV that imitates speech with thinking pauses. */
+/**
+ * Builds test fixtures: a 4-page 16:9 PDF, a 3-slide PowerPoint deck and a WAV that imitates speech
+ * with thinking pauses.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 
+import pptxgenjs from 'pptxgenjs';
+
+// pptxgenjs is typed as an ES default export but Node may load its CommonJS build; accept either shape.
+type PptxGenJSClass = (typeof pptxgenjs)['default'];
+const PptxGenJS =
+  (pptxgenjs as unknown as { default?: PptxGenJSClass }).default ?? (pptxgenjs as unknown as PptxGenJSClass);
+
 const SAMPLE_RATE = 48000;
+
+/** A small deck with a title, bullets and a shape on every slide, like a real lecture deck in miniature. */
+export async function makePptx(titles: string[]): Promise<Buffer> {
+  const pptx = new PptxGenJS();
+  pptx.layout = 'LAYOUT_16x9';
+  titles.forEach((title, i) => {
+    const slide = pptx.addSlide();
+    slide.background = { color: 'FFFFFF' };
+    slide.addText(title, { x: 0.5, y: 0.8, w: 9, h: 1, fontSize: 40, bold: true, color: '174374' });
+    slide.addText(
+      [
+        { text: `Slide ${i + 1} of ${titles.length}`, options: { bullet: true, breakLine: true } },
+        {
+          text: 'A second point that is long enough to wrap onto the next line of the box',
+          options: { bullet: true },
+        },
+      ],
+      { x: 0.5, y: 2, w: 6, h: 2.5, fontSize: 20, color: '1A1D21' },
+    );
+    slide.addShape(pptx.ShapeType.ellipse, { x: 7.5, y: 2.5, w: 1.5, h: 1.5, fill: { color: '2B78BD' } });
+  });
+  return (await pptx.write({ outputType: 'nodebuffer' })) as Buffer;
+}
 
 function pdfEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
@@ -132,20 +165,22 @@ export function makeWav(): Buffer {
   return Buffer.concat([header, data]);
 }
 
-export function writeFixtures(dir: string): { pdf: string; wav: string } {
+export async function writeFixtures(dir: string): Promise<{ pdf: string; pptx: string; wav: string }> {
   fs.mkdirSync(dir, { recursive: true });
   const pdf = path.join(dir, 'slides.pdf');
+  const pptx = path.join(dir, 'deck.pptx');
   const wav = path.join(dir, 'speech.wav');
   fs.writeFileSync(
     pdf,
     makePdf(['Why the sky is blue', 'Rayleigh scattering', 'Sunsets are red', 'Questions']),
   );
+  fs.writeFileSync(pptx, await makePptx(['Why the sky is blue', 'Rayleigh scattering', 'Questions']));
   fs.writeFileSync(wav, makeWav());
-  return { pdf, wav };
+  return { pdf, pptx, wav };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   const dir = process.argv[2] ?? path.resolve('packages/e2e/fixtures');
-  const out = writeFixtures(dir);
-  console.log(`fixtures written: ${out.pdf}, ${out.wav}`);
+  const out = await writeFixtures(dir);
+  console.log(`fixtures written: ${out.pdf}, ${out.pptx}, ${out.wav}`);
 }

@@ -64,7 +64,7 @@ function audio(p: Probe) {
 
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
-const fixtures = writeFixtures(path.join(OUT, 'fixtures'));
+const fixtures = await writeFixtures(path.join(OUT, 'fixtures'));
 const exportsDir = path.join(OUT, 'exports');
 fs.mkdirSync(exportsDir, { recursive: true });
 
@@ -105,8 +105,13 @@ for (let i = 0; i < 100 && !healthy; i++) {
 check(healthy, 'server is up');
 const caps = (await (await fetch(`http://127.0.0.1:${PORT}/api/capabilities`)).json()) as {
   ffmpeg: { version: string } | null;
+  presentations: { extensions: string[]; renderer: string };
 };
 check(caps.ffmpeg !== null, `server found ffmpeg ${caps.ffmpeg?.version ?? ''}`);
+check(
+  caps.presentations.extensions.includes('pptx'),
+  `server converts PowerPoint files with ${caps.presentations.renderer}`,
+);
 
 // 2. headless Chrome with the WAV as microphone
 const chrome = spawn(
@@ -193,13 +198,39 @@ await cdp.send(
   S,
 );
 
-// 3. slides through the file input
+// 3. a PowerPoint deck goes through the server's JavaScript renderer, then the PDF replaces it
 const { root } = await cdp.send<{ root: { nodeId: number } }>('DOM.getDocument', {}, S);
 const { nodeId } = await cdp.send<{ nodeId: number }>(
   'DOM.querySelector',
   { nodeId: root.nodeId, selector: '#fileIn' },
   S,
 );
+await cdp.send('DOM.setFileInputFiles', { files: [fixtures.pptx], nodeId }, S);
+for (let i = 0; i < 300 && (await ev<number>('__onetake.state.slides.length')) < 3; i++) await sleep(200);
+check((await ev<number>('__onetake.state.slides.length')) === 3, 'pptx converted into three slides');
+const origin = await ev<{ name: string; warnings: string[] } | null>(
+  '__onetake.state.slideSource?.origin ?? null',
+);
+check(origin?.name === 'deck.pptx', `converted slides remember the deck (${origin?.name ?? 'no origin'})`);
+check(
+  (origin?.warnings.length ?? 0) === 0,
+  `renderer made no notes${origin?.warnings.length ? `: ${origin.warnings.join(' | ')}` : ''}`,
+);
+check(
+  (await ev<string>('document.getElementById("dropHint")?.textContent ?? ""')).includes('.pptx'),
+  'drop zone says .pptx files are accepted',
+);
+await screenshot('pptx-slide.png');
+{
+  const slide = await ev<{ width: number; height: number }>(
+    '(()=>{const s=__onetake.slides()[0];return {width:s.width,height:s.height}})()',
+  );
+  check(
+    Math.abs(slide.width / slide.height - 16 / 9) < 0.01,
+    `converted slide keeps the 16:9 shape (${slide.width}x${slide.height})`,
+  );
+}
+
 await cdp.send('DOM.setFileInputFiles', { files: [fixtures.pdf], nodeId }, S);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 4; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 4, 'four slides rendered');

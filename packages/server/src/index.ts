@@ -6,6 +6,7 @@ import { type ServerCapabilities } from '@one-take/shared';
 
 import { buildApp } from './app.js';
 import { loadConfig, SERVER_VERSION } from './config.js';
+import { PptxConverter, presentationSupport } from './services/convert.js';
 import { detectFfmpeg, detectFfprobe } from './services/ffmpeg.js';
 import { shortcutDirectories } from './services/filesystem.js';
 import { JobManager } from './services/jobs.js';
@@ -29,14 +30,19 @@ async function main(): Promise<void> {
     ffmpeg,
     ffprobePath,
     shortcuts,
+    presentations: presentationSupport,
   };
 
   const jobs = new JobManager({ ffmpeg, log: (m) => app.log.info(m) });
-  const app = buildApp({ config, jobs, capabilities: () => capabilities });
+  const converter = new PptxConverter({
+    fontDirectories: config.fontDirectories,
+    log: (m) => app.log.info(m),
+  });
+  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities });
 
   const shutdown = async (signal: string) => {
     app.log.info(`${signal} received, shutting down`);
-    await jobs.dispose();
+    await Promise.all([jobs.dispose(), converter.dispose()]);
     await app.close();
     process.exit(0);
   };
@@ -50,6 +56,9 @@ async function main(): Promise<void> {
     ffmpeg
       ? `ffmpeg ${ffmpeg.version} at ${ffmpeg.path}`
       : 'ffmpeg not found: HLS, DASH and compression are disabled',
+  );
+  app.log.info(
+    `PowerPoint files (${presentationSupport.extensions.map((e) => `.${e}`).join(' ')}) are converted with ${presentationSupport.renderer}${config.fontDirectories.length ? `; extra fonts from ${config.fontDirectories.join(', ')}` : ''}`,
   );
   app.log.info(
     config.staticDir

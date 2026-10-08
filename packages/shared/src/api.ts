@@ -12,6 +12,7 @@ import {
   VIDEO_CODECS,
   type Container,
 } from './containers.js';
+import { type PresentationSupport } from './presentations.js';
 import {
   COMPRESSION_PRESETS,
   MAX_DIMENSION,
@@ -234,6 +235,8 @@ export interface ServerCapabilities {
   ffprobePath: string | null;
   /** Handy folders for the folder picker (home, Desktop, Movies, ...). Only existing ones are listed. */
   shortcuts: { label: string; path: string }[];
+  /** Which deck formats the server turns into PDF with its built-in JavaScript renderer. */
+  presentations: PresentationSupport;
 }
 
 export interface DirectoryEntry {

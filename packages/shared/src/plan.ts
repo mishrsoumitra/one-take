@@ -21,19 +21,20 @@ import {
   type VideoCodecId,
 } from './containers.js';
 import {
+  browserTuning,
+  codecPreference,
+  DEFAULT_PERFORMANCE,
+  PERFORMANCE_MODES,
+  type BrowserCapabilities,
+  type PerformanceMode,
+} from './performance.js';
+import {
   evenDimension,
   LADDER_RUNGS,
   RESOLUTION_SIZES,
   videoBitrateKbps,
   type QualityLevel,
 } from './presets.js';
-
-export interface BrowserCapabilities {
-  videoCodecs: VideoCodecId[];
-  audioCodecs: AudioCodecId[];
-  /** `showSaveFilePicker` exists, so large files can be streamed to disk without a server. */
-  fileSystemAccess: boolean;
-}
 
 export interface BrowserEncodePlan {
   container: BrowserContainer;
@@ -47,6 +48,13 @@ export interface BrowserEncodePlan {
   keyFrameIntervalSec: number;
   /** True when the server re-encodes afterwards, so the browser encodes at a high "mezzanine" quality. */
   mezzanine: boolean;
+  /** WebCodecs encoder preference; `prefer-hardware` only when the probe said it works at this size. */
+  hardwareAcceleration: 'prefer-hardware' | 'no-preference' | 'prefer-software';
+  latencyMode: 'quality' | 'realtime';
+  /** The GPU encoder is expected to do the work (decides the resource map and the warnings). */
+  hardware: boolean;
+  /** Frames per second measured for this encoder choice at start-up, when known. */
+  measuredFps: number | null;
 }
 
 export interface ExportPlan {
@@ -103,11 +111,17 @@ function pickVideoCodec(
   requested: ExportRequest['video']['codec'],
   browser: BrowserCapabilities,
   family: 'mp4family' | 'webm',
+  mode: PerformanceMode,
+  height: number,
 ): VideoCodecId | null {
   if (requested !== 'auto') {
     return allowed.includes(requested) && browser.videoCodecs.includes(requested) ? requested : null;
   }
-  return VIDEO_PREFERENCE[family].find((c) => allowed.includes(c) && browser.videoCodecs.includes(c)) ?? null;
+  return (
+    codecPreference(VIDEO_PREFERENCE[family], mode, browser, height).find(
+      (c) => allowed.includes(c) && browser.videoCodecs.includes(c),
+    ) ?? null
+  );
 }
 
 function pickAudioCodec(
@@ -163,6 +177,7 @@ export function planExport(
   const info = CONTAINER_INFO[request.container];
   const { width, height } = resolveResolution(request.resolution);
   const fps = request.fps;
+  const mode = request.performance.mode;
   const destination = request.destination.kind;
   const ffmpeg = server?.ffmpeg ?? null;
   const serverReady = destination === 'server' && server !== null;
@@ -203,7 +218,7 @@ export function planExport(
 
   // Can the browser produce the final container's codecs directly?
   const family = request.container === 'webm' ? 'webm' : 'mp4family';
-  const directVideo = pickVideoCodec(info.video, request.video.codec, browser, family);
+  const directVideo = pickVideoCodec(info.video, request.video.codec, browser, family, mode, height);
   const directAudio = pickAudioCodec(info.audio, request.audio.codec, browser);
   const canDirect = directVideo !== null && directAudio !== null;
 
@@ -239,7 +254,7 @@ export function planExport(
 
   if (needsFfmpeg && destination === 'server') {
     // Mezzanine: fragmented MP4 with the best codec the browser has; ffmpeg does the rest.
-    const mezzVideo = pickVideoCodec(CONTAINER_INFO.fmp4.video, 'auto', browser, 'mp4family');
+    const mezzVideo = pickVideoCodec(CONTAINER_INFO.fmp4.video, 'auto', browser, 'mp4family', mode, height);
     const mezzAudio = pickAudioCodec(CONTAINER_INFO.fmp4.audio, 'auto', browser);
     if (mezzVideo === null || mezzAudio === null) {
       blockers.push('This browser has no usable WebCodecs video/audio encoder.');
@@ -271,6 +286,7 @@ export function planExport(
       audioBitrateKbps: reencode ? Math.max(request.audio.bitrateKbps, 128) : request.audio.bitrateKbps,
       keyFrameIntervalSec: keyFrame,
       mezzanine: reencode,
+      ...browserTuning(mode, mezzVideo ?? 'avc', height, browser),
     };
     processing = buildProcessing(request, server, browserPlan, warnings, blockers, reencode);
   } else {
@@ -286,6 +302,7 @@ export function planExport(
       audioBitrateKbps: request.audio.bitrateKbps,
       keyFrameIntervalSec: request.video.keyFrameIntervalSec,
       mezzanine: false,
+      ...browserTuning(mode, directVideo ?? 'avc', height, browser),
     };
     if (
       destination === 'server' &&
@@ -447,5 +464,29 @@ export function defaultExportRequest(serverDirectory: string | null): ExportRequ
     },
     streaming: { segmentSeconds: 4, hlsSegmentType: 'fmp4', ladder: false },
     order: 'recorded',
+    performance: { ...DEFAULT_PERFORMANCE },
+  };
+}
+
+/**
+ * Fills in fields a stored request may lack (projects saved by an older version have no `performance`),
+ * so a restored project never crashes the planner.
+ */
+export function normalizeExportRequest(stored: unknown, serverDirectory: string | null): ExportRequest {
+  const defaults = defaultExportRequest(serverDirectory);
+  if (typeof stored !== 'object' || stored === null) return defaults;
+  const s = stored as Partial<ExportRequest>;
+  const mode = s.performance?.mode;
+  return {
+    ...defaults,
+    ...s,
+    compression: { ...defaults.compression, ...s.compression },
+    streaming: { ...defaults.streaming, ...s.streaming },
+    performance: {
+      mode:
+        mode !== undefined && (PERFORMANCE_MODES as readonly string[]).includes(mode)
+          ? mode
+          : defaults.performance.mode,
+    },
   };
 }

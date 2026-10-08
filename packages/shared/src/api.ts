@@ -12,6 +12,7 @@ import {
   VIDEO_CODECS,
   type Container,
 } from './containers.js';
+import { PERFORMANCE_MODES } from './performance.js';
 import { type PresentationSupport } from './presentations.js';
 import {
   COMPRESSION_PRESETS,
@@ -20,6 +21,7 @@ import {
   QUALITY_LEVELS,
   RESOLUTION_PRESETS,
 } from './presets.js';
+import { type SystemProfile } from './system.js';
 
 export const ContainerSchema = z.enum(CONTAINERS);
 export const BrowserContainerSchema = z.enum(BROWSER_CONTAINERS);
@@ -95,6 +97,8 @@ export const ExportRequestSchema = z.object({
   compression: CompressionSchema,
   streaming: StreamingSchema,
   order: z.enum(['recorded', 'slide']),
+  /** How hard to push for speed versus file size; see performance.ts. */
+  performance: z.object({ mode: z.enum(PERFORMANCE_MODES) }),
 });
 export type ExportRequest = z.infer<typeof ExportRequestSchema>;
 
@@ -237,6 +241,8 @@ export interface ServerCapabilities {
   shortcuts: { label: string; path: string }[];
   /** Which deck formats the server turns into PDF with its built-in JavaScript renderer. */
   presentations: PresentationSupport;
+  /** CPU, memory, GPU and working hardware encoders of the machine the server runs on. */
+  system: SystemProfile | null;
 }
 
 export interface DirectoryEntry {

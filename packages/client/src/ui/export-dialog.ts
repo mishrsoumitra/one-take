@@ -15,17 +15,28 @@ import {
   SERVER_VIDEO_CODECS,
   VIDEO_CODEC_INFO,
   VIDEO_CODECS,
+  PERFORMANCE_MODE_INFO,
+  PERFORMANCE_MODES,
+  applyPerformanceMode,
+  describeSystem,
   estimateExport,
+  estimateResources,
   formatBytes,
   formatDuration,
+  hardwareCodecLabels,
+  peakMemoryBytes,
+  performanceWarnings,
   pickServerVideoEncoder,
   planExport,
   resolveResolution,
   sanitizeFileName,
+  totalSeconds,
   type BrowserCapabilities,
   type Container,
   type ExportPlan,
   type ExportRequest,
+  type PerformanceMode,
+  type ResourceLine,
   type ServerCapabilities,
 } from '@one-take/shared';
 
@@ -91,6 +102,14 @@ function row(label: string, control: HTMLElement, hint?: string): HTMLElement {
 
 function section(title: string, ...children: (HTMLElement | null)[]): HTMLElement {
   return h('section', { class: 'sec' }, h('h4', null, title), ...children);
+}
+
+/** `45 s`, `3 min`, `1 h 20 min`. */
+function formatSeconds(seconds: number): string {
+  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
 function number(
@@ -170,6 +189,10 @@ export class ExportDialog {
     hardware: HTMLInputElement;
     compNote: HTMLElement;
     order: HTMLSelectElement;
+    sysLine: HTMLElement;
+    modes: HTMLElement;
+    modeInputs: Record<PerformanceMode, HTMLInputElement>;
+    resources: HTMLElement;
     planBox: HTMLElement;
     warnings: HTMLElement;
     blockers: HTMLElement;
@@ -491,6 +514,28 @@ export class ExportDialog {
         q.order = e.order.value as PhraseOrder;
       });
 
+    // System check and performance mode.
+    e.sysLine = h('div', { class: 'sys', id: 'sysLine' });
+    e.modeInputs = {} as Record<PerformanceMode, HTMLInputElement>;
+    e.modes = h(
+      'div',
+      { class: 'modes', id: 'perfModes' },
+      ...PERFORMANCE_MODES.map((mode) => {
+        const input = h('input', { type: 'radio', name: 'perfMode', value: mode });
+        input.onchange = () => {
+          if (!input.checked) return;
+          this.update((q) => {
+            applyPerformanceMode(q, mode, this.deps.serverCaps());
+          });
+          this.syncInputs();
+        };
+        e.modeInputs[mode] = input;
+        const info = PERFORMANCE_MODE_INFO[mode];
+        return h('label', null, input, h('span', null, info.label, h('small', null, info.description)));
+      }),
+    );
+    e.resources = h('div', { class: 'resources', id: 'resources' });
+
     e.planBox = h('div', { class: 'plan' });
     e.warnings = h('ul', { class: 'warnings' });
     e.blockers = h('ul', { class: 'blockers' });
@@ -578,9 +623,10 @@ export class ExportDialog {
           h(
             'div',
             { class: 'col' },
+            section('This computer', e.sysLine, e.modes),
             e.compression,
             section('Order', row('Phrases', e.order)),
-            section('Plan', e.planBox, e.warnings, e.blockers),
+            section('Plan', e.planBox, e.resources, e.warnings, e.blockers),
           ),
         ),
         e.fallback,
@@ -649,6 +695,62 @@ export class ExportDialog {
     e.maxBitrate.value = r.compression.maxBitrateKbps === null ? '' : String(r.compression.maxBitrateKbps);
     e.hardware.checked = r.compression.hardware;
     e.order.value = r.order;
+    for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
+  }
+
+  /** One or two lines about the machine on each side of the export. */
+  private systemLine(
+    server: ServerCapabilities | null,
+    browser: BrowserCapabilities,
+  ): (HTMLElement | string)[] {
+    const parts: (HTMLElement | string)[] = [];
+    const system = server?.system ?? null;
+    if (system) {
+      parts.push(h('b', null, 'Server: '), describeSystem(system), '.');
+      if (system.notes.length > 0) parts.push(' ', system.notes.join(' '));
+    } else if (server) {
+      parts.push(h('b', null, 'Server: '), 'running, machine details unknown.');
+    } else {
+      parts.push(h('b', null, 'Server: '), 'offline; exports stay in the browser.');
+    }
+    parts.push(h('br'));
+    const hw = hardwareCodecLabels(browser);
+    const bench = browser.benchmark?.avc ?? null;
+    const measured = bench
+      ? `H.264 measured at ${bench.hardwareFps !== null ? `${bench.hardwareFps} fps on the GPU` : 'no GPU'}${bench.softwareFps !== null ? `${bench.hardwareFps !== null ? ' and ' : ''}${bench.softwareFps} fps in software` : ''}`
+      : null;
+    const threads = browser.hardwareConcurrency !== null ? `${browser.hardwareConcurrency} threads` : null;
+    const memory = browser.deviceMemoryGb !== null ? `about ${browser.deviceMemoryGb} GB RAM visible` : null;
+    parts.push(
+      h('b', null, `${browser.browser ?? 'This browser'}: `),
+      browser.videoCodecs.length === 0
+        ? 'no WebCodecs; only the real-time fallback works.'
+        : `GPU encoding ${hw.length ? `for ${hw.join(', ')}` : 'not available (software encoders only)'}; ${[measured, threads, memory, browser.gpu ? `GPU ${browser.gpu}` : null].filter((p) => p !== null).join(', ')}.`,
+    );
+    return parts;
+  }
+
+  private renderResources(lines: readonly ResourceLine[]): void {
+    const e = this.els;
+    const total = totalSeconds(lines);
+    const peak = peakMemoryBytes(lines);
+    replaceChildren(
+      e.resources,
+      ...lines.flatMap((l) => [
+        h('span', { class: `tag ${l.unit}` }, l.unit),
+        h('span', { class: 'stage' }, l.stage),
+        h(
+          'span',
+          { class: 'detail' },
+          `${l.detail} · ${formatBytes(l.memoryBytes)} RAM${l.seconds !== null ? ` · about ${formatSeconds(l.seconds)}` : ''}`,
+        ),
+      ]),
+      h(
+        'div',
+        { class: 'total' },
+        `Roughly ${total !== null ? formatSeconds(total) : 'unknown time'} in total, ${formatBytes(peak)} of memory at the peak. Figures are estimates.`,
+      ),
+    );
   }
 
   private update(mutate: (request: ExportRequest) => void): void {
@@ -829,12 +931,16 @@ export class ExportDialog {
         ? 'Choose "a folder on this computer" to compress with ffmpeg.'
         : 'Install ffmpeg on this computer to enable compression.';
 
+    // System line and mode
+    replaceChildren(e.sysLine, ...this.systemLine(server, browser));
+    for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
+
     // Plan
     this.plan = planExport(r, server, browser);
     const plan = this.plan;
     const est = estimateExport(plan, tl.total);
     const b = plan.browser;
-    const stage1 = `Browser encodes ${VIDEO_CODEC_INFO[b.videoCodec].label} + ${AUDIO_CODEC_INFO[b.audioCodec].label}, ${b.width}×${b.height} @ ${b.fps} fps, up to ${(b.videoBitrateKbps / 1000).toFixed(1)} Mbit/s, into ${CONTAINER_INFO[b.container].label}${b.mezzanine ? ' (mezzanine)' : ''}.`;
+    const stage1 = `Browser encodes ${VIDEO_CODEC_INFO[b.videoCodec].label} + ${AUDIO_CODEC_INFO[b.audioCodec].label}, ${b.width}×${b.height} @ ${b.fps} fps, up to ${(b.videoBitrateKbps / 1000).toFixed(1)} Mbit/s, into ${CONTAINER_INFO[b.container].label}${b.mezzanine ? ' (mezzanine)' : ''}${b.hardware ? ' on the GPU' : ' on the CPU'}.`;
     const p = plan.processing;
     const stage2 = p
       ? p.video.mode === 'copy'
@@ -853,7 +959,26 @@ export class ExportDialog {
         `${est.frames.toLocaleString()} frames · browser output up to ${formatBytes(est.uploadBytes)}${p?.video.mode === 'encode' ? ` · final roughly ${formatBytes(est.finalBytes)}` : ''}${est.tempBytes ? ` · ${formatBytes(est.tempBytes)} temporary` : ''}`,
       ),
     );
-    replaceChildren(e.warnings, ...plan.warnings.map((w) => h('li', null, w)));
+    const slideList = this.deps.slides();
+    const resourceInput = {
+      plan,
+      estimate: est,
+      durationSec: tl.total,
+      slides: {
+        count: slideList.length,
+        width: Math.max(1, ...slideList.map((s) => s.width)),
+        height: Math.max(1, ...slideList.map((s) => s.height)),
+      },
+      audioBytes: tl.items.reduce((sum, it) => sum + it.seg.pcm.byteLength, 0),
+      server,
+      browser,
+    };
+    const lines = estimateResources(resourceInput);
+    this.renderResources(lines);
+    replaceChildren(
+      e.warnings,
+      ...[...plan.warnings, ...performanceWarnings(resourceInput, lines)].map((w) => h('li', null, w)),
+    );
     replaceChildren(e.blockers, ...plan.blockers.map((w) => h('li', null, w)));
     const noWebCodecs = browser.videoCodecs.length === 0;
     e.btnExport.disabled =
@@ -978,6 +1103,13 @@ export class ExportDialog {
             'Show in folder',
           ),
         ),
+        result.encoder
+          ? h(
+              'div',
+              { class: 'hint' },
+              `Browser encoder: ${result.encoder.hardwareAcceleration === 'prefer-hardware' ? 'GPU' : 'browser default'}, ${result.encoder.latencyMode} mode.`,
+            )
+          : null,
         result.job.command
           ? h(
               'details',
@@ -1040,7 +1172,12 @@ export class ExportDialog {
             job: null,
           }),
       });
-      this.showResult({ kind: 'blob', name: `${sanitizeFileName(this.request.fileName)}.webm`, blob });
+      this.showResult({
+        kind: 'blob',
+        name: `${sanitizeFileName(this.request.fileName)}.webm`,
+        blob,
+        encoder: null,
+      });
     } catch (error) {
       this.setProgress({
         stage: 'done',

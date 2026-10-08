@@ -678,8 +678,16 @@ kbd {
 }
 .export .cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …) keeps the columns equal even when a select or a path would rather not shrink */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 18px;
+}
+.export .col,
+.export .row > .ctl {
+  min-width: 0;
+}
+.export select {
+  max-width: 100%;
 }
 .export .sec {
   background: var(--panel2);
@@ -953,4 +961,77 @@ kbd {
   .export .cols {
     grid-template-columns: 1fr;
   }
+}
+
+/* system check and performance mode (export dialog) */
+.export .sys {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+.export .sys b {
+  color: var(--text);
+  font-weight: 600;
+}
+.export .modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.export .modes label {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 6px;
+  align-items: start;
+  cursor: pointer;
+}
+.export .modes label input {
+  margin-top: 3px;
+}
+.export .modes label small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.export .resources {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 2px 10px;
+  font-size: 12px;
+  align-items: baseline;
+}
+.export .resources .tag {
+  font:
+    10px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #262b36;
+  color: var(--muted);
+  text-align: center;
+}
+.export .resources .tag.gpu {
+  background: rgba(53, 208, 127, 0.18);
+  color: var(--ok, #35d07f);
+}
+.export .resources .tag.cpu {
+  background: rgba(255, 184, 77, 0.18);
+  color: var(--warn);
+}
+.export .resources .stage {
+  white-space: nowrap;
+}
+.export .resources .detail {
+  color: var(--muted);
+}
+.export .resources .total {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  color: var(--muted);
 }

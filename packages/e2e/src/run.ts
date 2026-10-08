@@ -113,6 +113,43 @@ check(
   `server converts PowerPoint files with ${caps.presentations.renderer}`,
 );
 
+// 1b. the pre-flight check: the server knows the machine and which hardware encoders work
+interface SystemProfile {
+  cpu: { model: string; cores: number; performanceCores: number | null };
+  memory: { totalBytes: number; availableBytes: number | null };
+  gpu: { name: string | null; cores: number | null };
+  disk: { freeBytes: number | null };
+  ffmpeg: {
+    encoders: string[];
+    brokenEncoders: string[];
+    hwaccels: string[];
+    benchmark: Record<string, number> | null;
+    fastestEncoder: string | null;
+  } | null;
+  tier: string;
+  maxEncodeJobs: number;
+  notes: string[];
+}
+const system = (await (await fetch(`http://127.0.0.1:${PORT}/api/system`)).json()) as SystemProfile;
+console.log(
+  `system: ${system.cpu.model}, ${system.cpu.cores} cores, ${(system.memory.totalBytes / 1024 ** 3).toFixed(0)} GB, GPU ${system.gpu.name ?? '?'}; tier ${system.tier}; hw encoders ${system.ffmpeg?.encoders.join(',') ?? 'none'}; benchmark ${system.ffmpeg?.fastestEncoder ?? 'pending'}`,
+);
+check(system.cpu.cores > 0 && system.memory.totalBytes > 0, 'system check reports CPU and memory');
+check(system.disk.freeBytes !== null && system.disk.freeBytes > 0, 'system check reports free disk space');
+check(
+  ['gpu', 'cpu-fast', 'cpu', 'constrained'].includes(system.tier),
+  `system check picked a tier (${system.tier})`,
+);
+check(
+  system.ffmpeg !== null && system.ffmpeg.brokenEncoders.length === 0,
+  'every listed hardware encoder passed its self-test',
+);
+const serverHw = system.ffmpeg?.encoders.find((e) => e.startsWith('h264_')) ?? null;
+if (process.platform === 'darwin') {
+  check(system.gpu.name !== null, `GPU identified (${system.gpu.name ?? 'none'})`);
+  check(serverHw === 'h264_videotoolbox', 'VideoToolbox H.264 encoder verified on this Mac');
+}
+
 // 2. headless Chrome with the WAV as microphone
 const chrome = spawn(
   CHROME,
@@ -273,8 +310,35 @@ const tl = await ev<{ total: number; items: number }>(
   '(()=>{const t=__onetake.timeline("recorded");return {total:+t.total.toFixed(2), items:t.items.length}})()',
 );
 console.log('timeline:', JSON.stringify(tl));
-const browserCaps = await ev<{ videoCodecs: string[]; audioCodecs: string[] }>('__onetake.browserCaps()');
+const browserCaps = await ev<{
+  videoCodecs: string[];
+  audioCodecs: string[];
+  hardware: Record<string, number>;
+  benchmark: { avc: { hardwareFps: number | null; softwareFps: number | null } } | null;
+  hardwareConcurrency: number | null;
+  gpu: string | null;
+  browser: string | null;
+}>('__onetake.browserCaps()');
 console.log('browser codecs:', JSON.stringify(browserCaps));
+check(
+  typeof browserCaps.hardware.avc === 'number' && browserCaps.hardwareConcurrency !== null,
+  `browser probed GPU encoders (avc up to ${browserCaps.hardware.avc}p) and ${browserCaps.hardwareConcurrency ?? '?'} threads`,
+);
+const bench = browserCaps.benchmark?.avc ?? null;
+check(
+  bench !== null && bench.softwareFps !== null && bench.softwareFps > 0,
+  `browser raced its H.264 encoders (GPU ${bench?.hardwareFps ?? 'n/a'} fps, software ${bench?.softwareFps ?? 'n/a'} fps)`,
+);
+const browserHw = (browserCaps.hardware.avc ?? 0) >= 720;
+const softwareWins =
+  bench !== null &&
+  bench.softwareFps !== null &&
+  (bench.hardwareFps === null || bench.softwareFps > bench.hardwareFps * 1.15);
+const expectedAcceleration = softwareWins
+  ? 'prefer-software'
+  : browserHw
+    ? 'prefer-hardware'
+    : 'no-preference';
 
 interface ServerResult {
   kind: 'server';
@@ -284,10 +348,23 @@ interface ServerResult {
     command: string | null;
     error: string | null;
   };
-  plan: { browser: { container: string; videoCodec: string }; processing: unknown };
+  plan: {
+    browser: {
+      container: string;
+      videoCodec: string;
+      hardwareAcceleration: string;
+      latencyMode: string;
+      hardware: boolean;
+    };
+    processing: unknown;
+  };
+  encoder: { hardwareAcceleration: string; latencyMode: string } | null;
+  timing: { elapsedMs: number; encodeMs: number; videoSeconds: number };
 }
 const exportServer = (overrides: Record<string, unknown>) =>
   ev<ServerResult>(`__onetake.exportWith(${JSON.stringify(overrides)})`);
+const speed = (r: ServerResult) =>
+  `${(r.timing.videoSeconds / (r.timing.encodeMs / 1000)).toFixed(1)}× real time encode, ${(r.timing.elapsedMs / 1000).toFixed(1)} s in all`;
 
 // a. MP4: fragmented upload, faststart remux
 const mp4 = await exportServer({
@@ -297,7 +374,13 @@ const mp4 = await exportServer({
   fps: 5,
 });
 console.log('mp4 plan:', mp4.plan.browser.container, '->', JSON.stringify(mp4.plan.processing));
+console.log(`mp4 encoder: ${JSON.stringify(mp4.encoder)}; ${speed(mp4)}`);
 check(mp4.job.state === 'done', `mp4 export done${mp4.job.error ? ` (${mp4.job.error})` : ''}`);
+check(
+  mp4.plan.browser.hardwareAcceleration === expectedAcceleration &&
+    mp4.encoder?.hardwareAcceleration === expectedAcceleration,
+  `fastest mode used the measured winner (${mp4.encoder?.hardwareAcceleration ?? 'none'}, expected ${expectedAcceleration})`,
+);
 {
   const file = mp4.job.outputs[0]?.path ?? '';
   check(file.endsWith('lecture.mp4'), `mp4 saved as ${file}`);
@@ -374,6 +457,10 @@ check(dash.job.state === 'done', `dash export done${dash.job.error ? ` (${dash.j
     (dash.job.command ?? '').includes('-crf 30') && (dash.job.command ?? '').includes('tune stillimage'),
     'dash was compressed with crf 30 + stillimage',
   );
+  check(
+    !(dash.job.command ?? '').includes('-hwaccel'),
+    'dash re-encode decodes in software (faster on slides)',
+  );
   // ffprobe may lack a DASH demuxer, so probe the init segment plus the first chunk instead.
   const joined = path.join(OUT, 'dash-probe.mp4');
   fs.writeFileSync(
@@ -442,6 +529,36 @@ check(hevc.job.state === 'done', `hevc export done${hevc.job.error ? ` (${hevc.j
   const big = mp4.job.outputs[0]?.bytes ?? 0;
   const small = hevc.job.outputs[0]?.bytes ?? 0;
   console.log(`sizes: mp4 ${big} bytes, compressed hevc ${small} bytes`);
+}
+
+// e2. compressed MP4 through the server's hardware encoder, as the fastest mode picks it
+if (serverHw) {
+  const gpu = await exportServer({
+    fileName: 'gpu',
+    container: 'mp4',
+    resolution: { preset: '720p' },
+    fps: 10,
+    performance: { mode: 'fastest' },
+    compression: {
+      enabled: true,
+      codec: 'h264',
+      crf: 28,
+      preset: 'veryfast',
+      tune: 'none',
+      outputFps: null,
+      maxBitrateKbps: null,
+      height: null,
+      hardware: true,
+    },
+  });
+  console.log(`gpu export: ${speed(gpu)}`);
+  check(gpu.job.state === 'done', `gpu-compressed export done${gpu.job.error ? ` (${gpu.job.error})` : ''}`);
+  check((gpu.job.command ?? '').includes(serverHw), `server compressed with ${serverHw}`);
+  const p = probe(gpu.job.outputs[0]?.path ?? '');
+  check(
+    video(p)?.codec_name === 'h264' && video(p)?.height === 720 && audio(p)?.codec_name === 'aac',
+    `gpu-compressed mp4 is h264 720p with aac (${video(p)?.codec_name ?? '?'} ${video(p)?.height ?? 0}p)`,
+  );
 }
 
 // f. overwrite protection: a second export with the same name gets a new name
@@ -524,7 +641,57 @@ check(
   (await ev<number>('document.querySelectorAll("#exportModal ul.blockers li").length')) === 0,
   'export dialog shows no blockers',
 );
+const sysLine = await ev<string>('document.getElementById("sysLine")?.textContent ?? ""');
+console.log('dialog system line:', sysLine);
+check(
+  sysLine.includes('cores') && sysLine.includes('RAM') && sysLine.includes('GPU encoding'),
+  'export dialog describes the server machine and the browser encoders',
+);
+check(
+  (await ev<string>('document.querySelector("#perfModes input:checked")?.value ?? ""')) === 'fastest',
+  'export dialog starts in the fastest mode',
+);
+const resourceLines = await ev<string[]>(
+  '[...document.querySelectorAll("#resources .stage")].map(e => e.textContent)',
+);
+console.log('resource map:', resourceLines.join(' | '));
+check(
+  resourceLines.length >= 3 && resourceLines[0] === 'Browser encodes',
+  'plan shows which stage runs on what',
+);
 await screenshot('export-dialog.png');
+// switching to "smallest file" turns the server GPU encoder off and picks a slow preset
+await ev('document.querySelector("#perfModes input[value=quality]").click()');
+await sleep(100);
+const qualityReq = await ev<{
+  performance: { mode: string };
+  compression: { hardware: boolean; preset: string };
+}>('JSON.parse(JSON.stringify(__onetake.exportDialog.currentRequest))');
+check(
+  qualityReq.performance.mode === 'quality' &&
+    !qualityReq.compression.hardware &&
+    qualityReq.compression.preset === 'slow',
+  'quality mode switches compression to slow software presets',
+);
+await ev('document.querySelector("#perfModes input[value=fastest]").click()');
+await sleep(100);
+const fastReq = await ev<{ compression: { hardware: boolean; preset: string } }>(
+  'JSON.parse(JSON.stringify(__onetake.exportDialog.currentRequest))',
+);
+// By now the background encoder race has finished; the dialog re-read the profile when it opened.
+const systemNow = (await (await fetch(`http://127.0.0.1:${PORT}/api/system`)).json()) as SystemProfile;
+console.log(
+  `encoder benchmark: ${JSON.stringify(systemNow.ffmpeg?.benchmark)} → ${systemNow.ffmpeg?.fastestEncoder ?? 'none'}`,
+);
+check(
+  systemNow.ffmpeg?.fastestEncoder !== null && systemNow.ffmpeg?.benchmark !== null,
+  'server raced its H.264 encoders after start-up',
+);
+const winnerIsHardware = /_(videotoolbox|nvenc|qsv|vaapi|amf)$/.test(systemNow.ffmpeg?.fastestEncoder ?? '');
+check(
+  fastReq.compression.hardware === winnerIsHardware && fastReq.compression.preset === 'veryfast',
+  `fastest mode picks the measured winner for compression (${systemNow.ffmpeg?.fastestEncoder ?? '?'}, hardware=${winnerIsHardware}) and veryfast`,
+);
 
 const bad = logs.filter((l) => l.startsWith('EXCEPTION') || l.startsWith('error'));
 check(bad.length === 0, `no page errors${bad.length ? `: ${bad.join(' | ')}` : ''}`);

@@ -28,7 +28,7 @@ npm start          # http://127.0.0.1:4317
 
 Open the address in Chrome, load a PDF, a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) or a set of images, click **Start mic** and talk. Keynote and Google Slides: export as PDF or `.pptx` first.
 
-Server options: `npm start -- --port 4317 --dir ~/Movies/One\ Take --ffmpeg /opt/homebrew/bin/ffmpeg --fonts ~/Fonts/MonaSans`. Environment variables `ONE_TAKE_PORT`, `ONE_TAKE_DIR`, `FFMPEG_PATH`, `FFPROBE_PATH`, `ONE_TAKE_FONTS` and `ONE_TAKE_LOG_LEVEL` do the same. The server answers only requests addressed to localhost; pass `--allow-remote` to change that on a trusted network.
+Server options: `npm start -- --port 4317 --dir ~/Movies/One\ Take --ffmpeg /opt/homebrew/bin/ffmpeg --fonts ~/Fonts/MonaSans --no-self-test --renderer-memory 4096`. Environment variables `ONE_TAKE_PORT`, `ONE_TAKE_DIR`, `FFMPEG_PATH`, `FFPROBE_PATH`, `ONE_TAKE_FONTS`, `ONE_TAKE_LOG_LEVEL`, `ONE_TAKE_SELF_TEST=0` and `ONE_TAKE_RENDERER_MEMORY_MB` do the same. The server answers only requests addressed to localhost; pass `--allow-remote` to change that on a trusted network. `npm run doctor` checks the machine without starting the server (see [System check and performance mode](#system-check-and-performance-mode)).
 
 ### PowerPoint files
 
@@ -61,6 +61,49 @@ The planner (`packages/shared/src/plan.ts`) is a pure function, so the dialog ca
 
 Saving in the browser (no server) uses the File System Access API to stream to a file in Chrome and Edge; other browsers assemble the file in memory (keep those under 2 GB) and download it. Browsers without WebCodecs get a real-time WebM recording as a fallback.
 
+## System check and performance mode
+
+Video work is heavy, so the app looks at the machine before it does any. The server runs a pre-flight check at start-up, and the export dialog turns the result into a mode and a resource map.
+
+**At start-up** (`npm start`) the server prints what it found and serves it at `GET /api/system`:
+
+```
+One Take 1.0.0: system check
+  CPU      Apple M2 Max, 12 cores (8 performance, 4 efficiency), arm64
+  Memory   96 GB total, 69 GB available now
+  GPU      Apple M2 Max, 38 cores, shared memory
+  Disk     412 GB free in /Users/me/Movies/One Take
+  ffmpeg   8.1.2 at /opt/homebrew/bin/ffmpeg
+           hardware encoders: h264_videotoolbox, hevc_videotoolbox
+           fastest for slides at 1080p: libx264 (libx264 910 fps, h264_videotoolbox 400 fps); decoding in software; hwaccels listed: videotoolbox
+  Node     v24.14.0
+  Mode     gpu: GPU encoding available; up to 2 ffmpeg re-encodes at a time
+  Renderer 32.0 GB heap for PowerPoint conversion
+```
+
+- CPU model, core count and the performance/efficiency split (Apple silicon), total and available memory, the GPU (`system_profiler` on macOS, `nvidia-smi`/`lspci` on Linux, PowerShell on Windows) and free disk space where exports go.
+- Every hardware encoder ffmpeg lists (`*_videotoolbox`, `*_nvenc`, `*_qsv`, `*_vaapi`) is **self-tested** with a third of a second of synthetic video. One that is compiled in but has no device behind it is dropped, so the export dialog never offers an encoder that would fail. `--no-self-test` skips this (about 0.2 s per encoder).
+- The **tier** follows: `gpu` when a hardware encoder works, `cpu-fast` with eight or more cores, `cpu`, or `constrained` (under 4 cores or 8 GB). It decides how many ffmpeg re-encodes may run at once (software encoders already use every core, so a second job would only slow both down).
+- Once the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner. That decides whether the *Fastest* mode ticks *hardware encoder* for compression. On an M2 Max the answer is no: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). `--no-benchmark` skips the race.
+- Decoding stays on the CPU. The upload is slide video, and software decoding of eleven minutes of it took 1.5 s where `-hwaccel videotoolbox` took 33 s.
+- The PowerPoint renderer runs in a worker with a heap limit of half the machine's memory (`--renderer-memory 4096` to change it); a deck that needs more fails with a clear message instead of taking the server down.
+
+**`npm run doctor`** runs the same check without starting the server and prints which process needs which resource for a one-hour 1080p lecture: recording, slide rendering, PowerPoint conversion, and every export stage (browser encode, upload, packaging, compression) with its memory, whether it runs on the GPU or the CPU, and a rough time. `npm run bench` (`doctor --bench`, `--height 2160` for 4K) runs the encoder race in the open, adds `libx264 medium` and `libx265 veryfast` for comparison, and says which encoder is really the fastest on this machine.
+
+**In the browser** the app probes WebCodecs once: which codecs it can encode, and for each whether `prefer-hardware` is accepted at 1080p and at 4K, plus thread count, visible memory and the GPU name (WebGPU or WebGL). It then races the GPU and the software H.264 encoder on 150 frames of a 1080p slide (about half a second; the answer is kept for a week in `localStorage`). The export dialog's *This computer* section shows both sides.
+
+**Performance mode** (in the export dialog, saved with the project):
+
+| Mode | Browser stage | Server compression |
+| --- | --- | --- |
+| **Fastest** (default) | whichever H.264 encoder won the browser's race (`prefer-software` when it beat the GPU by 15 % or more, else `prefer-hardware` at sizes the probe confirmed); the codec the GPU can encode goes first when the codec is *auto*; unmeasured software encoders run in `realtime` latency mode | whichever H.264 encoder won the server's race (hardware or `libx264`), `veryfast` preset |
+| **Balanced** | browser defaults | `libx264`/`libx265`, `medium` |
+| **Smallest file** | browser defaults, `quality` latency | software encoders, `slow` preset, `stillimage` tune for x264 |
+
+The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encoder drops from 374 to 166 fps in `realtime` mode, while Chrome's software H.264 encoder runs at about 400 fps in either, so `realtime` is reserved for software codecs. A mode only sets the starting point; every field stays editable. The *Plan* section then lists the resource map for the chosen settings (GPU/CPU/disk per stage, memory, rough time) and warns when the export would take more than 40 % of the machine's memory, when a software codec was chosen although the GPU could do H.264, or when the job will take over half an hour.
+
+**What else was done, and what it is worth.** Slides are still images, so each slide is captured once and every video frame of that slide is a reference clone with a new timestamp. For a software encoder the capture is a planar I420 frame in CPU memory (`core/yuv.ts`, BT.709, about 30 ms per slide). This matters more than it sounds: a canvas-backed frame is RGBA on the GPU and Chrome converts it again for every `encode()` call, which pinned every encoder, hardware or software, H.264 or VP9, at about 370 fps for 1080p on an M2 Max. With planar frames Chrome's software H.264 encoder reaches 570 fps in a real export (700 fps in a bare encoder loop) while the VideoToolbox encoder stays near 380 fps whatever it is fed (that is its pipeline rate; ffmpeg's `h264_videotoolbox` tops out at the same figure), which is why the browser races the two and picks the software encoder on that machine; a GPU encoder keeps the canvas frame, which is already in its memory. Slide bitmaps are decoded already scaled to the output size, the encode runs on an `OffscreenCanvas`, and the preview reuses one timeline instead of rebuilding it every animation frame. Measured on an M2 Max with Chrome: eleven minutes of 1080p at 15 fps encode in 17 s (38× real time, against 27 s before), so an hour-long lecture exports in about a minute and a half; compression on the server adds about a minute per hour with `libx264 veryfast`. Fewer frames is the one lever that always works: 10 fps is a third faster than 15 and looks the same on slides.
+
 ## Large exports
 
 A three-hour lecture is the normal case, so the pipeline is built around it:
@@ -89,7 +132,7 @@ packages/client   Vite + TypeScript app: AudioWorklet capture, energy VAD, timel
 packages/e2e      end-to-end runner: real server, headless Chrome with a synthetic microphone, ffprobe checks
 ```
 
-API (all JSON unless noted): `GET /api/capabilities`, `GET /api/fs/list?path=`, `POST /api/fs/mkdir`, `POST /api/convert?name=deck.pptx` (octet-stream in, `application/pdf` out, notes in the `x-one-take-warnings` header), `POST /api/exports`, `PUT /api/exports/:id/data?offset=` (octet-stream), `POST /api/exports/:id/finish`, `GET /api/exports/:id/events` (server-sent events), `DELETE /api/exports/:id`, `POST /api/exports/:id/reveal`.
+API (all JSON unless noted): `GET /api/capabilities`, `GET /api/system`, `GET /api/fs/list?path=`, `POST /api/fs/mkdir`, `POST /api/convert?name=deck.pptx` (octet-stream in, `application/pdf` out, notes in the `x-one-take-warnings` header), `POST /api/exports`, `PUT /api/exports/:id/data?offset=` (octet-stream), `POST /api/exports/:id/finish`, `GET /api/exports/:id/events` (server-sent events), `DELETE /api/exports/:id`, `POST /api/exports/:id/reveal`.
 
 ## Development
 
@@ -98,6 +141,7 @@ npm run dev        # shared (tsc --watch) + server (tsx watch, :4317) + client (
 npm run check      # typecheck + lint + format check + unit tests
 npm test           # vitest: shared, server (incl. real ffmpeg jobs when installed), client core
 npm run e2e        # builds, then drives the built app in headless Chrome (needs Chrome, ffmpeg, ffprobe)
+npm run doctor     # system check and resource map; npm run bench adds the encoder benchmark
 npm run lint:fix && npm run format
 ```
 

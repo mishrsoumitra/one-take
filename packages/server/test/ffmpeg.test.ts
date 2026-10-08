@@ -269,6 +269,26 @@ describe('buildFfmpegArgs', () => {
     expect(plan.mainFile).toBe('/out/l/master.m3u8');
   });
 
+  it('never asks for GPU decoding (software decodes slide video far faster)', () => {
+    const encode = spec({
+      video: {
+        mode: 'encode',
+        codec: 'h264',
+        crf: 23,
+        preset: 'veryfast',
+        tune: null,
+        fps: null,
+        height: null,
+        maxBitrateKbps: null,
+        keyFrameIntervalSec: 4,
+        hardware: true,
+      },
+    });
+    const plan = buildFfmpegArgs(encode, input, '/out/l.mp4', info);
+    expect(plan.args).not.toContain('-hwaccel');
+    expect(plan.args).toContain('h264_videotoolbox');
+  });
+
   it('throws when the encoder is missing', () => {
     const noAv1 = { ...info, encoders: ['libx264', 'aac'] };
     expect(() =>

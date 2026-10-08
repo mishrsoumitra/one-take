@@ -15,9 +15,11 @@ import {
   type FfmpegInfo,
   type JobEvent,
   type JobOutput,
+  type SystemProfile,
 } from '@one-take/shared';
 
 import { ApiError, errorMessage } from '../util/errors.js';
+import { Semaphore } from '../util/semaphore.js';
 
 import { buildFfmpegArgs, FfmpegError, formatCommand, runFfmpeg } from './ffmpeg.js';
 import {
@@ -47,6 +49,8 @@ export interface JobManagerOptions {
   /** Finished jobs kept in memory for the job list. */
   keepFinished?: number;
   log?: (message: string) => void;
+  /** The machine profile: decides how many re-encodes run at once and whether decoding uses the GPU. */
+  system?: SystemProfile | null;
 }
 
 const GENERATED_EXTENSIONS = new Set(['m3u8', 'mpd', 'ts', 'm4s', 'mp4', 'tmp']);
@@ -56,11 +60,19 @@ export class JobManager {
   private readonly ffmpeg: FfmpegInfo | null;
   private readonly keepFinished: number;
   private readonly log: (message: string) => void;
+  /** Re-encodes compete for the same cores, so only `maxEncodeJobs` run at once; the rest wait here. */
+  private readonly encodeSlots: Semaphore;
 
   constructor(options: JobManagerOptions) {
     this.ffmpeg = options.ffmpeg;
     this.keepFinished = options.keepFinished ?? 50;
     this.log = options.log ?? (() => undefined);
+    this.encodeSlots = new Semaphore(Math.max(1, options.system?.maxEncodeJobs ?? 1));
+  }
+
+  /** How many re-encodes may run at the same time. */
+  get maxEncodeJobs(): number {
+    return this.encodeSlots.size;
   }
 
   list(): ExportJob[] {
@@ -274,6 +286,16 @@ export class JobManager {
         );
         job.command = formatCommand(this.ffmpeg.path, plan.args);
         const reencode = spec.video.mode === 'encode';
+        if (reencode && !this.encodeSlots.tryAcquire()) {
+          job.progress = {
+            stage: 'process',
+            percent: null,
+            message: 'Waiting for another export to finish re-encoding…',
+            speed: null,
+          };
+          this.emit(internal);
+          await this.encodeSlots.acquire(internal.abort.signal);
+        }
         job.progress = {
           stage: 'process',
           percent: 0,
@@ -286,23 +308,27 @@ export class JobManager {
         this.log(`job ${job.id}: ${job.command}`);
         const duration = job.upload.durationSec;
         let lastEmit = 0;
-        await runFfmpeg(this.ffmpeg.path, plan.args, {
-          cwd: plan.cwd,
-          signal: internal.abort.signal,
-          onProgress: (t, speed) => {
-            const now = Date.now();
-            if (now - lastEmit < 250) return;
-            lastEmit = now;
-            job.progress = {
-              stage: 'process',
-              percent: duration > 0 ? Math.min(99, Math.round((t / duration) * 100)) : null,
-              message: job.progress.message,
-              speed,
-            };
-            this.emit(internal);
-          },
-          onLog: (line) => this.emitLog(internal, line),
-        });
+        try {
+          await runFfmpeg(this.ffmpeg.path, plan.args, {
+            cwd: plan.cwd,
+            signal: internal.abort.signal,
+            onProgress: (t, speed) => {
+              const now = Date.now();
+              if (now - lastEmit < 250) return;
+              lastEmit = now;
+              job.progress = {
+                stage: 'process',
+                percent: duration > 0 ? Math.min(99, Math.round((t / duration) * 100)) : null,
+                message: job.progress.message,
+                speed,
+              };
+              this.emit(internal);
+            },
+            onLog: (line) => this.emitLog(internal, line),
+          });
+        } finally {
+          if (reencode) this.encodeSlots.release();
+        }
         job.progress = { stage: 'finalize', percent: 99, message: 'Moving result into place…', speed: null };
         this.emit(internal);
         if (await pathExists(internal.finalPath)) await removeQuietly(internal.finalPath);

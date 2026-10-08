@@ -145,6 +145,11 @@ export const SERVER_VIDEO_ENCODERS: Record<
   av1: { software: ['libsvtav1', 'libaom-av1'], hardware: ['av1_nvenc', 'av1_qsv', 'av1_videotoolbox'] },
 };
 
+/** True for GPU encoders (`h264_videotoolbox`, `hevc_nvenc`, ...), false for the software ones. */
+export function isHardwareEncoder(encoder: string): boolean {
+  return Object.values(SERVER_VIDEO_ENCODERS).some((e) => e.hardware.includes(encoder));
+}
+
 /** Which server codecs are valid in which final container. */
 export const SERVER_CODEC_CONTAINERS: Record<ServerVideoCodec, readonly Container[]> = {
   h264: ['mp4', 'fmp4', 'mov', 'mkv', 'hls', 'dash'],

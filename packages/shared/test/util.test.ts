@@ -53,6 +53,12 @@ describe('estimateExport', () => {
       videoCodecs: ['avc'],
       audioCodecs: ['aac'],
       fileSystemAccess: true,
+      hardware: { avc: 0, hevc: 0, vp9: 0, av1: 0 },
+      benchmark: null,
+      hardwareConcurrency: null,
+      deviceMemoryGb: null,
+      gpu: null,
+      browser: null,
     });
     const est = estimateExport(plan, 3 * 3600);
     expect(est.frames).toBe(3 * 3600 * 15 + 4);

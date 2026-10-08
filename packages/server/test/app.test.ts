@@ -48,6 +48,7 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       ffprobePath: null,
       shortcuts: [],
       presentations: converter.support(),
+      system: null,
     }),
   });
 }

@@ -4,16 +4,21 @@
  * Large exports are the normal case here, so the whole pipeline streams: the muxer writes positioned
  * chunks into the target, every `add()` awaits the encoder's queue (back-pressure), slide bitmaps are
  * cached in a small LRU, and timestamps are computed from integer counters so hours of video never drift.
+ *
+ * Slides are still images, so a slide is drawn once and captured into one VideoFrame; every frame of
+ * that slide is a reference clone of it with a new timestamp (no pixel copy, no canvas read-back). The
+ * plan says whether to ask for the GPU encoder and the `realtime` latency mode (see shared/performance).
  */
 import { type BrowserContainer, type BrowserEncodePlan } from '@one-take/shared';
 import {
   AudioSample,
   AudioSampleSource,
-  CanvasSource,
   MkvOutputFormat,
   MovOutputFormat,
   Mp4OutputFormat,
   Output,
+  VideoSample,
+  VideoSampleSource,
   WebMOutputFormat,
   type OutputFormat,
   type Target,
@@ -22,6 +27,7 @@ import {
 import { type Slide } from '../app/types.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
+import { BT709_LIMITED, rgbaToI420 } from '../core/yuv.js';
 
 export const EXPORT_SAMPLE_RATE = 48000;
 /** The last slide stays on screen this long after the last word. */
@@ -58,6 +64,8 @@ export interface EncodeResult {
   bytes: number;
   seconds: number;
   videoCodecString: string | null;
+  /** What WebCodecs was configured with, for the result panel and the tests. */
+  encoder: { hardwareAcceleration: string; latencyMode: string } | null;
 }
 
 export class ExportCancelledError extends Error {
@@ -90,11 +98,36 @@ export function totalFrames(timeline: Timeline, fps: number): number {
   return Math.ceil((timeline.total + TAIL_SECONDS) * fps);
 }
 
+type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** A drawing surface off the page when the browser has one (no layout, no compositor involvement). */
+function makeCanvas(
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement | OffscreenCanvas; g: Canvas2D } {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const canvas = new OffscreenCanvas(width, height);
+    const g = canvas.getContext('2d', { alpha: false });
+    if (g) return { canvas, g };
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext('2d', { alpha: false });
+  if (!g) throw new Error('Canvas 2D is not available');
+  return { canvas, g };
+}
+
 class BitmapCache {
   private readonly map = new Map<number, ImageBitmap>();
 
-  constructor(private readonly slides: readonly Slide[]) {}
+  constructor(
+    private readonly slides: readonly Slide[],
+    private readonly width: number,
+    private readonly height: number,
+  ) {}
 
+  /** The slide decoded and already scaled to fit the frame, so drawing it is a plain copy. */
   async get(index: number): Promise<ImageBitmap> {
     const hit = this.map.get(index);
     if (hit) {
@@ -104,7 +137,12 @@ class BitmapCache {
     }
     const slide = this.slides[index];
     if (!slide) throw new Error(`Slide ${index + 1} is missing`);
-    const bmp = await createImageBitmap(slide.blob);
+    const s = Math.min(this.width / slide.width, this.height / slide.height);
+    const bmp = await createImageBitmap(slide.blob, {
+      resizeWidth: Math.max(1, Math.round(slide.width * s)),
+      resizeHeight: Math.max(1, Math.round(slide.height * s)),
+      resizeQuality: 'high',
+    });
     this.map.set(index, bmp);
     while (this.map.size > BITMAP_CACHE) {
       const oldest = this.map.keys().next().value;
@@ -127,12 +165,7 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
   const rate = EXPORT_SAMPLE_RATE;
   if (signal.aborted) throw new ExportCancelledError();
 
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) throw new Error('Canvas 2D is not available');
-  const g: CanvasRenderingContext2D = context;
+  const { canvas, g } = makeCanvas(width, height);
 
   let bytes = 0;
   const offWrite = target.on('write', ({ end }) => {
@@ -145,28 +178,35 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     target,
   });
   let codecString: string | null = null;
-  const video = new CanvasSource(canvas, {
+  let encoderConfig: EncodeResult['encoder'] = null;
+  const video = new VideoSampleSource({
     codec: plan.videoCodec,
     bitrate: plan.videoBitrateKbps * 1000,
     bitrateMode: 'variable',
-    latencyMode: 'quality',
+    latencyMode: plan.latencyMode,
     keyFrameInterval: plan.keyFrameIntervalSec,
-    hardwareAcceleration: 'no-preference',
+    hardwareAcceleration: plan.hardwareAcceleration,
     onEncoderConfig: (config) => {
       codecString = config.codec;
+      encoderConfig = {
+        hardwareAcceleration: config.hardwareAcceleration ?? 'no-preference',
+        latencyMode: config.latencyMode ?? 'quality',
+      };
     },
   });
   const audio = new AudioSampleSource({ codec: plan.audioCodec, bitrate: plan.audioBitrateKbps * 1000 });
   output.addVideoTrack(video, { frameRate: fps });
   output.addAudioTrack(audio);
 
-  const bitmaps = new BitmapCache(slides);
+  const bitmaps = new BitmapCache(slides, width, height);
   const frameDuration = 1 / fps;
   const frameTotal = totalFrames(timeline, fps);
   const chunkFrames = Math.round(rate * AUDIO_CHUNK_SECONDS);
   let frames = 0;
   let audioPos = 0; // samples emitted
   let currentSlide = -1;
+  /** The current slide as one captured frame; every frame of it is a reference clone of this. */
+  let slideFrame: VideoSample | null = null;
   let acc = new Float32Array(chunkFrames);
   let accN = 0;
   let lastProgress = 0;
@@ -190,24 +230,62 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     if (aborted()) throw new ExportCancelledError();
   };
 
-  async function drawSlide(index: number): Promise<void> {
-    if (index === currentSlide) return;
+  /**
+   * The slide as one frame, cloned for every video frame of that slide.
+   *
+   * For a software encoder it is a planar I420 frame in CPU memory: a canvas-backed frame is RGBA on
+   * the GPU and the browser converts it again for every `encode()` call, which capped every encoder at
+   * about 370 fps for 1080p; one conversion per slide (see core/yuv.ts) lifts Chrome's software H.264
+   * encoder to about 570 fps on an M2 Max. A GPU encoder is happier with the canvas frame, which
+   * already lives in its memory (the planar frame costs it an upload per frame, about 10 %).
+   */
+  const planar = !plan.hardware;
+  function captureSlide(): VideoSample {
+    if (planar) {
+      try {
+        const pixels = g.getImageData(0, 0, width, height).data;
+        const planes = rgbaToI420(pixels, width, height);
+        return new VideoSample(planes.data, {
+          format: 'I420',
+          codedWidth: planes.codedWidth,
+          codedHeight: planes.codedHeight,
+          layout: planes.layout,
+          colorSpace: BT709_LIMITED,
+          timestamp: 0,
+          duration: frameDuration,
+        });
+      } catch {
+        // fall through to the canvas frame
+      }
+    }
+    return new VideoSample(canvas, { timestamp: 0, duration: frameDuration });
+  }
+
+  async function drawSlide(index: number): Promise<VideoSample> {
+    if (index === currentSlide && slideFrame) return slideFrame;
     currentSlide = index;
     const bmp = await bitmaps.get(index);
     g.fillStyle = '#000';
     g.fillRect(0, 0, width, height);
-    const s = Math.min(width / bmp.width, height / bmp.height);
-    const dw = Math.round(bmp.width * s);
-    const dh = Math.round(bmp.height * s);
-    g.drawImage(bmp, Math.round((width - dw) / 2), Math.round((height - dh) / 2), dw, dh);
+    g.drawImage(bmp, Math.round((width - bmp.width) / 2), Math.round((height - bmp.height) / 2));
+    slideFrame?.close();
+    slideFrame = captureSlide();
+    return slideFrame;
   }
 
   async function pushFrames(untilSec: number, slideIndex: number, keyFirst: boolean): Promise<void> {
-    await drawSlide(slideIndex);
+    const base = await drawSlide(slideIndex);
     let key = keyFirst;
     while (frames * frameDuration < untilSec - 1e-6) {
       checkAbort();
-      await video.add(frames / fps, frameDuration, key ? { keyFrame: true } : undefined);
+      const frame = base.clone();
+      frame.setTimestamp(frames / fps);
+      frame.setDuration(frameDuration);
+      try {
+        await video.add(frame, key ? { keyFrame: true } : undefined);
+      } finally {
+        frame.close();
+      }
       key = false;
       frames++;
     }
@@ -260,7 +338,7 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     audio.close();
     await output.finalize();
     report(timeline.items.length);
-    return { frames, bytes, seconds: audioPos / rate, videoCodecString: codecString };
+    return { frames, bytes, seconds: audioPos / rate, videoCodecString: codecString, encoder: encoderConfig };
   } catch (error) {
     try {
       if (output.state !== 'finalized' && output.state !== 'canceled') await output.cancel();
@@ -270,6 +348,7 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     if (aborted()) throw new ExportCancelledError();
     throw error;
   } finally {
+    (slideFrame as VideoSample | null)?.close();
     bitmaps.dispose();
     offWrite();
   }

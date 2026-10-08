@@ -4,6 +4,7 @@
  * deck never stalls the export progress stream; one deck is rendered at a time.
  */
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 
 import { PRESENTATION_EXTENSIONS, presentationExtension, type PresentationSupport } from '@one-take/shared';
@@ -109,6 +110,18 @@ export interface PptxConverterOptions {
   log?: (message: string) => void;
   /** Render on this thread instead of a worker (tests, and when running from TypeScript sources). */
   inline?: boolean;
+  /**
+   * Heap the renderer may grow to, in MB. A deck that needs more fails with a clear message instead of
+   * taking the whole server down; the default is half of the machine's memory.
+   */
+  memoryLimitMb?: number;
+}
+
+const MB = 1024 * 1024;
+
+/** Half the machine's memory, between 1 GB and 32 GB. */
+export function defaultRendererMemoryMb(totalBytes = os.totalmem()): number {
+  return Math.min(32 * 1024, Math.max(1024, Math.floor(totalBytes / MB / 2)));
 }
 
 export class PptxConverter implements ConverterService {
@@ -120,6 +133,7 @@ export class PptxConverter implements ConverterService {
   private readonly timeoutMs: number;
   private readonly log: (message: string) => void;
   private readonly inline: boolean;
+  private readonly memoryLimitMb: number;
 
   constructor(options: PptxConverterOptions = {}) {
     this.fontDirectories = options.fontDirectories ?? [];
@@ -127,6 +141,12 @@ export class PptxConverter implements ConverterService {
     this.log = options.log ?? (() => undefined);
     // tsx / vitest run the .ts sources, where a worker file cannot be loaded without a loader
     this.inline = options.inline ?? import.meta.url.endsWith('.ts');
+    this.memoryLimitMb = options.memoryLimitMb ?? defaultRendererMemoryMb();
+  }
+
+  /** The renderer's heap limit in MB (for the start-up report). */
+  get memoryLimit(): number {
+    return this.memoryLimitMb;
   }
 
   support(): PresentationSupport {
@@ -166,12 +186,22 @@ export class PptxConverter implements ConverterService {
     if (this.worker) return this.worker;
     const worker = new Worker(new URL('./pptx/worker.js', import.meta.url), {
       workerData: { fontDirectories: this.fontDirectories },
+      resourceLimits: { maxOldGenerationSizeMb: this.memoryLimitMb },
     });
     worker.on('message', (response: WorkerResponse) => this.onResponse(response));
     worker.on('error', (error) => {
       this.log(`presentation worker failed: ${errorMessage(error)}`);
       this.worker = null;
-      this.failAll(new ApiError(500, 'conversion_failed', `The renderer crashed: ${errorMessage(error)}`));
+      const outOfMemory = (error as { code?: string }).code === 'ERR_WORKER_OUT_OF_MEMORY';
+      this.failAll(
+        outOfMemory
+          ? new ApiError(
+              507,
+              'conversion_out_of_memory',
+              `The presentation needs more than the ${(this.memoryLimitMb / 1024).toFixed(1)} GB this computer can give the renderer. Export the deck as PDF instead, or remove embedded videos.`,
+            )
+          : new ApiError(500, 'conversion_failed', `The renderer crashed: ${errorMessage(error)}`),
+      );
     });
     worker.on('exit', (code) => {
       if (this.worker === worker) this.worker = null;

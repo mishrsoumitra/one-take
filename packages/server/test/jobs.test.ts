@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { type CreateExportJobRequest, type ExportJob, type FfmpegInfo } from '@one-take/shared';
+import {
+  type CreateExportJobRequest,
+  type ExportJob,
+  type FfmpegInfo,
+  type ProcessingSpec,
+  type SystemProfile,
+} from '@one-take/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { detectFfmpeg } from '../src/services/ffmpeg.js';
@@ -72,6 +78,46 @@ function request(overrides: Partial<CreateExportJobRequest> = {}): CreateExportJ
     },
     processing: null,
     ...overrides,
+  };
+}
+
+/** A machine profile that allows `maxEncodeJobs` re-encodes at once and no hardware decoding. */
+function slowSystem(maxEncodeJobs: number): SystemProfile {
+  return {
+    platform: process.platform,
+    nodeVersion: process.version,
+    cpu: { model: 'test', cores: 8, performanceCores: null, efficiencyCores: null, architecture: 'x64' },
+    memory: { totalBytes: 16 * 1024 ** 3, availableBytes: null },
+    gpu: { name: null, cores: null, vramBytes: null, source: null },
+    disk: { path: tmp, freeBytes: null },
+    ffmpeg: { encoders: [], brokenEncoders: [], hwaccels: [], benchmark: null, fastestEncoder: null },
+    tier: 'cpu-fast',
+    maxEncodeJobs,
+    notes: [],
+    detectedAt: new Date().toISOString(),
+  };
+}
+
+/** A re-encode slow enough to still be running when the next job arrives. */
+function slowSpec(): ProcessingSpec {
+  return {
+    container: 'mp4',
+    video: {
+      mode: 'encode',
+      codec: 'h264',
+      crf: 18,
+      preset: 'veryslow',
+      tune: null,
+      fps: 60,
+      height: 1080,
+      maxBitrateKbps: null,
+      keyFrameIntervalSec: 1,
+      hardware: false,
+    },
+    audio: { mode: 'copy' },
+    segmentSeconds: 4,
+    hlsSegmentType: 'fmp4',
+    ladder: null,
   };
 }
 
@@ -275,6 +321,44 @@ describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
       (await fs.readdir(tmp)).filter((n) => n.includes('.processing') || n.includes('.uploading')),
     ).toEqual([]);
   }, 120_000);
+
+  it('runs only as many re-encodes at once as the machine profile allows', async () => {
+    if (!ffmpeg) return;
+    const jobs = new JobManager({ ffmpeg, system: slowSystem(1) });
+    expect(jobs.maxEncodeJobs).toBe(1);
+    expect(new JobManager({ ffmpeg, system: slowSystem(2) }).maxEncodeJobs).toBe(2);
+    const first = await jobs.create(request({ fileName: 'first', processing: slowSpec() }));
+    const second = await jobs.create(request({ fileName: 'second', processing: slowSpec() }));
+    await upload(jobs, first.id, sample);
+    await upload(jobs, second.id, sample);
+    const waiting = new Promise<string>((resolve) => {
+      const unsub = jobs.subscribe(second.id, (e) => {
+        if (e.type === 'job' && e.job.progress.message.startsWith('Waiting')) {
+          unsub();
+          resolve(e.job.progress.message);
+        }
+      });
+    });
+    const firstRunning = new Promise<void>((resolve) => {
+      const unsub = jobs.subscribe(first.id, (e) => {
+        if (e.type === 'job' && e.job.progress.message.startsWith('Compressing')) {
+          unsub();
+          resolve();
+        }
+      });
+    });
+    await jobs.finish(first.id, sample.length);
+    await firstRunning;
+    await jobs.finish(second.id, sample.length);
+    expect(await waiting).toMatch(/Waiting for another export/);
+    expect(jobs.get(second.id).command).toContain('libx264');
+    await jobs.cancel(second.id);
+    await jobs.cancel(first.id);
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await fs.readdir(tmp)).filter((n) => n.startsWith('first') || n.startsWith('second'))).toEqual(
+      [],
+    );
+  }, 60_000);
 
   it('cancels a running ffmpeg job', async () => {
     if (!ffmpeg) return;

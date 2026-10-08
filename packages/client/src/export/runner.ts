@@ -12,7 +12,7 @@ import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
 import { type Timeline } from '../core/timeline.js';
 
-import { encodeLecture, ExportCancelledError, type EncodeProgress } from './encoder.js';
+import { encodeLecture, ExportCancelledError, type EncodeProgress, type EncodeResult } from './encoder.js';
 import { createBufferSink, createFileSink, createServerSink, type Sink } from './sinks.js';
 
 export type ExportStage = 'preparing' | 'encoding' | 'processing' | 'finalizing' | 'done';
@@ -27,10 +27,13 @@ export interface ExportProgress {
   job: ExportJob | null;
 }
 
+/** How WebCodecs was configured for the browser stage, for the result panel and the tests. */
+export type EncoderUsed = EncodeResult['encoder'];
+
 export type ExportResult =
-  | { kind: 'server'; job: ExportJob }
-  | { kind: 'file'; name: string; bytes: number }
-  | { kind: 'blob'; name: string; blob: Blob };
+  | { kind: 'server'; job: ExportJob; encoder: EncoderUsed }
+  | { kind: 'file'; name: string; bytes: number; encoder: EncoderUsed }
+  | { kind: 'blob'; name: string; blob: Blob; encoder: EncoderUsed };
 
 export interface RunExportOptions {
   request: ExportRequest;
@@ -111,7 +114,7 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
       );
       if (final.state === 'failed') throw new Error(final.error ?? 'The server could not finish the export.');
       if (final.state === 'cancelled') throw new ExportCancelledError();
-      return { kind: 'server', job: final };
+      return { kind: 'server', job: final, encoder: encodeResult.encoder };
     }
 
     // Browser destination: a real file when the browser can stream to disk, otherwise memory + download.
@@ -131,8 +134,8 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
     const result = await encodeWithSink(sink, options, progress);
     const blob = sink.blob();
     progress({ stage: 'done', message: 'Done', percent: 100 });
-    if (blob) return { kind: 'blob', name: fileName, blob };
-    return { kind: 'file', name: fileName, bytes: result.bytes };
+    if (blob) return { kind: 'blob', name: fileName, blob, encoder: result.encoder };
+    return { kind: 'file', name: fileName, bytes: result.bytes, encoder: result.encoder };
   } finally {
     wakeLock?.release().catch(() => undefined);
   }
@@ -142,7 +145,7 @@ async function encodeWithSink(
   sink: Sink,
   options: RunExportOptions,
   progress: (p: Partial<ExportProgress> & Pick<ExportProgress, 'stage' | 'message'>) => void,
-): Promise<{ bytes: number; frames: number }> {
+): Promise<{ bytes: number; frames: number; encoder: EncoderUsed }> {
   const startedAt = performance.now();
   try {
     const result = await encodeLecture({
@@ -167,7 +170,7 @@ async function encodeWithSink(
       },
     });
     await sink.close();
-    return { bytes: Math.max(result.bytes, sink.bytes()), frames: result.frames };
+    return { bytes: Math.max(result.bytes, sink.bytes()), frames: result.frames, encoder: result.encoder };
   } catch (error) {
     await sink.abort();
     throw error;

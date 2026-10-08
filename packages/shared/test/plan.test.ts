@@ -14,11 +14,23 @@ const chrome: BrowserCapabilities = {
   videoCodecs: ['avc', 'vp9', 'av1'],
   audioCodecs: ['aac', 'opus'],
   fileSystemAccess: true,
+  hardware: { avc: 2160, hevc: 0, vp9: 0, av1: 0 },
+  benchmark: null,
+  hardwareConcurrency: 12,
+  deviceMemoryGb: 8,
+  gpu: 'Apple M2 Max',
+  browser: 'Chrome 141',
 };
 const firefoxLike: BrowserCapabilities = {
   videoCodecs: ['avc'],
   audioCodecs: ['opus'],
   fileSystemAccess: false,
+  hardware: { avc: 0, hevc: 0, vp9: 0, av1: 0 },
+  benchmark: null,
+  hardwareConcurrency: 4,
+  deviceMemoryGb: null,
+  gpu: null,
+  browser: 'Firefox 140',
 };
 
 const serverWithFfmpeg: ServerCapabilities = {
@@ -35,6 +47,8 @@ const serverWithFfmpeg: ServerCapabilities = {
   },
   ffprobePath: '/opt/homebrew/bin/ffprobe',
   shortcuts: [],
+  presentations: { extensions: ['pptx', 'ppsx', 'pptm'], renderer: 'pptxtojson + pdfkit' },
+  system: null,
 };
 const serverNoFfmpeg: ServerCapabilities = { ...serverWithFfmpeg, ffmpeg: null, ffprobePath: null };
 

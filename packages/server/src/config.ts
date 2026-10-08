@@ -18,6 +18,12 @@ export interface ServerConfig {
   logLevel: string;
   /** Accept requests whose Host header is not loopback (only for trusted networks). */
   allowRemote: boolean;
+  /** Run a short test encode with each hardware encoder at start-up (about 0.2 s each). */
+  selfTest: boolean;
+  /** Race the H.264 encoders in the background after start-up (about a second each). */
+  benchmark: boolean;
+  /** Heap for the PowerPoint renderer in MB; null picks half the machine's memory. */
+  rendererMemoryMb: number | null;
 }
 
 export const SERVER_VERSION = '1.0.0';
@@ -45,9 +51,17 @@ export function loadConfig(
       'log-level': { type: 'string' },
       'allow-remote': { type: 'boolean' },
       'no-static': { type: 'boolean' },
+      'no-self-test': { type: 'boolean' },
+      'no-benchmark': { type: 'boolean' },
+      'renderer-memory': { type: 'string' },
     },
     strict: true,
   });
+  const rendererMemory = values['renderer-memory'] ?? env.ONE_TAKE_RENDERER_MEMORY_MB;
+  const rendererMemoryMb = rendererMemory === undefined ? null : Number(rendererMemory);
+  if (rendererMemoryMb !== null && (!Number.isInteger(rendererMemoryMb) || rendererMemoryMb < 256)) {
+    throw new Error(`Invalid renderer memory (MB, at least 256): ${rendererMemory ?? ''}`);
+  }
 
   const port = Number(values.port ?? env.ONE_TAKE_PORT ?? 4317);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -71,5 +85,8 @@ export function loadConfig(
     fontDirectories,
     logLevel: values['log-level'] ?? env.ONE_TAKE_LOG_LEVEL ?? 'info',
     allowRemote: values['allow-remote'] ?? env.ONE_TAKE_ALLOW_REMOTE === '1',
+    selfTest: !(values['no-self-test'] ?? env.ONE_TAKE_SELF_TEST === '0'),
+    benchmark: !(values['no-benchmark'] ?? env.ONE_TAKE_BENCHMARK === '0'),
+    rendererMemoryMb,
   };
 }

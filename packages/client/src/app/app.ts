@@ -1,6 +1,8 @@
 /** The controller: wires microphone, detector, slides, persistence, preview and export to the views. */
 import {
   defaultExportRequest,
+  NO_HARDWARE,
+  normalizeExportRequest,
   planExport,
   stripExtension,
   type BrowserCapabilities,
@@ -64,8 +66,20 @@ export class App {
   private newArmedAt = 0;
   private continuationPrevId: string | null = null;
   private serverCaps: ServerCapabilities | null = null;
-  private browserCaps: BrowserCapabilities = { videoCodecs: [], audioCodecs: [], fileSystemAccess: false };
+  private browserCaps: BrowserCapabilities = {
+    videoCodecs: [],
+    audioCodecs: [],
+    fileSystemAccess: false,
+    hardware: { ...NO_HARDWARE },
+    benchmark: null,
+    hardwareConcurrency: null,
+    deviceMemoryGb: null,
+    gpu: null,
+    browser: null,
+  };
   private exportRequest: ExportRequest | null = null;
+  /** The timeline being previewed; built once per preview instead of once per animation frame. */
+  private previewTimeline: Timeline | null = null;
 
   constructor(root: HTMLElement) {
     this.refs = buildLayout(root);
@@ -129,6 +143,7 @@ export class App {
     }
     void detectBrowserCapabilities().then((caps) => {
       this.browserCaps = caps;
+      if (this.exportDialog.isOpen) this.exportDialog.refresh();
     });
     void this.refreshServer();
     const [meta, files, segments] = await Promise.all([
@@ -136,7 +151,7 @@ export class App {
       this.db.getSlideSource(),
       this.db.getSegments(),
     ]);
-    if (meta?.exportRequest) this.exportRequest = meta.exportRequest;
+    if (meta?.exportRequest) this.exportRequest = normalizeExportRequest(meta.exportRequest, null);
     if (files || segments.length > 0) {
       const dur = segments.reduce((a, s) => a + s.pcm.length / s.sampleRate, 0);
       this.refs.restoreText.textContent = `Previous session found: ${segments.length} phrases, ${fmtTime(dur)} recorded.`;
@@ -693,6 +708,7 @@ export class App {
     if (s.previewing) this.stopPreview();
     this.vad?.end();
     const tl = this.timeline('recorded');
+    this.previewTimeline = tl;
     s.previewing = true;
     if (this.vad) this.vad.gate = this.gateOpen();
     this.updateStatus();
@@ -702,7 +718,7 @@ export class App {
   }
 
   private onPreviewTick(index: number, now: number, total: number): void {
-    const items = this.timeline('recorded').items;
+    const items = (this.previewTimeline ?? this.timeline('recorded')).items;
     const it = items[index];
     if (!it) return;
     if (this.store.state.current !== it.seg.slide) this.showSlide(it.seg.slide);
@@ -713,6 +729,7 @@ export class App {
   stopPreview(): void {
     const s = this.store.state;
     s.previewing = false;
+    this.previewTimeline = null;
     this.preview.stop();
     this.list.setPlaying(null);
     this.refs.previewFlag.classList.remove('on');
@@ -827,6 +844,7 @@ export class App {
       exportDialog: this.exportDialog,
       serverCaps: () => this.serverCaps,
       browserCaps: () => this.browserCaps,
+      system: () => this.serverCaps?.system ?? null,
       refreshServer: () => this.refreshServer(),
       slides: () => this.store.state.slides,
       exportWith: (overrides: Partial<ExportRequest>, inMemory = false) =>
@@ -840,8 +858,12 @@ export class App {
     inMemory: boolean,
   ): Promise<Record<string, unknown>> {
     const base = this.exportRequest ?? defaultExportRequest(this.serverCaps?.defaultDirectory ?? null);
-    const request: ExportRequest = structuredClone({ ...base, ...overrides });
+    const request: ExportRequest = structuredClone(
+      normalizeExportRequest({ ...base, ...overrides }, this.serverCaps?.defaultDirectory ?? null),
+    );
     const plan = planExport(request, this.serverCaps, this.browserCaps);
+    const started = performance.now();
+    let encodeMs = 0;
     const result = await runExport({
       request,
       plan,
@@ -849,16 +871,24 @@ export class App {
       slides: this.store.state.slides,
       api: this.serverCaps ? this.api : null,
       signal: new AbortController().signal,
-      onProgress: () => undefined,
+      onProgress: (p) => {
+        if (p.stage === 'encoding') encodeMs = performance.now() - started;
+      },
       forceInMemory: inMemory,
     });
+    const elapsedMs = Math.round(performance.now() - started);
+    const timing = {
+      elapsedMs,
+      encodeMs: Math.round(encodeMs),
+      videoSeconds: this.timeline(request.order).total,
+    };
     if (result.kind === 'blob') {
       const bytes = new Uint8Array(await result.blob.arrayBuffer());
       let s = '';
       for (let i = 0; i < bytes.length; i += 0x8000)
         s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      return { kind: 'blob', name: result.name, base64: btoa(s), plan };
+      return { kind: 'blob', name: result.name, base64: btoa(s), plan, encoder: result.encoder, timing };
     }
-    return { ...result, plan };
+    return { ...result, plan, timing };
   }
 }

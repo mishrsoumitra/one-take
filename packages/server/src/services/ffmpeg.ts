@@ -90,6 +90,121 @@ export async function detectFfprobe(explicitPath: string | null): Promise<string
   return (await locate('ffprobe', explicitPath))?.path ?? null;
 }
 
+/** Parses `ffmpeg -hwaccels`: one method per line after the heading. */
+export function parseHwaccels(output: string): string[] {
+  return output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^hardware acceleration methods/i.test(l));
+}
+
+export async function detectHwaccels(ffmpegPath: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(ffmpegPath, ['-hide_banner', '-hwaccels'], { timeout: 10_000 });
+    return parseHwaccels(stdout);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Encodes a third of a second of a synthetic picture with `encoder` and throws the result away. An
+ * encoder that is compiled in but has no device or driver behind it fails here instead of failing the
+ * user's export later.
+ */
+export async function selfTestEncoder(
+  ffmpegPath: string,
+  encoder: string,
+  timeoutMs = 8000,
+): Promise<boolean> {
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=256x144:rate=10',
+        '-t',
+        '0.3',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:v',
+        encoder,
+        '-f',
+        'null',
+        '-',
+      ],
+      { timeout: timeoutMs, windowsHide: true },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface BenchmarkResult {
+  encoder: string;
+  frames: number;
+  seconds: number;
+  /** Frames per second of wall time, start-up included. */
+  fps: number;
+}
+
+/**
+ * Times an encode of `seconds` of synthetic 16:9 video at `height` with one encoder; null when it fails.
+ * Used by `npm run doctor --bench` to show which encoder is really the fastest on this machine.
+ */
+export async function benchmarkEncoder(
+  ffmpegPath: string,
+  encoder: string,
+  options: { height?: number; fps?: number; seconds?: number; preset?: string; timeoutMs?: number } = {},
+): Promise<BenchmarkResult | null> {
+  const height = options.height ?? 1080;
+  const width = Math.round((height * 16) / 9 / 2) * 2;
+  const fps = options.fps ?? 30;
+  const seconds = options.seconds ?? 6;
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-f',
+    'lavfi',
+    '-i',
+    // One new picture a second, repeated to `fps`: slide video as an encoder sees it (real slides change
+    // far less often), so software encoders get credit for skipping unchanged blocks as they will later.
+    `testsrc2=size=${width}x${height}:rate=1`,
+    '-t',
+    String(seconds),
+    '-vf',
+    `fps=${fps}`,
+    '-pix_fmt',
+    'yuv420p',
+    '-c:v',
+    encoder,
+    '-g',
+    String(fps * 4),
+  ];
+  if (options.preset && (encoder === 'libx264' || encoder === 'libx265'))
+    args.push('-preset', options.preset);
+  if (encoder === 'libx264') args.push('-tune', 'stillimage');
+  args.push('-f', 'null', '-');
+  const started = performance.now();
+  try {
+    await execFileAsync(ffmpegPath, args, { timeout: options.timeoutMs ?? 120_000, windowsHide: true });
+  } catch {
+    return null;
+  }
+  const wall = (performance.now() - started) / 1000;
+  const frames = fps * seconds;
+  return { encoder, frames, seconds: wall, fps: wall > 0 ? frames / wall : 0 };
+}
+
 /* ------------------------------------------------------------------ */
 /* Argument builder                                                    */
 /* ------------------------------------------------------------------ */
@@ -321,6 +436,10 @@ function containerArgs(spec: ProcessingSpec, outputName: string): { args: string
 /**
  * Builds the ffmpeg command for a processing spec. `outputPath` is the temporary file (single-file
  * containers) or the temporary folder (HLS/DASH) the result is written into.
+ *
+ * Decoding is left to the CPU on purpose: the upload is slide video, whose P-frames are nearly empty,
+ * and software decoding ran at thousands of frames per second where `-hwaccel videotoolbox` managed a
+ * few hundred (measured on an M2 Max: 1.5 s against 33 s for eleven minutes of 1080p).
  */
 export function buildFfmpegArgs(
   spec: ProcessingSpec,
@@ -343,7 +462,6 @@ export function buildFfmpegArgs(
     '-i',
     input.path,
   ];
-
   const v = spec.video;
   const outFps = v.mode === 'encode' && v.fps !== null ? v.fps : input.fps;
   const gop = Math.max(

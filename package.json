@@ -26,7 +26,9 @@
     "test": "npm run build:shared && vitest run",
     "test:watch": "vitest",
     "e2e": "npm run build && tsx packages/e2e/src/run.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
+    "doctor": "npm run build:shared && npm run build:server && node packages/server/dist/doctor.js",
+    "bench": "npm run doctor -- --bench"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

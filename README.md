@@ -98,9 +98,11 @@ Fonts come from the system font folders (plus Office's bundled fonts on a Mac). 
 
 ## How to use it
 
+The first time you open the app, a short welcome tour lists the three steps: load slides, start the mic and talk, preview and export. Click **Help** in the top bar to see it again at any time. The top bar shows the same three steps as numbered badges: the next thing to do is blue, finished steps get a green tick. While you work, a tip at the bottom of the stage says what to do next; close it with its ✕ (or untick *Show tips while I work* in the tour) if you don't need it.
+
 ### 1. Load your slides
 
-Drop a PDF or a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) onto the page, or click **Load slides** and pick one. Every page becomes one slide. A PowerPoint file goes through the local server first (see [PowerPoint files](#powerpoint-files)); Keynote and Google Slides decks should be exported as PDF or `.pptx`. You can also pick a set of PNG or JPG images; they are ordered by file name, with numbers sorted naturally (`slide2` comes before `slide10`). If a PDF and images are selected together, the PDF wins.
+Drop a PDF or a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) anywhere on the page, or click **Load slides** (or **Choose a file…** on the empty stage) and pick one. Every page becomes one slide. A PowerPoint file goes through the local server first (see [PowerPoint files](#powerpoint-files)); Keynote and Google Slides decks should be exported as PDF or `.pptx`. You can also pick a set of PNG or JPG images; they are ordered by file name, with numbers sorted naturally (`slide2` comes before `slide10`). If a PDF and images are selected together, the PDF wins.
 
 Slides are rasterised once, at up to 2560×1440, and kept as JPEGs. Decks with hundreds of pages are fine.
 
@@ -108,7 +110,7 @@ Slides are rasterised once, at up to 2560×1440, and kept as JPEGs. Decks with h
 
 Click **Start mic**. Chrome asks for microphone permission the first time. Pick a different microphone from the **Microphone** list if you have more than one.
 
-The **Mic level** meter shows your voice against a white line, the *speech line*. Your voice should go clearly past it, and room noise should stay under it. If not, move **Speech threshold** until it does. The line also rises by itself when the room gets noisy, so a fan or an air conditioner won't trigger a phrase.
+The **Mic level** meter shows your voice against a white line, the *speech line*. Your voice should go clearly past it, and room noise should stay under it. If not, move the **Speech line** slider until it does. The line also rises by itself when the room gets noisy, so a fan or an air conditioner won't trigger a phrase.
 
 ### 3. Talk, pause, talk again
 
@@ -419,7 +421,7 @@ The detector (`packages/client/src/core/vad.ts`) listens in 10 ms blocks and com
 
 | Setting                                  | Default  | What it does                                                                                   |
 | ---------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| Speech threshold                         | −45 dBFS | Sound above this counts as speech. The effective line is this or the noise floor plus 6 dB, whichever is higher. |
+| Speech line (threshold)                  | −45 dBFS | Sound above this counts as speech. The effective line is this or the noise floor plus 6 dB, whichever is higher. |
 | Phrase ends after                        | 0.7 s    | Silence this long ends the phrase. Shorter pauses stay in the recording.                       |
 | Pause between phrases                    | 0.15 s   | Silence inserted between phrases in the video. Plus 0.25 s on a slide change.                  |
 | Pre-roll (fixed)                         | 200 ms   | Audio from before the trigger that is kept, so the first syllable is never clipped.            |
@@ -763,9 +765,9 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 ## Troubleshooting
 
-**Nothing is recorded when I talk.** Watch the **Mic level** meter. Your voice must cross the white line. Lower **Speech threshold** until it does, or move closer to the microphone. Check that the right microphone is selected and that the page is not muted (`M`).
+**Nothing is recorded when I talk.** Watch the **Mic level** meter. Your voice must cross the white line. Lower the **Speech line** slider until it does, or move closer to the microphone. Check that the right microphone is selected and that the page is not muted (`M`).
 
-**The recording starts on its own.** Room noise is crossing the line. Raise **Speech threshold**, or wait a few seconds: the noise floor adapts and the line rises with it.
+**The recording starts on its own.** Room noise is crossing the line. Raise the **Speech line** slider, or wait a few seconds: the noise floor adapts and the line rises with it.
 
 **Phrases are cut off at the end.** Raise **Phrase ends after**. The default 0.7 s treats a longer pause as the end of a phrase.
 

@@ -41,6 +41,6 @@ export class LevelMeter {
     g.fillRect(x(input.armed ? input.threshold : input.settingThreshold) - 1, 0, 3, h);
     this.note.textContent = input.armed
       ? `speech line ${Math.round(input.threshold)} dB · room ${Math.round(input.noise)} dB`
-      : 'start the mic to see your level';
+      : 'Start the mic to see your level. Your voice should cross the white line.';
   }
 }

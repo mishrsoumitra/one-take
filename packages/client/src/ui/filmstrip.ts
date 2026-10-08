@@ -25,6 +25,11 @@ export class Filmstrip {
       this.container.appendChild(el);
       return el;
     });
+    if (slides.length === 0) {
+      this.container.appendChild(
+        h('div', { id: 'filmEmpty' }, 'Your slides appear here. Click one to jump to it.'),
+      );
+    }
     this.info.textContent = slides.length ? `${slides.length} slides` : '';
   }
 

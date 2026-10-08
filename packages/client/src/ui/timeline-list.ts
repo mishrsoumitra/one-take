@@ -31,7 +31,7 @@ export class TimelineList {
         h(
           'div',
           { id: 'segEmpty' },
-          'Nothing recorded yet. Phrases appear here in the order they will play.',
+          'Nothing recorded yet. Each phrase you say appears here, in the order it will play. Drag to reorder, ▶ to play from there, ✕ to delete.',
         ),
       );
       this.info.textContent = '';

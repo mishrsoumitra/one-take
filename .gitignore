@@ -10,3 +10,4 @@ coverage/
 /e2e-out/
 /packages/e2e/out/
 /packages/e2e/fixtures/
+.claude/worktrees/

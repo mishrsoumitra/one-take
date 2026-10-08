@@ -29,6 +29,7 @@ import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { ProjectStore } from '../storage/db.js';
+import { loadPrefs, savePrefs, type Prefs } from '../storage/prefs.js';
 import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
@@ -37,6 +38,7 @@ import { buildLayout, type LayoutRefs } from '../ui/layout.js';
 import { LevelMeter } from '../ui/meter.js';
 import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
+import { Welcome } from '../ui/welcome.js';
 
 import { Store } from './store.js';
 import { DEFAULT_SETTINGS, type PresentationPick, type ProjectMeta, type SlideSource } from './types.js';
@@ -57,6 +59,8 @@ export class App {
   private readonly list: TimelineList;
   private readonly exportDialog: ExportDialog;
   private readonly folderPicker: FolderPicker;
+  private readonly welcome: Welcome;
+  private prefs: Prefs = loadPrefs();
   private vad: VoiceActivityDetector | null = null;
   private sampleRate = 48000;
   private segmentCounter = 0;
@@ -100,6 +104,16 @@ export class App {
       onEnd: () => this.stopPreview(),
     });
     this.folderPicker = new FolderPicker(document.body, this.api);
+    this.welcome = new Welcome(document.body, {
+      onChooseSlides: () => this.refs.fileInput.click(),
+      onTipsChange: (on) => {
+        this.prefs = savePrefs({ tips: on });
+        this.updateCoach();
+      },
+      onClose: () => {
+        this.prefs = savePrefs({ welcomeSeen: true });
+      },
+    });
     this.exportDialog = new ExportDialog(document.body, {
       api: this.api,
       folderPicker: this.folderPicker,
@@ -164,7 +178,16 @@ export class App {
         this.refs.restore.classList.remove('on');
         void this.db.clear();
       };
+    } else if (!this.prefs.welcomeSeen) {
+      // First visit with nothing to resume: explain the three steps before anything else.
+      this.openWelcome();
     }
+    this.updateSteps();
+    this.updateCoach();
+  }
+
+  private openWelcome(): void {
+    this.welcome.open({ tips: this.prefs.tips });
   }
 
   async refreshServer(): Promise<ServerCapabilities | null> {
@@ -178,12 +201,12 @@ export class App {
     pill.classList.toggle('warn', this.serverCaps !== null && this.serverCaps.ffmpeg === null);
     this.refs.serverText.textContent = this.serverCaps
       ? this.serverCaps.ffmpeg
-        ? 'Server + ffmpeg'
-        : 'Server (no ffmpeg)'
-      : 'Server offline';
+        ? 'Saves to this computer'
+        : 'Saves to this computer · no ffmpeg'
+      : 'Local server off · browser download only';
     pill.title = this.serverCaps
-      ? `Saves to ${this.serverCaps.defaultDirectory}${this.serverCaps.ffmpeg ? `\nffmpeg ${this.serverCaps.ffmpeg.version} at ${this.serverCaps.ffmpeg.path}` : '\nInstall ffmpeg for HLS, DASH and compression'}\nPowerPoint files: converted with ${this.serverCaps.presentations.renderer}`
-      : 'Start the local server with "npm start" to save into any folder, or export in the browser.';
+      ? `The local server is running. Exports are saved into ${this.serverCaps.defaultDirectory} (you can pick another folder when exporting).${this.serverCaps.ffmpeg ? `\nffmpeg ${this.serverCaps.ffmpeg.version} at ${this.serverCaps.ffmpeg.path}` : '\nInstall ffmpeg for HLS, DASH and compression.'}\nPowerPoint files are converted with ${this.serverCaps.presentations.renderer}.`
+      : 'The local server is not running, so exports download through the browser and PowerPoint files cannot be converted. Start it with "npm start".';
     this.refs.dropHint.textContent = this.convertHint();
     if (this.serverCaps) {
       if (this.exportRequest === null)
@@ -211,18 +234,35 @@ export class App {
   private wire(): void {
     const r = this.refs;
     r.btnLoad.onclick = () => r.fileInput.click();
+    r.btnChoose.onclick = () => r.fileInput.click();
     r.fileInput.onchange = () => {
       void this.filesChosen(r.fileInput.files ?? []);
       r.fileInput.value = '';
     };
-    r.stage.addEventListener('dragover', (e) => {
+    r.btnHelp.onclick = () => this.openWelcome();
+    r.btnEmptyHelp.onclick = () => this.openWelcome();
+    r.btnCoachClose.onclick = () => {
+      this.prefs = savePrefs({ tips: false });
+      this.updateCoach();
+      this.toast.show('Tips hidden. Help in the top bar turns them back on.');
+    };
+    // Files can be dropped anywhere on the page, not only on the drop zone.
+    const dragging = (on: boolean) => {
+      document.body.classList.toggle('dragging', on);
+      r.drop.classList.toggle('over', on);
+    };
+    document.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer?.types.includes('Files') || this.dialogOpen()) return;
       e.preventDefault();
-      r.drop.classList.add('over');
+      dragging(true);
     });
-    r.stage.addEventListener('dragleave', () => r.drop.classList.remove('over'));
-    r.stage.addEventListener('drop', (e) => {
+    document.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget === null) dragging(false);
+    });
+    document.addEventListener('drop', (e) => {
+      if (this.dialogOpen()) return;
       e.preventDefault();
-      r.drop.classList.remove('over');
+      dragging(false);
       if (e.dataTransfer?.files.length) void this.filesChosen(e.dataTransfer.files);
     });
     r.btnArm.onclick = () => (this.store.state.armed ? this.stopMic() : void this.startMic());
@@ -273,7 +313,7 @@ export class App {
           if (this.store.state.previewing) this.stopPreview();
         },
       },
-      () => this.exportDialog.isOpen || this.folderPicker.isOpen,
+      () => this.dialogOpen(),
     );
     window.addEventListener('beforeunload', (e) => {
       if (this.store.state.armed || this.store.state.exporting) {
@@ -286,12 +326,18 @@ export class App {
   /* Slides                                                              */
   /* ------------------------------------------------------------------ */
 
+  /** True while a modal (export, folder picker, welcome) owns the keyboard and drops. */
+  private dialogOpen(): boolean {
+    return this.exportDialog.isOpen || this.folderPicker.isOpen || this.welcome.isOpen;
+  }
+
   async filesChosen(fileList: Iterable<File>): Promise<void> {
     const picked = slideSourceFromFiles(fileList);
     if (!picked) {
       this.toast.show('Please choose a PDF, a PowerPoint file or slide images');
       return;
     }
+    this.welcome.close();
     if (this.store.state.segments.length > 0 && !this.confirmTwice('replace')) return;
     const source = picked.kind === 'presentation' ? await this.convertPresentation(picked) : picked;
     if (!source) return;
@@ -357,15 +403,33 @@ export class App {
       this.showSlide(Math.min(this.store.state.current, slides.length - 1));
       this.refs.empty.style.display = 'none';
       this.refs.slideImg.style.display = 'block';
+      this.refs.overlay.hidden = false;
       this.refs.btnArm.disabled = false;
+      this.refs.btnArm.title = 'Start listening (R)';
+      this.refs.btnLoad.textContent = 'Change slides';
+      this.refs.deckName.textContent = this.deckLabel(source, slides.length);
+      this.refs.deckName.title = this.refs.deckName.textContent;
+      this.refs.deckName.hidden = false;
       this.list.render(this.store.state.segments, slides, false);
       this.updateButtons();
+      if (!this.prefs.tips) {
+        this.toast.show(
+          `${slides.length} slide${slides.length === 1 ? '' : 's'} loaded. Next: click Start mic and talk.`,
+        );
+      }
     } catch (error) {
       console.error(error);
       this.toast.show(`Could not load slides: ${(error as Error).message}`);
     } finally {
       this.hideLoading();
     }
+  }
+
+  /** What to call the loaded deck in the top bar: the file name, or a count for loose images. */
+  private deckLabel(source: SlideSource, count: number): string {
+    if (source.origin?.name) return source.origin.name;
+    if (source.kind === 'pdf') return source.files[0]?.name ?? 'slides.pdf';
+    return `${count} image${count === 1 ? '' : 's'}`;
   }
 
   private confirmTwice(kind: 'replace' | 'new'): boolean {
@@ -433,7 +497,57 @@ export class App {
     const has = s.segments.length > 0;
     this.refs.btnPreview.disabled = !has || s.exporting;
     this.refs.btnExport.disabled = !has || s.exporting;
-    this.refs.btnMute.disabled = !s.armed;
+    this.refs.btnPreview.title = has ? 'Play back what you have recorded so far' : 'Record something first';
+    this.refs.btnExport.title = has ? 'Save the finished video' : 'Record something first';
+    this.refs.btnMute.hidden = !s.armed;
+    this.updateSteps();
+    this.updateCoach();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Guidance: step badges in the top bar and the tip on the stage       */
+  /* ------------------------------------------------------------------ */
+
+  private setStep(badge: HTMLElement, state: 'todo' | 'active' | 'done'): void {
+    badge.classList.toggle('active', state === 'active');
+    badge.classList.toggle('done', state === 'done');
+  }
+
+  /** 1 → 2 → 3 in the top bar: which step is done, which one is next. */
+  private updateSteps(): void {
+    const s = this.store.state;
+    const slides = s.slides.length > 0;
+    const recorded = s.segments.length > 0;
+    this.setStep(this.refs.stepSlides, slides ? 'done' : 'active');
+    this.setStep(this.refs.stepMic, !slides ? 'todo' : recorded && !s.armed ? 'done' : 'active');
+    this.setStep(this.refs.stepExport, recorded && !s.armed ? 'active' : 'todo');
+  }
+
+  /** One sentence for the current moment, or null when there is nothing worth saying. */
+  private coachMessage(): string | null {
+    const s = this.store.state;
+    if (s.slides.length === 0 || s.previewing || s.exporting) return null;
+    const n = s.segments.length;
+    if (!s.armed) {
+      return n === 0
+        ? 'Step 2 · Click Start mic (or press R), then just talk. Pauses are cut out automatically.'
+        : 'Step 3 · Preview to check it, or Export video when you are done. Start mic again to keep recording.';
+    }
+    if (s.muted) return 'Muted. Press M or click Unmute to continue recording.';
+    if (n >= 3) return null;
+    if (s.speaking) {
+      return 'Recording. Pause whenever you like: the phrase is kept, the pause is not.';
+    }
+    if (n === 0) {
+      return 'Listening. Speak whenever you are ready. Your voice should push the meter below past the white line.';
+    }
+    return 'Recording works. Use → ← to change slides as you talk; Backspace removes the last phrase.';
+  }
+
+  private updateCoach(): void {
+    const message = this.prefs.tips ? this.coachMessage() : null;
+    this.refs.coach.hidden = message === null;
+    if (message !== null) this.refs.coachText.textContent = message;
   }
 
   /* ------------------------------------------------------------------ */
@@ -506,7 +620,9 @@ export class App {
     this.updateStatus();
     this.updateButtons();
     this.meterLoop();
-    this.toast.show('Listening. Speak whenever you are ready; silence is skipped automatically.');
+    if (!this.prefs.tips) {
+      this.toast.show('Listening. Speak whenever you are ready; silence is skipped automatically.');
+    }
   }
 
   stopMic(): void {
@@ -653,7 +769,11 @@ export class App {
     this.refs.btnArm.textContent = s.armed ? 'Stop mic' : 'Start mic';
     this.refs.btnArm.classList.toggle('rec', s.armed);
     this.refs.btnArm.classList.toggle('primary', !s.armed);
+    if (s.slides.length > 0) this.refs.btnArm.title = s.armed ? 'Stop listening (R)' : 'Start listening (R)';
     this.refs.btnMute.textContent = s.muted ? 'Unmute' : 'Mute';
+    this.refs.btnMute.title = s.muted ? 'Unmute (M)' : 'Mute (M)';
+    this.updateSteps();
+    this.updateCoach();
   }
 
   private meterLoop(): void {
@@ -817,9 +937,14 @@ export class App {
     this.film.render([]);
     this.refs.slideImg.style.display = 'none';
     this.refs.empty.style.display = '';
+    this.refs.overlay.hidden = true;
     this.refs.slideNo.textContent = '–';
     this.refs.slideTime.textContent = '';
     this.refs.btnArm.disabled = true;
+    this.refs.btnArm.title = 'Load your slides first';
+    this.refs.btnLoad.textContent = 'Load slides';
+    this.refs.deckName.hidden = true;
+    this.refs.deckName.textContent = '';
     this.list.render([], [], false);
     this.updateSlideStats();
     this.updateButtons();

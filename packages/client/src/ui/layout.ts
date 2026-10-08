@@ -1,10 +1,17 @@
 import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
 
 import { h } from './dom.js';
+import { shortcut } from './kbd.js';
 
 export interface LayoutRefs {
   fileInput: HTMLInputElement;
   btnLoad: HTMLButtonElement;
+  /** Name of the loaded deck, next to the Load button. */
+  deckName: HTMLElement;
+  /** Numbered badges in the top bar: 1 slides, 2 mic, 3 export. */
+  stepSlides: HTMLElement;
+  stepMic: HTMLElement;
+  stepExport: HTMLElement;
   micSelect: HTMLSelectElement;
   btnArm: HTMLButtonElement;
   btnMute: HTMLButtonElement;
@@ -17,14 +24,20 @@ export interface LayoutRefs {
   btnPreview: HTMLButtonElement;
   btnExport: HTMLButtonElement;
   btnNew: HTMLButtonElement;
+  btnHelp: HTMLButtonElement;
   stage: HTMLElement;
   empty: HTMLElement;
+  /** The big "choose a file" button inside the empty stage. */
+  btnChoose: HTMLButtonElement;
+  btnEmptyHelp: HTMLButtonElement;
   drop: HTMLElement;
   /** Under the drop zone: which deck formats the server can convert right now. */
   dropHint: HTMLElement;
   slideImg: HTMLImageElement;
   navPrev: HTMLButtonElement;
   navNext: HTMLButtonElement;
+  /** The slide-number badge; hidden while no slides are loaded. */
+  overlay: HTMLElement;
   slideNo: HTMLElement;
   slideTime: HTMLElement;
   capFlag: HTMLElement;
@@ -38,6 +51,10 @@ export interface LayoutRefs {
   btnDiscard: HTMLButtonElement;
   loading: HTMLElement;
   loadingText: HTMLElement;
+  /** The "what to do next" tip at the bottom of the stage. */
+  coach: HTMLElement;
+  coachText: HTMLElement;
+  btnCoachClose: HTMLButtonElement;
   meter: HTMLCanvasElement;
   meterNote: HTMLElement;
   thr: HTMLInputElement;
@@ -52,12 +69,13 @@ export interface LayoutRefs {
   segInfo: HTMLElement;
 }
 
-function kbd(text: string): HTMLElement {
-  return h('kbd', null, text);
+function stepBadge(id: string, n: number, title: string): HTMLElement {
+  return h('span', { class: 'step', id, title, attrs: { 'aria-label': `Step ${n}: ${title}` } }, String(n));
 }
 
 /** Builds the static page skeleton and returns handles to everything the app updates. */
 export function buildLayout(root: HTMLElement): LayoutRefs {
+  /* ---------------------------------------------------------------- top bar */
   const fileInput = h('input', {
     type: 'file',
     id: 'fileIn',
@@ -65,91 +83,113 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     multiple: true,
     hidden: true,
   });
-  const btnLoad = h('button', { id: 'btnLoad' }, 'Load slides');
+  const btnLoad = h('button', { id: 'btnLoad', title: 'PDF, PowerPoint or PNG / JPG images' }, 'Load slides');
+  const deckName = h('span', { class: 'deck', id: 'deckName', hidden: true });
+  const stepSlides = stepBadge('stepSlides', 1, 'Load your slides');
+  const stepMic = stepBadge('stepMic', 2, 'Start the mic and talk');
+  const stepExport = stepBadge('stepExport', 3, 'Preview and export');
+
   const micSelect = h(
     'select',
-    { id: 'micSel', title: 'Microphone' },
+    { id: 'micSel', title: 'Which microphone to use' },
     h('option', { value: '' }, 'Default microphone'),
   );
-  const btnArm = h('button', { id: 'btnArm', class: 'primary', disabled: true }, 'Start mic');
-  const btnMute = h('button', { id: 'btnMute', disabled: true }, 'Mute');
+  const btnArm = h(
+    'button',
+    { id: 'btnArm', class: 'primary', disabled: true, title: 'Load your slides first' },
+    'Start mic',
+  );
+  const btnMute = h('button', { id: 'btnMute', hidden: true, title: 'Mute (M)' }, 'Mute');
   const statusText = h('span', { id: 'statusText' }, 'Mic off');
   const statusPill = h('span', { class: 'pill', id: 'status' }, h('span', { class: 'dot' }), statusText);
-  const serverText = h('span', null, 'Server…');
-  const serverPill = h(
-    'span',
-    { class: 'pill server', id: 'serverPill', title: 'Local save server' },
-    h('span', { class: 'dot' }),
-    serverText,
-  );
   const totalTime = h('b', { id: 'totalTime' }, '0:00');
   const segCount = h('b', { id: 'segCount' }, '0');
-  const btnPreview = h('button', { id: 'btnPreview', disabled: true }, 'Preview');
-  const btnExport = h('button', { id: 'btnExport', class: 'primary', disabled: true }, 'Export video');
+
+  const btnPreview = h(
+    'button',
+    { id: 'btnPreview', disabled: true, title: 'Play back what you have recorded so far' },
+    'Preview',
+  );
+  const btnExport = h(
+    'button',
+    { id: 'btnExport', class: 'primary', disabled: true, title: 'Save the finished video' },
+    'Export video',
+  );
   const btnNew = h(
     'button',
     { id: 'btnNew', class: 'ghost', title: 'Discard everything and start a new lecture' },
     'New',
   );
+  const btnHelp = h(
+    'button',
+    { id: 'btnHelp', class: 'ghost help', title: 'How it works' },
+    h('span', { class: 'q', attrs: { 'aria-hidden': 'true' } }, '?'),
+    'Help',
+  );
 
   const top = h(
     'header',
     { id: 'top' },
-    h('div', { class: 'brand' }, 'One Take ', h('small', null, 'slides + your voice, pauses removed')),
+    h('div', { class: 'brand' }, 'One Take'),
     fileInput,
-    btnLoad,
-    micSelect,
-    btnArm,
-    btnMute,
-    statusPill,
-    h('span', { class: 'stat' }, 'Recorded ', totalTime, ' · ', segCount, ' phrases'),
+    h('div', { class: 'group', id: 'gSlides' }, stepSlides, btnLoad, deckName),
+    h(
+      'div',
+      { class: 'group', id: 'gMic' },
+      stepMic,
+      btnArm,
+      micSelect,
+      btnMute,
+      statusPill,
+      h(
+        'span',
+        { class: 'stat', title: 'Total speech recorded so far' },
+        totalTime,
+        ' · ',
+        segCount,
+        ' phrases',
+      ),
+    ),
     h('div', { class: 'spacer' }),
-    serverPill,
-    btnPreview,
-    btnExport,
-    btnNew,
+    h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnExport),
+    h('div', { class: 'group tools' }, btnNew, btnHelp),
   );
 
+  /* ------------------------------------------------------------------ stage */
   const dropHint = h(
     'span',
     { class: 'hint', id: 'dropHint' },
     'PowerPoint files are converted by the local server. Keynote or Google Slides: export as PDF first.',
   );
+  const btnChoose = h('button', { class: 'primary big', id: 'btnChoose' }, 'Choose a file…');
   const drop = h(
     'div',
     { id: 'drop' },
-    'Drop a PDF or PowerPoint file here, or a set of slide images (PNG / JPG)',
-    h('br'),
+    h('div', { class: 'icon', attrs: { 'aria-hidden': 'true' } }),
+    h('div', { class: 'what' }, 'Drop a PDF, a PowerPoint file or PNG / JPG slide images here'),
+    btnChoose,
     dropHint,
   );
+  const btnEmptyHelp = h('button', { class: 'ghost', id: 'btnEmptyHelp' }, 'Show me how it works');
   const empty = h(
     'div',
     { id: 'empty' },
-    h('h1', null, 'Record a lecture in one take'),
+    h('div', { class: 'tag' }, 'Step 1 of 3'),
+    h('h1', null, 'Load your slides'),
     h(
       'p',
       null,
-      'Load your slides, start the mic, and just talk. Only the moments you speak are kept. Thinking pauses are cut out, so the video sounds like one continuous take. Move through the slides as you go; the video follows.',
+      'Then start the mic and just talk. Only the moments you speak are kept, so the video sounds like one continuous take.',
     ),
     drop,
     h(
-      'ol',
-      null,
-      h(
-        'li',
-        null,
-        'Load slides · 2. Start mic · 3. Speak; use ',
-        kbd('→'),
-        ' ',
-        kbd('←'),
-        ' or a clicker to change slides',
-      ),
-      h('li', null, kbd('Backspace'), ' removes the last phrase if you flubbed it, then just say it again'),
-      h(
-        'li',
-        null,
-        'Export when done: MP4, WebM, MKV, MOV, HLS or DASH, saved to any folder on this computer',
-      ),
+      'div',
+      { class: 'then' },
+      h('span', { class: 'step' }, '2'),
+      'Start the mic and talk',
+      h('span', { class: 'step' }, '3'),
+      'Preview and export',
+      btnEmptyHelp,
     ),
   );
   const slideImg = h('img', { id: 'slideImg', alt: '' });
@@ -157,6 +197,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const navNext = h('button', { class: 'nav next', id: 'navNext', title: 'Next slide (→)' }, '›');
   const slideNo = h('span', { id: 'slideNo' }, '–');
   const slideTime = h('span', { class: 'hint', id: 'slideTime' });
+  const overlay = h('div', { id: 'overlay', hidden: true }, slideNo, slideTime);
   const capFlagText = h('span', null, 'RECORDING');
   const capFlag = h('div', { id: 'capFlag' }, h('span', { class: 'dot' }), capFlagText);
   const previewTime = h('span', { id: 'previewTime' }, '0:00');
@@ -167,7 +208,19 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const btnDiscard = h('button', { id: 'btnDiscard' }, 'Discard');
   const restore = h('div', { id: 'restore' }, restoreText, btnRestore, btnDiscard);
   const loadingText = h('span', { id: 'loadingText' }, 'Loading…');
-  const loading = h('div', { id: 'loading' }, loadingText);
+  const loading = h('div', { id: 'loading' }, h('span', { class: 'spinner' }), loadingText);
+  const coachText = h('span', { id: 'coachText' });
+  const btnCoachClose = h(
+    'button',
+    {
+      class: 'x',
+      id: 'btnCoachClose',
+      title: 'Hide tips (Help turns them back on)',
+      attrs: { 'aria-label': 'Hide tips' },
+    },
+    '✕',
+  );
+  const coach = h('div', { id: 'coach', hidden: true }, coachText, btnCoachClose);
   const stage = h(
     'main',
     { id: 'stage' },
@@ -175,15 +228,24 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     slideImg,
     navPrev,
     navNext,
-    h('div', { id: 'overlay' }, slideNo, slideTime),
+    overlay,
     capFlag,
     previewFlag,
     restore,
+    coach,
     loading,
   );
 
+  /* ------------------------------------------------------------- bottom bar */
   const meter = h('canvas', { id: 'meter', attrs: { height: '30' } });
-  const meterNote = h('span', { class: 'hint', id: 'meterNote', style: 'width:220px' });
+  const meterNote = h('span', { class: 'hint', id: 'meterNote' });
+  const serverText = h('span', null, 'Server…');
+  const serverPill = h(
+    'span',
+    { class: 'pill server', id: 'serverPill', title: 'Local save server' },
+    h('span', { class: 'dot' }),
+    serverText,
+  );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
   const gap = h('input', { type: 'range', id: 'gap', min: 0, max: 1000, step: 50, value: '150' });
@@ -193,13 +255,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const bottom = h(
     'section',
     { id: 'bottom' },
-    h(
-      'div',
-      { id: 'meterWrap' },
-      h('span', { class: 'hint', style: 'width:70px' }, 'Mic level'),
-      meter,
-      meterNote,
-    ),
+    h('div', { id: 'meterWrap' }, h('span', { class: 'label' }, 'Mic level'), meter, meterNote, serverPill),
     h(
       'div',
       { id: 'controls' },
@@ -207,16 +263,16 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
         'label',
         {
           title:
-            'Sound above this level counts as speech. Your voice should go clearly past the line, room noise should stay under it.',
+            'Sound above this line counts as speech. Your voice should go clearly past it, room noise should stay under it.',
         },
-        'Speech threshold ',
+        h('span', { class: 'label' }, 'Speech line'),
         thr,
         thrV,
       ),
       h(
         'label',
         { title: 'How much silence to leave between phrases in the finished video.' },
-        'Pause between phrases ',
+        h('span', { class: 'label' }, 'Pause between phrases'),
         gap,
         gapV,
       ),
@@ -226,26 +282,22 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
           title:
             'A phrase ends after this much silence. Pauses shorter than this stay in the video untouched.',
         },
-        'Phrase ends after ',
+        h('span', { class: 'label' }, 'Phrase ends after'),
         hang,
         hangV,
       ),
       h(
         'span',
-        { class: 'hint', id: 'keys' },
-        kbd('→'),
-        kbd('←'),
-        ' slides · ',
-        kbd('Backspace'),
-        ' undo last phrase · ',
-        kbd('M'),
-        ' mute · ',
-        kbd('R'),
-        ' mic on/off',
+        { class: 'hint keys', id: 'keys' },
+        shortcut('slides', '→', '←'),
+        shortcut('remove last phrase', 'Backspace'),
+        shortcut('mute', 'M'),
+        shortcut('mic on / off', 'R'),
       ),
     ),
   );
 
+  /* ------------------------------------------------------------- side panel */
   const filmInfo = h('span', { id: 'filmInfo' });
   const film = h('div', { id: 'film' });
   const segInfo = h('span', { id: 'segInfo' });
@@ -262,27 +314,35 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   root.append(top, stage, bottom, side);
 
   return {
-    serverText,
     fileInput,
     btnLoad,
+    deckName,
+    stepSlides,
+    stepMic,
+    stepExport,
     micSelect,
     btnArm,
     btnMute,
     statusPill,
     statusText,
     serverPill,
+    serverText,
     totalTime,
     segCount,
     btnPreview,
     btnExport,
     btnNew,
+    btnHelp,
     stage,
     empty,
+    btnChoose,
+    btnEmptyHelp,
     drop,
     dropHint,
     slideImg,
     navPrev,
     navNext,
+    overlay,
     slideNo,
     slideTime,
     capFlag,
@@ -296,6 +356,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     btnDiscard,
     loading,
     loadingText,
+    coach,
+    coachText,
+    btnCoachClose,
     meter,
     meterNote,
     thr,

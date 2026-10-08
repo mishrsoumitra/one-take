@@ -37,10 +37,12 @@ body {
 }
 #app {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  /* minmax(0, …): the stage column may never grow past the window, whatever its content measures */
+  grid-template-columns: minmax(0, 1fr) 340px;
   grid-template-rows: auto 1fr auto;
   grid-template-areas: 'top top' 'stage side' 'bottom side';
   height: 100vh;
+  overflow: hidden;
 }
 button {
   font: inherit;
@@ -136,28 +138,116 @@ kbd {
   flex: 1;
 }
 
-/* top bar */
+/* top bar: brand, then the three numbered groups (slides, mic, export) and the tools */
 #top {
   grid-area: top;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 8px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
+  min-height: 54px;
 }
 #top .brand {
   font-weight: 700;
   letter-spacing: 0.3px;
   font-size: 16px;
-  margin-right: 6px;
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
-#top .brand small {
+#top .brand::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #fff 0 30%, var(--rec) 32% 100%);
+}
+#top .group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 6px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+}
+#top .group.tools {
+  background: transparent;
+  gap: 2px;
+  padding: 0;
+}
+#top .deck {
   color: var(--muted);
-  font-weight: 400;
-  margin-left: 6px;
   font-size: 12px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#micSel {
+  max-width: 170px;
+  font-size: 13px;
+  padding: 6px 6px;
+}
+#btnHelp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+#btnHelp:hover {
+  color: var(--text);
+}
+#btnHelp .q {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* numbered step badges: grey to do, blue for the next thing to do, green tick when done */
+.step {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: #262b36;
+  color: var(--muted);
+  border: 1px solid #3a4150;
+  line-height: 1;
+}
+.step.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(79, 140, 255, 0.18);
+}
+.step.done {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #06281a;
+  font-size: 0;
+}
+.step.done::after {
+  content: '✓';
+  font-size: 13px;
+  font-weight: 800;
 }
 .pill {
   display: inline-flex;
@@ -223,6 +313,8 @@ kbd {
 .stat {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 .stat b {
   color: var(--text);
@@ -239,6 +331,7 @@ kbd {
   background: #000;
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
 }
 #slideImg {
   max-width: 100%;
@@ -255,37 +348,121 @@ kbd {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
   text-align: center;
   padding: 30px;
   background: radial-gradient(60% 60% at 50% 40%, #171b24 0%, #0e1014 100%);
 }
+#empty .tag {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
 #empty h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
 }
 #empty p {
-  margin: 0;
+  margin: 0 0 6px;
   color: var(--muted);
   max-width: 520px;
 }
-#empty ol {
-  color: var(--muted);
-  text-align: left;
-  max-width: 560px;
-  margin: 4px 0 0;
-  padding-left: 20px;
-}
 #drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   border: 2px dashed #3a4150;
-  border-radius: 14px;
-  padding: 26px 34px;
+  border-radius: 16px;
+  padding: 28px 40px 22px;
   color: var(--muted);
+  max-width: 560px;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
 }
-#drop.over {
-  border-color: var(--accent);
+#drop .icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 2px solid #3a4150;
+  position: relative;
+  opacity: 0.8;
+}
+#drop .icon::before,
+#drop .icon::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: #8e97ab;
+  border-radius: 2px;
+}
+#drop .icon::before {
+  width: 18px;
+  height: 3px;
+  transform: translate(-50%, -50%);
+}
+#drop .icon::after {
+  width: 3px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+}
+#drop .what {
   color: var(--text);
+  font-size: 15px;
+}
+#drop .hint {
+  max-width: 440px;
+}
+#drop.over,
+body.dragging #drop {
+  border-color: var(--accent);
+  background: rgba(79, 140, 255, 0.08);
+  color: var(--text);
+}
+button.big {
+  padding: 10px 22px;
+  font-size: 15px;
+  border-radius: 10px;
+}
+#empty .then {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+#empty .then .step {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  margin-left: 10px;
+}
+#empty .then .step:first-child {
+  margin-left: 0;
+}
+#empty .then button {
+  margin-left: 8px;
+  font-size: 13px;
+  padding: 5px 10px;
+  color: var(--accent);
+}
+/* while a file is dragged over the page, the stage outlines itself as the target */
+body.dragging #stage::after {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  pointer-events: none;
+  z-index: 4;
 }
 .nav {
   position: absolute;
@@ -393,18 +570,71 @@ kbd {
 #restore.on {
   display: flex;
 }
+/* keep the empty-stage text clear of the resume banner on short windows */
+#stage:has(#restore.on) #empty {
+  padding-top: 90px;
+}
 #loading {
   position: absolute;
   inset: 0;
   display: none;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   background: rgba(14, 16, 20, 0.85);
   z-index: 6;
   font-size: 16px;
 }
 #loading.on {
   display: flex;
+}
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* the "what to do next" tip, bottom centre of the stage */
+#coach {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(720px, calc(100% - 200px));
+  background: rgba(21, 24, 31, 0.92);
+  border: 1px solid #3a4150;
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 8px 10px 8px 14px;
+  font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  z-index: 3;
+  backdrop-filter: blur(6px);
+}
+#coach .x,
+.welcome .box .x {
+  padding: 2px 7px;
+  font-size: 11px;
+  border-radius: 6px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+#coach .x:hover,
+.welcome .box .x:hover {
+  color: var(--text);
+  background: #232834;
 }
 
 /* bottom bar */
@@ -416,14 +646,36 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 #meterWrap {
   display: flex;
   align-items: center;
   gap: 12px;
 }
+#meterWrap .label {
+  width: 70px;
+  flex: none;
+}
+#meterNote {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 400px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#meterWrap .pill.server {
+  margin-left: auto;
+  flex: none;
+  padding: 3px 9px;
+  font-size: 11px;
+}
 #meter {
-  flex: 1;
+  /* a fixed min-width stops the canvas's own pixel width (set on every draw) from acting as a
+     minimum, which would let the bar ratchet wider and push the side panel off the screen */
+  flex: 1 1 0;
+  min-width: 160px;
   height: 30px;
   background: #0a0b0e;
   border-radius: 6px;
@@ -435,12 +687,20 @@ kbd {
   align-items: center;
   flex-wrap: wrap;
 }
+#controls label,
+#bottom .label {
+  color: var(--muted);
+  font-size: 12px;
+}
 #controls label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
+  cursor: help;
+}
+#controls label .label {
+  text-decoration: underline dotted #3a4150;
+  text-underline-offset: 3px;
 }
 #controls label b {
   color: var(--text);
@@ -451,6 +711,19 @@ kbd {
 }
 #keys {
   margin-left: auto;
+}
+/* keyboard shortcut lists: each shortcut wraps as one unit */
+.keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+}
+.keys .k {
+  white-space: nowrap;
+}
+.keys kbd + kbd {
+  margin-left: 3px;
 }
 
 /* side panel */
@@ -604,11 +877,18 @@ kbd {
   border-color: var(--rec);
   color: var(--rec);
 }
-#segEmpty {
+#segEmpty,
+#filmEmpty {
   color: var(--muted);
-  padding: 16px 10px;
+  padding: 16px 12px;
   font-size: 13px;
   text-align: center;
+  line-height: 1.5;
+}
+#filmEmpty {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
 }
 
 /* modals */
@@ -939,12 +1219,135 @@ kbd {
   font-size: 12px;
 }
 
-@media (max-width: 1500px) {
-  #top .brand small {
+/* welcome tour */
+.welcome .box {
+  width: 640px;
+  padding: 22px 26px 20px;
+  position: relative;
+}
+.welcome .box .x {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+}
+.welcome .head {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 18px;
+  padding-right: 24px;
+}
+.welcome .logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #fff 0 28%, var(--rec) 30% 100%);
+  box-shadow: 0 0 0 6px rgba(255, 75, 92, 0.15);
+  margin-top: 2px;
+}
+.welcome h3 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+.welcome .head p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.welcome ol.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.welcome ol.steps li {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  align-items: start;
+  background: var(--panel2);
+  border-radius: 10px;
+  padding: 11px 14px;
+}
+.welcome ol.steps .step {
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  margin-top: 1px;
+}
+.welcome ol.steps b {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 14px;
+}
+.welcome ol.steps span:not(.step) {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.welcome i {
+  font-style: normal;
+  color: var(--text);
+  font-weight: 600;
+}
+.welcome .notes {
+  margin: 14px 0 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.welcome .notes p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.welcome .notes b {
+  color: var(--text);
+}
+.welcome .keys {
+  display: flex;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.welcome .actions {
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.welcome .actions .tips {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 1380px) {
+  #top .deck {
     display: none;
   }
-  #top {
-    gap: 8px;
+  #micSel {
+    max-width: 130px;
+  }
+}
+@media (max-width: 1180px) {
+  #top .stat {
+    display: none;
+  }
+  #keys {
+    display: none;
   }
 }
 
@@ -960,6 +1363,12 @@ kbd {
   }
   .export .cols {
     grid-template-columns: 1fr;
+  }
+  .welcome .notes {
+    grid-template-columns: 1fr;
+  }
+  #coach {
+    max-width: calc(100% - 32px);
   }
 }
 

@@ -52,8 +52,9 @@ import {
   type ExportResult,
 } from '../export/runner.js';
 
-import { clear, h, replaceChildren } from './dom.js';
+import { clear, h, replaceChildren, syncRangeFill } from './dom.js';
 import { type FolderPicker } from './folder-picker.js';
+import { icon } from './icon.js';
 
 export interface ExportDialogDeps {
   api: ApiClient;
@@ -241,7 +242,7 @@ export class ExportDialog {
       'div',
       { class: 'folderrow' },
       e.folderPath,
-      h('button', { on: { click: () => void this.browse() } }, 'Browse…'),
+      h('button', { on: { click: () => void this.browse() } }, icon('folder-open', 16), 'Browse…'),
       h('label', { class: 'inline' }, e.overwrite, ' replace an existing file of the same name'),
     );
 
@@ -547,14 +548,19 @@ export class ExportDialog {
     e.prog = h(
       'div',
       { id: 'prog' },
-      h('div', { id: 'bar' }, e.bar),
+      h('div', { id: 'bar', class: 'progress' }, e.bar),
       h('div', { id: 'progText' }, e.progLabel, e.progPct),
       e.progDetail,
     );
-    e.result = h('div', { id: 'result' });
-    e.fallback = h('div', { class: 'fallback', hidden: true });
+    e.result = h('div', { id: 'result', class: 'alert success' });
+    e.fallback = h('div', { class: 'fallback alert warning', hidden: true });
 
-    e.btnExport = h('button', { class: 'primary', on: { click: () => void this.start() } }, 'Export');
+    e.btnExport = h(
+      'button',
+      { class: 'primary', on: { click: () => void this.start() } },
+      icon('download'),
+      'Export',
+    );
     e.btnCancel = h(
       'button',
       { class: 'danger', hidden: true, on: { click: () => this.cancel() } },
@@ -737,7 +743,7 @@ export class ExportDialog {
     replaceChildren(
       e.resources,
       ...lines.flatMap((l) => [
-        h('span', { class: `tag ${l.unit}` }, l.unit),
+        h('span', { class: `tag chip-tag ${l.unit}` }, l.unit),
         h('span', { class: 'stage' }, l.stage),
         h(
           'span',
@@ -924,6 +930,7 @@ export class ExportDialog {
     e.crf.max = String(range.max);
     e.crf.value = String(r.compression.crf);
     e.crfV.textContent = String(r.compression.crf);
+    syncRangeFill(e.crf);
     e.tuneRow.hidden = r.compression.codec !== 'h264';
     e.compNote.textContent = compressionPossible
       ? ''

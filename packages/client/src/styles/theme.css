@@ -1,0 +1,110 @@
+/*
+ * One Take is skinned with grauity, Newton School's design system (@newtonschool/grauity).
+ *
+ * tokens.css from that package is imported before this file. It defines the primitives
+ * (--neutral-*, --brand-*, --spacing-*, --corner-radius-*, --font-*) at :root, the light semantic
+ * tokens (--bg-*, --text-*, --border-*) at :root / .grauity-theme-light and the dark ones at
+ * .grauity-theme-dark. <html> carries one of those two classes; the app toggles it.
+ *
+ * This file adds the brand font, the handful of short names the app's own stylesheet uses for
+ * the tokens it reaches for most, and the base element styles.
+ */
+
+/* Mona Sans, the Newton School typeface and grauity's --font-family. Bundled (OFL, see
+   public/fonts/OFL-MonaSans.txt) so the app never fetches a font from the network. */
+@font-face {
+  font-family: 'Mona Sans';
+  src:
+    url('/fonts/MonaSansVF.woff2') format('woff2-variations'),
+    url('/fonts/MonaSansVF.woff2') format('woff2');
+  font-weight: 200 900;
+  font-display: swap;
+}
+
+:root {
+  /* surfaces */
+  --bg: var(--bg-subtle-primary-default);
+  --panel: var(--bg-subtle-secondary-default);
+  --panel2: var(--bg-subtle-tertiary-default);
+  --line: var(--border-subtle-primary-default);
+  /* text */
+  --text: var(--text-emphasis-primary-default);
+  --muted: var(--text-emphasis-secondary-default);
+  /* brand blue: the next step, primary actions, the current slide */
+  --accent: var(--bg-emphasis-brand-default);
+  --accent-hover: var(--bg-emphasis-brand-hover);
+  --accent-text: var(--text-emphasis-brand-default);
+  --accent-tint: var(--bg-subtle-brand-default);
+  --accent-line: var(--border-emphasis-brand-default);
+  /* recording red */
+  --rec: var(--bg-emphasis-error-default);
+  --rec-hover: var(--bg-emphasis-error-hover);
+  --rec-text: var(--text-emphasis-error-default);
+  --rec-tint: var(--bg-subtle-error-default);
+  --rec-line: var(--border-emphasis-error-default);
+  /* success green: finished steps, preview, the server */
+  --ok: var(--bg-emphasis-success-default);
+  --ok-text: var(--text-emphasis-success-default);
+  --ok-tint: var(--bg-subtle-success-default);
+  --ok-line: var(--border-emphasis-success-default);
+  /* amber: muted mic, warnings */
+  --warn: var(--bg-emphasis-yellow-default);
+  --warn-text: var(--text-emphasis-yellow-default);
+  --warn-tint: var(--bg-subtle-yellow-default);
+  --warn-line: var(--border-emphasis-yellow-default);
+  /* the slide stage is a projector: black in both themes */
+  --stage: #000;
+  /* grauity's code font with the usual system fallbacks behind it */
+  --mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* grauity Modal and floating-card shadows */
+  --shadow-modal: 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+/* A dialog should sit above the dimmed page: one step lighter than the page in the dark theme,
+   plain white in the light one. */
+.grauity-theme-dark {
+  color-scheme: dark;
+  --modal: var(--bg-subtle-secondary-default);
+}
+.grauity-theme-light {
+  color-scheme: light;
+  --modal: var(--bg-subtle-primary-default);
+}
+
+* {
+  box-sizing: border-box;
+}
+[hidden] {
+  display: none !important;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-family);
+  font-size: var(--font-size-14px);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+b,
+strong {
+  font-weight: var(--font-weight-bold);
+}
+code {
+  font-family: var(--mono);
+  font-size: var(--font-size-12px);
+  line-height: 1.4;
+}
+.hint {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+}
+.spacer {
+  flex: 1;
+}

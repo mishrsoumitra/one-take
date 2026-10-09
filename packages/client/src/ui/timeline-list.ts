@@ -3,6 +3,7 @@ import { fmtSec, fmtTime } from '../core/format.js';
 import { segmentDuration, totalDuration, type Segment } from '../core/timeline.js';
 
 import { clear, h } from './dom.js';
+import { icon } from './icon.js';
 
 export interface TimelineListHandlers {
   onPlay: (index: number) => void;
@@ -80,8 +81,9 @@ export class TimelineList {
         h(
           'button',
           {
-            class: 'play',
+            class: 'icon xs play',
             title: 'Play from here',
+            attrs: { 'aria-label': `Play from phrase ${i + 1}` },
             on: {
               click: (e) => {
                 e.stopPropagation();
@@ -89,13 +91,14 @@ export class TimelineList {
               },
             },
           },
-          '▶',
+          icon('play', 16),
         ),
         h(
           'button',
           {
-            class: 'del',
+            class: 'icon xs del',
             title: 'Delete this phrase',
+            attrs: { 'aria-label': `Delete phrase ${i + 1}` },
             on: {
               click: (e) => {
                 e.stopPropagation();
@@ -103,7 +106,7 @@ export class TimelineList {
               },
             },
           },
-          '✕',
+          icon('close', 16),
         ),
       );
       this.rows.push(row);

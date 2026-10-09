@@ -1,6 +1,7 @@
 import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
 
-import { h } from './dom.js';
+import { h, label } from './dom.js';
+import { icon, nstMark } from './icon.js';
 import { shortcut } from './kbd.js';
 
 export interface LayoutRefs {
@@ -25,6 +26,8 @@ export interface LayoutRefs {
   btnExport: HTMLButtonElement;
   btnNew: HTMLButtonElement;
   btnHelp: HTMLButtonElement;
+  /** Switches between grauity's dark and light themes. */
+  btnTheme: HTMLButtonElement;
   stage: HTMLElement;
   empty: HTMLElement;
   /** The big "choose a file" button inside the empty stage. */
@@ -69,8 +72,14 @@ export interface LayoutRefs {
   segInfo: HTMLElement;
 }
 
+/** A numbered step badge; the number gives way to a tick once the step is done. */
 function stepBadge(id: string, n: number, title: string): HTMLElement {
-  return h('span', { class: 'step', id, title, attrs: { 'aria-label': `Step ${n}: ${title}` } }, String(n));
+  return h(
+    'span',
+    { class: 'step', id, title, attrs: { 'aria-label': `Step ${n}: ${title}` } },
+    h('span', { class: 'n' }, String(n)),
+    icon('check', 16),
+  );
 }
 
 /** Builds the static page skeleton and returns handles to everything the app updates. */
@@ -83,7 +92,12 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     multiple: true,
     hidden: true,
   });
-  const btnLoad = h('button', { id: 'btnLoad', title: 'PDF, PowerPoint or PNG / JPG images' }, 'Load slides');
+  const btnLoad = h(
+    'button',
+    { id: 'btnLoad', title: 'PDF, PowerPoint or PNG / JPG images' },
+    icon('upload'),
+    label('Load slides'),
+  );
   const deckName = h('span', { class: 'deck', id: 'deckName', hidden: true });
   const stepSlides = stepBadge('stepSlides', 1, 'Load your slides');
   const stepMic = stepBadge('stepMic', 2, 'Start the mic and talk');
@@ -97,9 +111,15 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const btnArm = h(
     'button',
     { id: 'btnArm', class: 'primary', disabled: true, title: 'Load your slides first' },
-    'Start mic',
+    icon('mic'),
+    label('Start mic'),
   );
-  const btnMute = h('button', { id: 'btnMute', hidden: true, title: 'Mute (M)' }, 'Mute');
+  const btnMute = h(
+    'button',
+    { id: 'btnMute', hidden: true, title: 'Mute (M)' },
+    icon('micmute'),
+    label('Mute'),
+  );
   const statusText = h('span', { id: 'statusText' }, 'Mic off');
   const statusPill = h('span', { class: 'pill', id: 'status' }, h('span', { class: 'dot' }), statusText);
   const totalTime = h('b', { id: 'totalTime' }, '0:00');
@@ -108,29 +128,43 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const btnPreview = h(
     'button',
     { id: 'btnPreview', disabled: true, title: 'Play back what you have recorded so far' },
-    'Preview',
+    icon('play'),
+    label('Preview'),
   );
   const btnExport = h(
     'button',
     { id: 'btnExport', class: 'primary', disabled: true, title: 'Save the finished video' },
-    'Export video',
+    icon('download'),
+    label('Export video'),
   );
   const btnNew = h(
     'button',
     { id: 'btnNew', class: 'ghost', title: 'Discard everything and start a new lecture' },
-    'New',
+    icon('plus'),
+    label('New'),
   );
   const btnHelp = h(
     'button',
-    { id: 'btnHelp', class: 'ghost help', title: 'How it works' },
-    h('span', { class: 'q', attrs: { 'aria-hidden': 'true' } }, '?'),
-    'Help',
+    { id: 'btnHelp', class: 'ghost', title: 'How it works' },
+    icon('question-circle'),
+    label('Help'),
+  );
+  const btnTheme = h(
+    'button',
+    { id: 'btnTheme', class: 'ghost icon', title: 'Switch to the light theme' },
+    icon('sun'),
   );
 
   const top = h(
     'header',
     { id: 'top' },
-    h('div', { class: 'brand' }, 'One Take'),
+    h(
+      'div',
+      { class: 'brand', title: 'One Take, by Newton School' },
+      h('span', { class: 'mark' }, nstMark()),
+      h('span', { class: 'name' }, 'One Take'),
+      h('span', { class: 'by' }, 'Newton School'),
+    ),
     fileInput,
     h('div', { class: 'group', id: 'gSlides' }, stepSlides, btnLoad, deckName),
     h(
@@ -152,7 +186,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     ),
     h('div', { class: 'spacer' }),
     h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnExport),
-    h('div', { class: 'group tools' }, btnNew, btnHelp),
+    h('div', { class: 'group tools' }, btnNew, btnHelp, btnTheme),
   );
 
   /* ------------------------------------------------------------------ stage */
@@ -161,11 +195,16 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     { class: 'hint', id: 'dropHint' },
     'PowerPoint files are converted by the local server. Keynote or Google Slides: export as PDF first.',
   );
-  const btnChoose = h('button', { class: 'primary big', id: 'btnChoose' }, 'Choose a file…');
+  const btnChoose = h(
+    'button',
+    { class: 'primary big', id: 'btnChoose' },
+    icon('folder-open'),
+    label('Choose a file…'),
+  );
   const drop = h(
     'div',
     { id: 'drop' },
-    h('div', { class: 'icon', attrs: { 'aria-hidden': 'true' } }),
+    h('div', { class: 'icon', attrs: { 'aria-hidden': 'true' } }, icon('upload', 24)),
     h('div', { class: 'what' }, 'Drop a PDF, a PowerPoint file or PNG / JPG slide images here'),
     btnChoose,
     dropHint,
@@ -193,8 +232,21 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     ),
   );
   const slideImg = h('img', { id: 'slideImg', alt: '' });
-  const navPrev = h('button', { class: 'nav prev', id: 'navPrev', title: 'Previous slide (←)' }, '‹');
-  const navNext = h('button', { class: 'nav next', id: 'navNext', title: 'Next slide (→)' }, '›');
+  const navPrev = h(
+    'button',
+    {
+      class: 'nav prev',
+      id: 'navPrev',
+      title: 'Previous slide (←)',
+      attrs: { 'aria-label': 'Previous slide' },
+    },
+    icon('chevron-left', 24),
+  );
+  const navNext = h(
+    'button',
+    { class: 'nav next', id: 'navNext', title: 'Next slide (→)', attrs: { 'aria-label': 'Next slide' } },
+    icon('chevron-right', 24),
+  );
   const slideNo = h('span', { id: 'slideNo' }, '–');
   const slideTime = h('span', { class: 'hint', id: 'slideTime' });
   const overlay = h('div', { id: 'overlay', hidden: true }, slideNo, slideTime);
@@ -218,7 +270,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       title: 'Hide tips (Help turns them back on)',
       attrs: { 'aria-label': 'Hide tips' },
     },
-    '✕',
+    icon('close', 16),
   );
   const coach = h('div', { id: 'coach', hidden: true }, coachText, btnCoachClose);
   const stage = h(
@@ -305,9 +357,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const side = h(
     'aside',
     { id: 'side' },
-    h('h2', null, 'Slides ', filmInfo),
+    h('h2', null, icon('image', 16), 'Slides ', filmInfo),
     film,
-    h('h2', null, 'Timeline ', segInfo),
+    h('h2', null, icon('waveform', 16), 'Timeline ', segInfo),
     segs,
   );
 
@@ -333,6 +385,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     btnExport,
     btnNew,
     btnHelp,
+    btnTheme,
     stage,
     empty,
     btnChoose,

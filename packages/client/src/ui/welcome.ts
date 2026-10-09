@@ -1,4 +1,5 @@
 import { h } from './dom.js';
+import { icon, nstMark } from './icon.js';
 import { kbd, shortcut } from './kbd.js';
 
 export interface WelcomeDeps {
@@ -19,6 +20,11 @@ function step(n: number, title: string, ...body: (string | HTMLElement)[]): HTML
   );
 }
 
+/** A word in the tour that names something on the screen. */
+function em(text: string): HTMLElement {
+  return h('i', { class: 'em' }, text);
+}
+
 /**
  * The welcome tour: what the app does and the three things to do, in order. Opens by itself on the
  * first visit and from the Help button afterwards.
@@ -33,14 +39,23 @@ export class Welcome {
   constructor(parent: HTMLElement, deps: WelcomeDeps) {
     this.tips = h('input', { type: 'checkbox', id: 'welcomeTips', checked: true });
     this.tips.onchange = () => deps.onTipsChange(this.tips.checked);
-    this.btnChoose = h('button', { class: 'primary', id: 'welcomeChoose' }, 'Choose slides');
+    this.btnChoose = h(
+      'button',
+      { class: 'primary', id: 'welcomeChoose' },
+      icon('folder-open'),
+      'Choose slides',
+    );
     this.btnChoose.onclick = () => {
       this.close();
       deps.onChooseSlides();
     };
     const btnClose = h('button', { id: 'welcomeClose' }, 'Got it');
     btnClose.onclick = () => this.close();
-    const btnX = h('button', { class: 'x', title: 'Close', attrs: { 'aria-label': 'Close' } }, '✕');
+    const btnX = h(
+      'button',
+      { class: 'x', title: 'Close', attrs: { 'aria-label': 'Close' } },
+      icon('close', 16),
+    );
     btnX.onclick = () => this.close();
 
     this.el = h(
@@ -53,10 +68,11 @@ export class Welcome {
         h(
           'div',
           { class: 'head' },
-          h('span', { class: 'logo', attrs: { 'aria-hidden': 'true' } }),
+          h('span', { class: 'logo', attrs: { 'aria-hidden': 'true' } }, nstMark()),
           h(
             'div',
             null,
+            h('div', { class: 'by' }, 'Newton School'),
             h('h3', { id: 'welcomeTitle' }, 'Record a lecture in one take'),
             h(
               'p',
@@ -72,14 +88,14 @@ export class Welcome {
             1,
             'Load your slides',
             'A PDF, a PowerPoint file or a set of PNG / JPG images. Drop the file anywhere on the page or click ',
-            h('i', null, 'Load slides'),
+            em('Load slides'),
             '.',
           ),
           step(
             2,
             'Start the mic and talk',
             'Click ',
-            h('i', null, 'Start mic'),
+            em('Start mic'),
             ' and allow the microphone. Speak normally; pauses are skipped. Change slides with ',
             kbd('→'),
             ' ',
@@ -91,9 +107,9 @@ export class Welcome {
           step(
             3,
             'Preview and export',
-            h('i', null, 'Preview'),
+            em('Preview'),
             ' plays it back with the slides changing at the right moments. ',
-            h('i', null, 'Export video'),
+            em('Export video'),
             ' saves an MP4 (or WebM, MKV, MOV, HLS, DASH) into a folder on this computer.',
           ),
         ),
@@ -105,7 +121,7 @@ export class Welcome {
             null,
             h('b', null, 'Check your level. '),
             'In the meter at the bottom, your voice should cross the white line and room noise should stay below it. Drag ',
-            h('i', null, 'Speech line'),
+            em('Speech line'),
             ' if it does not.',
           ),
           h(

@@ -1,0 +1,564 @@
+/*
+ * grauity components, in plain CSS.
+ *
+ * grauity ships its components as React + styled-components, which this vanilla app cannot mount.
+ * The rules below are the same recipes (ui/elements/<Name>/<Name>.styles.ts and utils.ts in the
+ * grauity repository) written out against the grauity tokens, so the app's buttons, pills, chips,
+ * dialogs, sliders and fields look like the real NSButton, NSPill, NSChip, NSModal, NSRangeInput
+ * and NSTextField. Class names stay the app's own (button.primary, .pill, .chip, .modal …).
+ */
+
+/* ---------------------------------------------------------------- icons (NSIcon) */
+.ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+}
+.ico-16 {
+  font-size: 16px;
+}
+.ico-24 {
+  font-size: 24px;
+}
+
+/* ---------------------------------------------------------------- buttons (NSButton) */
+/* default: variant secondary, colour neutral, size small */
+button {
+  font-family: var(--font-family);
+  font-size: var(--font-size-14px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.4px;
+  line-height: 1;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-6px);
+  height: var(--spacing-32px);
+  min-height: var(--spacing-32px);
+  padding: var(--spacing-4px) var(--spacing-8px);
+  border-radius: var(--corner-radius-8px);
+  border: 1.5px solid var(--border-subtle-primary-default);
+  background: var(--bg-subtle-primary-default);
+  color: var(--text-emphasis-primary-default);
+  outline: 0 solid transparent;
+  cursor: pointer;
+  transform-origin: center;
+  transition:
+    background-color 0.2s ease-in-out,
+    color 0.2s ease-in-out,
+    border-color 0.2s ease-in-out,
+    outline 0.2s ease-in-out,
+    transform 0.2s ease-in-out;
+}
+button:hover:not(:disabled) {
+  background: var(--bg-subtle-primary-hover);
+}
+button:focus-visible {
+  outline: 3px solid var(--border-subtle-primary-default);
+}
+button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+button:disabled {
+  cursor: not-allowed;
+  border-color: var(--border-subtle-primary-disabled);
+  color: var(--text-emphasis-primary-disabled);
+}
+/* variant primary, colour brand */
+button.primary {
+  background: var(--bg-emphasis-brand-default);
+  border-color: transparent;
+  color: var(--text-emphasis-white-default);
+}
+button.primary:hover:not(:disabled) {
+  background: var(--bg-emphasis-brand-hover);
+}
+button.primary:focus-visible {
+  outline-color: var(--border-subtle-brand-default);
+}
+button.primary:disabled {
+  background: var(--bg-emphasis-brand-disabled);
+  color: var(--text-emphasis-white-disabled);
+}
+/* variant primary, colour error: the mic while it is on */
+button.rec {
+  background: var(--bg-emphasis-error-default);
+  border-color: transparent;
+  color: var(--text-emphasis-white-default);
+}
+button.rec:hover:not(:disabled) {
+  background: var(--bg-emphasis-error-hover);
+}
+button.rec:focus-visible {
+  outline-color: var(--border-subtle-error-default);
+}
+button.rec:disabled {
+  background: var(--bg-emphasis-error-disabled);
+  color: var(--text-emphasis-white-disabled);
+}
+/* variant secondary, colour error */
+button.danger {
+  color: var(--text-emphasis-error-default);
+  border-color: var(--border-subtle-error-default);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--bg-subtle-error-default);
+}
+button.danger:focus-visible {
+  outline-color: var(--border-subtle-error-default);
+}
+button.danger:disabled {
+  border-color: var(--border-subtle-error-disabled);
+  color: var(--text-emphasis-error-disabled);
+}
+/* variant tertiary, colour neutral */
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--bg-subtle-primary-hover);
+}
+button.ghost:disabled {
+  color: var(--text-emphasis-primary-disabled);
+}
+/* sizes: medium for dialog actions, large for the one big call to action */
+button.medium {
+  height: var(--spacing-40px);
+  min-height: var(--spacing-40px);
+  padding: var(--spacing-8px) var(--spacing-12px);
+  gap: var(--spacing-8px);
+}
+button.big {
+  height: var(--spacing-48px);
+  min-height: var(--spacing-48px);
+  padding: var(--spacing-12px) var(--spacing-16px);
+  gap: var(--spacing-8px);
+  font-size: var(--font-size-16px);
+}
+/* NSIconButton: a square button holding one icon */
+button.icon {
+  width: var(--spacing-32px);
+  min-width: var(--spacing-32px);
+  padding: var(--spacing-4px);
+}
+button.icon.xs {
+  width: var(--spacing-24px);
+  min-width: var(--spacing-24px);
+  height: var(--spacing-24px);
+  min-height: var(--spacing-24px);
+  padding: 0;
+  border-radius: var(--corner-radius-4px);
+}
+/* NSPill as a button: the folder shortcuts in the picker */
+button.chip {
+  height: auto;
+  min-height: 0;
+  padding: var(--spacing-4px) var(--spacing-10px);
+  border-radius: 9999px;
+  border-width: 1px;
+  font-size: var(--font-size-12px);
+  color: var(--text-emphasis-secondary-default);
+}
+button.chip:hover:not(:disabled) {
+  color: var(--text-emphasis-primary-default);
+}
+
+/* ---------------------------------------------------------------- status pills (NSPill, read-only) */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-6px);
+  padding: 5px var(--spacing-10px);
+  border-radius: 9999px;
+  border: 1px solid var(--border-subtle-primary-default);
+  background: var(--bg-subtle-primary-default);
+  color: var(--text-emphasis-secondary-default);
+  font-size: var(--font-size-13px, 13px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.pill .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-emphasis-primary-disabled);
+  flex: none;
+}
+/* an active pill in a colour: the tinted background, the emphasis border, the coloured text */
+.pill.listen {
+  color: var(--text-emphasis-brand-default);
+  border-color: var(--border-emphasis-brand-default);
+  background: var(--bg-subtle-brand-default);
+}
+.pill.rec {
+  color: var(--text-emphasis-error-default);
+  border-color: var(--border-emphasis-error-default);
+  background: var(--bg-subtle-error-default);
+}
+.pill.muted {
+  color: var(--text-emphasis-yellow-default);
+  border-color: var(--border-emphasis-yellow-default);
+  background: var(--bg-subtle-yellow-default);
+}
+.pill.preview {
+  color: var(--text-emphasis-success-default);
+  border-color: var(--border-emphasis-success-default);
+  background: var(--bg-subtle-success-default);
+}
+.pill.listen .dot,
+.pill.rec .dot,
+.pill.muted .dot,
+.pill.preview .dot {
+  background: currentColor;
+}
+.pill.rec .dot {
+  animation: pulse 1s infinite;
+}
+.pill.server {
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-12px);
+}
+.pill.server.ok {
+  color: var(--text-emphasis-primary-default);
+}
+.pill.server.ok .dot {
+  background: var(--bg-emphasis-success-default);
+}
+.pill.server.warn .dot {
+  background: var(--bg-emphasis-yellow-default);
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------------------------------------------------------------- chips (NSChip) */
+.chip-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-4px);
+  padding: 3px var(--spacing-6px);
+  border-radius: var(--corner-radius-4px);
+  background: var(--bg-subtle-tertiary-default);
+  color: var(--text-emphasis-secondary-default);
+  font-size: var(--font-size-10px);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.2;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.chip-tag.success {
+  background: var(--bg-subtle-success-default);
+  color: var(--text-emphasis-success-default);
+}
+.chip-tag.warning {
+  background: var(--bg-subtle-yellow-default);
+  color: var(--text-emphasis-yellow-default);
+}
+
+/* ---------------------------------------------------------------- numbered steps */
+/* grey to do, brand blue for the next thing to do, success green with a tick when done */
+.step {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-size-12px);
+  font-weight: var(--font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  background: var(--bg-subtle-tertiary-default);
+  border: 1px solid var(--border-subtle-primary-default);
+  color: var(--text-emphasis-secondary-default);
+}
+.step > .ico {
+  display: none;
+  font-size: 14px;
+}
+.step.active {
+  background: var(--bg-emphasis-brand-default);
+  border-color: var(--bg-emphasis-brand-default);
+  color: var(--text-emphasis-white-default);
+  box-shadow: 0 0 0 4px var(--bg-subtle-brand-default);
+}
+.step.done {
+  background: var(--bg-emphasis-success-default);
+  border-color: var(--bg-emphasis-success-default);
+  color: var(--text-emphasis-white-default);
+}
+.step.done > .n {
+  display: none;
+}
+.step.done > .ico {
+  display: inline-flex;
+}
+
+/* ---------------------------------------------------------------- fields (NSTextField, NSSelectDropdown) */
+select,
+input[type='text'],
+input[type='number'] {
+  font-family: var(--font-family);
+  font-size: var(--font-size-14px);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-emphasis-primary-default);
+  background: var(--bg-subtle-primary-default);
+  border: 1.5px solid var(--border-subtle-primary-default);
+  border-radius: var(--corner-radius-8px);
+  height: var(--spacing-32px);
+  padding: 0 var(--spacing-10px);
+  outline: none;
+  transition:
+    border-color 0.2s ease-in-out,
+    box-shadow 0.2s ease-in-out;
+}
+select:hover,
+input[type='text']:hover,
+input[type='number']:hover {
+  border-color: var(--border-moderate-primary-default);
+}
+select:focus-visible,
+input[type='text']:focus-visible,
+input[type='number']:focus-visible {
+  border-color: var(--border-emphasis-brand-default);
+  box-shadow: 0 0 0 3px var(--bg-subtle-brand-default);
+}
+select:disabled,
+input:disabled {
+  color: var(--text-emphasis-primary-disabled);
+  border-color: var(--border-subtle-primary-disabled);
+  cursor: not-allowed;
+}
+input::placeholder {
+  color: var(--text-emphasis-primary-disabled);
+}
+input[type='number'] {
+  width: 90px;
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--bg-emphasis-brand-default);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- sliders (NSRangeInput) */
+/* --fill is the filled fraction, kept up to date by the app whenever the value changes */
+input[type='range'] {
+  --track: var(--text-emphasis-primary-disabled);
+  --filled: var(--bg-emphasis-brand-default);
+  -webkit-appearance: none;
+  appearance: none;
+  width: 140px;
+  height: 5px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(to right, var(--filled) 0 var(--fill, 0%), var(--track) var(--fill, 0%) 100%);
+  vertical-align: middle;
+  outline: none;
+  cursor: grab;
+}
+input[type='range']:active {
+  cursor: grabbing;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--filled);
+  transition: transform 0.2s ease;
+}
+input[type='range']:active::-webkit-slider-thumb {
+  transform: scale(1.3);
+}
+input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--filled);
+}
+input[type='range']:focus-visible {
+  box-shadow: 0 0 0 3px var(--bg-subtle-brand-default);
+}
+
+/* ---------------------------------------------------------------- keyboard keys */
+kbd {
+  font-family: var(--mono);
+  font-size: var(--font-size-11px);
+  line-height: 1;
+  background: var(--bg-subtle-tertiary-default);
+  border: 1px solid var(--border-subtle-primary-default);
+  border-bottom-width: 2px;
+  border-radius: var(--corner-radius-4px);
+  padding: 2px 5px;
+  color: var(--text-emphasis-primary-default);
+}
+
+/* ---------------------------------------------------------------- dialogs (NSOverlay + NSModal) */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: var(--alpha-overlay);
+  backdrop-filter: var(--backdrop-blur-8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-index-modal-overlay);
+}
+.modal.on {
+  display: flex;
+}
+.modal .box {
+  width: 480px;
+  max-width: 94vw;
+  max-height: 92vh;
+  overflow: auto;
+  background: var(--modal);
+  border: 1px solid var(--border-subtle-primary-default);
+  border-radius: var(--corner-radius-12px);
+  padding: var(--spacing-20px);
+  box-shadow: var(--shadow-modal);
+}
+.modal .box.wide {
+  width: 980px;
+}
+.modal h3 {
+  margin: 0 0 var(--spacing-12px);
+  font-size: var(--font-size-20px);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--spacing-24px);
+  letter-spacing: 0.1px;
+}
+/* an overline: the title of a section inside a dialog */
+.modal h4,
+.overline {
+  margin: 0 0 var(--spacing-8px);
+  font-size: var(--font-size-12px);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-emphasis-secondary-default);
+}
+.modal .actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-10px);
+  margin-top: var(--spacing-16px);
+}
+.modal .actions > button {
+  height: var(--spacing-40px);
+  min-height: var(--spacing-40px);
+  padding: var(--spacing-8px) var(--spacing-12px);
+  gap: var(--spacing-8px);
+}
+.modal .actions.inline {
+  margin-top: var(--spacing-6px);
+}
+.modal .actions.inline > button {
+  height: var(--spacing-32px);
+  min-height: var(--spacing-32px);
+  padding: var(--spacing-4px) var(--spacing-10px);
+}
+
+/* ---------------------------------------------------------------- alerts (NSAlert) */
+.alert {
+  border-radius: var(--corner-radius-8px);
+  border: 1px solid var(--border-subtle-primary-default);
+  background: var(--bg-subtle-secondary-default);
+  padding: var(--spacing-10px) var(--spacing-12px);
+}
+.alert.success {
+  background: var(--bg-subtle-success-default);
+  border-color: var(--border-subtle-success-default);
+}
+.alert.warning {
+  background: var(--bg-subtle-yellow-default);
+  border-color: var(--border-subtle-yellow-default);
+  color: var(--text-emphasis-yellow-default);
+}
+
+/* ---------------------------------------------------------------- progress bar */
+.progress {
+  height: 8px;
+  background: var(--bg-subtle-tertiary-default);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+.progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 9999px;
+  background: var(--bg-emphasis-brand-default);
+  transition: width 0.15s;
+}
+.progress > i.indeterminate {
+  width: 30% !important;
+  animation: slide 1.2s infinite linear;
+}
+@keyframes slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+
+/* ---------------------------------------------------------------- toast (inverted snackbar) */
+.toast {
+  background: var(--bg-subtle-invert-primary-default);
+  color: var(--text-emphasis-invert-primary-default);
+  border-radius: var(--corner-radius-8px);
+  padding: var(--spacing-10px) var(--spacing-14px);
+  box-shadow: var(--shadow-float);
+  font-weight: var(--font-weight-semibold);
+}
+.toast button {
+  background: transparent;
+  border-color: var(--border-subtle-invert-primary-default);
+  color: var(--text-emphasis-invert-primary-default);
+}
+.toast button:hover:not(:disabled) {
+  background: var(--bg-subtle-invert-primary-hover);
+}
+
+/* ---------------------------------------------------------------- spinner */
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--alpha-20);
+  border-top-color: var(--bg-emphasis-brand-default);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

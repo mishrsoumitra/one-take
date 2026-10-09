@@ -78,3 +78,26 @@ export function replaceChildren(el: Element, ...children: Child[]): void {
   clear(el);
   append(el, children);
 }
+
+/** The text of a button that also holds an icon: `[icon] <span class="label">text</span>`. */
+export function label(text: string): HTMLElement {
+  return h('span', { class: 'label' }, text);
+}
+
+/** Changes a button's text without touching its icon. Falls back to plain text for buttons without a label span. */
+export function setLabel(button: HTMLElement, text: string): void {
+  const span = button.querySelector('.label');
+  if (span) span.textContent = text;
+  else button.textContent = text;
+}
+
+/**
+ * Tells a slider's stylesheet how much of its track is filled. The track is drawn as a gradient
+ * (like grauity's NSRangeInput), which CSS cannot derive from the value on its own.
+ */
+export function syncRangeFill(input: HTMLInputElement): void {
+  const min = Number(input.min) || 0;
+  const max = Number(input.max) || 100;
+  const pct = max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0;
+  input.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct))}%`);
+}

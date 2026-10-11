@@ -768,7 +768,12 @@ check(
   'the safe answer (Keep working) has the focus',
 );
 await page.screenshot('close-confirm.png');
-await page.press('Escape');
+// Escape as a page event: the dialog's handler is on the document and does not check isTrusted.
+// (Twice, an Escape injected through CDP with this dialog open was followed by the renderer
+// freezing for good, even to Debugger.pause; the key itself is covered above, on the editor.)
+await ev(
+  '(document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }))',
+);
 await sleep(100);
 check(
   !(await confirmOpen()) && (await ev<number>('__onetake.state.segments.length')) === phrasesBefore,

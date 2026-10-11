@@ -27,6 +27,8 @@ export interface LayoutRefs {
   totalTime: HTMLElement;
   segCount: HTMLElement;
   btnPreview: HTMLButtonElement;
+  /** Opens the editor: play with a scrub bar, re-record, cut, add or remove clips. */
+  btnEdit: HTMLButtonElement;
   btnExport: HTMLButtonElement;
   btnNew: HTMLButtonElement;
   btnHelp: HTMLButtonElement;
@@ -121,7 +123,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const deckName = h('span', { class: 'deck', id: 'deckName', hidden: true });
   const stepSlides = stepBadge('stepSlides', 1, 'Load your slides');
   const stepMic = stepBadge('stepMic', 2, 'Start the mic and talk');
-  const stepExport = stepBadge('stepExport', 3, 'Preview and export');
+  const stepExport = stepBadge('stepExport', 3, 'Preview, edit and export');
 
   const micSelect = h(
     'select',
@@ -173,6 +175,12 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     { id: 'btnPreview', disabled: true, title: 'Play back what you have recorded so far' },
     icon('play'),
     label('Preview'),
+  );
+  const btnEdit = h(
+    'button',
+    { id: 'btnEdit', disabled: true, title: 'Re-record, cut, add or remove clips' },
+    icon('pen'),
+    label('Edit'),
   );
   const btnExport = h(
     'button',
@@ -229,7 +237,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       ),
     ),
     h('div', { class: 'spacer' }),
-    h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnExport),
+    h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnEdit, btnExport),
     h('div', { class: 'group tools' }, btnNew, btnHelp, btnTheme),
   );
 
@@ -449,6 +457,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     totalTime,
     segCount,
     btnPreview,
+    btnEdit,
     btnExport,
     btnNew,
     btnHelp,

@@ -112,9 +112,11 @@ export class Welcome {
           ),
           step(
             3,
-            'Preview and export',
+            'Preview, edit and export',
             em('Preview'),
             ' plays it back with the slides changing at the right moments. ',
+            em('Edit'),
+            ' lets you re-record a phrase, cut a stretch of audio, delete a clip or record a new one on any slide. ',
             em('Export video'),
             ' saves an MP4 (or WebM, MKV, MOV, HLS, DASH) into a folder on this computer.',
           ),

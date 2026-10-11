@@ -31,6 +31,7 @@ import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loade
 import { ProjectStore } from '../storage/db.js';
 import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
 import { h, setLabel, syncRangeFill } from '../ui/dom.js';
+import { Editor } from '../ui/editor.js';
 import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
@@ -60,6 +61,7 @@ export class App {
   private readonly film: Filmstrip;
   private readonly list: TimelineList;
   private readonly exportDialog: ExportDialog;
+  private readonly editor: Editor;
   private readonly folderPicker: FolderPicker;
   private readonly welcome: Welcome;
   private prefs: Prefs = loadPrefs();
@@ -145,6 +147,23 @@ export class App {
         if (this.store.state.previewing) this.stopPreview();
         this.recorder?.end();
       },
+    });
+    this.editor = new Editor(document.body, {
+      slides: () => this.store.state.slides,
+      segments: () => this.store.state.segments,
+      settings: () => this.store.settings,
+      mode: () => this.store.state.mode,
+      mic: this.mic,
+      micDeviceId: () => this.refs.micSelect.value || undefined,
+      nextId: () => this.nextSegmentId(),
+      onChange: (segments) => this.applyEdit(segments),
+      onClose: () => {
+        // the editor may have moved the playhead to another slide; show the one the user left on
+        this.showSlide(this.store.state.current);
+        this.updateButtons();
+        this.updateStatus();
+      },
+      toast: this.toast,
     });
   }
 
@@ -302,6 +321,7 @@ export class App {
     r.btnPreview.onclick = () =>
       this.store.state.previewing ? this.stopPreview() : void this.startPreview(0);
     r.btnStopPreview.onclick = () => this.stopPreview();
+    r.btnEdit.onclick = () => this.openEditor();
     r.btnExport.onclick = () => this.openExport();
     r.btnNew.onclick = () => void this.newProject();
     r.micSelect.onchange = () => {
@@ -358,9 +378,9 @@ export class App {
   /* Slides                                                              */
   /* ------------------------------------------------------------------ */
 
-  /** True while a modal (export, folder picker, welcome) owns the keyboard and drops. */
+  /** True while a modal (export, folder picker, welcome, editor) owns the keyboard and drops. */
   private dialogOpen(): boolean {
-    return this.exportDialog.isOpen || this.folderPicker.isOpen || this.welcome.isOpen;
+    return this.exportDialog.isOpen || this.folderPicker.isOpen || this.welcome.isOpen || this.editor.isOpen;
   }
 
   async filesChosen(fileList: Iterable<File>): Promise<void> {
@@ -517,8 +537,10 @@ export class App {
     const s = this.store.state;
     const has = s.segments.length > 0;
     this.refs.btnPreview.disabled = !has || s.exporting;
+    this.refs.btnEdit.disabled = !has || s.exporting;
     this.refs.btnExport.disabled = !has || s.exporting;
     this.refs.btnPreview.title = has ? 'Play back what you have recorded so far' : 'Record something first';
+    this.refs.btnEdit.title = has ? 'Re-record, cut, add or remove clips' : 'Record something first';
     this.refs.btnExport.title = has ? 'Save the finished video' : 'Record something first';
     // In press to speak, letting go of the key is the mute: the button would only add noise.
     this.refs.btnMute.hidden = !s.armed || s.mode === 'hold';
@@ -772,7 +794,7 @@ export class App {
     scroll: boolean,
   ): Segment {
     const seg: Segment = {
-      id: `${Date.now()}-${++this.segmentCounter}`,
+      id: this.nextSegmentId(),
       slide,
       sampleRate: this.sampleRate,
       pcm: floatBlocksToInt16(blocks),
@@ -843,6 +865,40 @@ export class App {
 
   timeline(order: PhraseOrder): Timeline {
     return buildTimeline(this.store.state.segments, order, this.store.settings);
+  }
+
+  private nextSegmentId(): string {
+    return `${Date.now()}-${++this.segmentCounter}`;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Editor                                                              */
+  /* ------------------------------------------------------------------ */
+
+  openEditor(): void {
+    const s = this.store.state;
+    if (s.segments.length === 0 || s.exporting) return;
+    if (s.previewing) this.stopPreview();
+    // the editor records its own takes, so the main microphone is turned off while it is open
+    if (s.armed) this.stopMic();
+    this.editor.open();
+  }
+
+  /**
+   * The editor changed the list of phrases. Phrases are never changed in place, so a phrase that is
+   * the same object as before needs no write; anything new or changed is saved, anything gone is deleted.
+   */
+  private applyEdit(next: Segment[]): void {
+    const s = this.store.state;
+    const before = new Map(s.segments.map((seg) => [seg.id, seg]));
+    const after = new Map(next.map((seg) => [seg.id, seg]));
+    for (const id of before.keys()) if (!after.has(id)) void this.db.deleteSegment(id);
+    for (const [id, seg] of after) if (before.get(id) !== seg) void this.db.putSegment(seg);
+    s.segments = next.slice();
+    this.saveMeta();
+    this.list.render(s.segments, s.slides, false);
+    this.updateSlideStats();
+    this.updateButtons();
   }
 
   /* ------------------------------------------------------------------ */
@@ -1107,6 +1163,8 @@ export class App {
       filesChosen: (files: Iterable<File>) => this.filesChosen(files),
       openExport: () => this.openExport(),
       exportDialog: this.exportDialog,
+      openEditor: () => this.openEditor(),
+      editor: this.editor,
       serverCaps: () => this.serverCaps,
       browserCaps: () => this.browserCaps,
       system: () => this.serverCaps?.system ?? null,

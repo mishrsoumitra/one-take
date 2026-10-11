@@ -6,6 +6,8 @@ export interface MeterInput {
   threshold: number;
   noise: number;
   settingThreshold: number;
+  /** The voice model's latest score, or null while the level alone decides. */
+  voice: number | null;
 }
 
 /** The colours the canvas draws with; set on #meter in the stylesheet from grauity's tokens. */
@@ -76,8 +78,9 @@ export class LevelMeter {
     }
     g.fillStyle = colour.line;
     g.fillRect(x(input.armed ? input.threshold : input.settingThreshold) - 1, 0, 3, h);
+    const voice = input.voice === null ? '' : ` · voice ${Math.round(input.voice * 100)}%`;
     this.note.textContent = input.armed
-      ? `speech line ${Math.round(input.threshold)} dB · room ${Math.round(input.noise)} dB`
+      ? `speech line ${Math.round(input.threshold)} dB · room ${Math.round(input.noise)} dB${voice}`
       : 'Start the mic to see your level. Your voice should cross the white line.';
   }
 }

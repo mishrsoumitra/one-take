@@ -140,6 +140,7 @@ check(
 );
 page.step('recording in auto mode');
 check(await page.startMic(), 'mic started');
+check((await ev<string>('__onetake.speech()')) === 'ready', 'the voice model is loaded in the browser');
 const t0 = Date.now();
 const at = async (sec: number, fn: () => Promise<unknown>) => {
   const d = t0 + sec * 1000 - Date.now();
@@ -150,6 +151,11 @@ await at(4.0, () => ev('__onetake.goTo(1)')); // during a pause
 await at(10.0, () => ev('__onetake.goTo(2)')); // in the middle of the third phrase
 await at(12.3, () => ev('__onetake.goTo(0)')); // back to the first slide, in silence
 await at(16.5, () => Promise.resolve());
+{
+  const scored = await ev<number>('__onetake.scorer()?.frames ?? 0');
+  // 16.5 s of microphone in 32 ms frames, less a little for the mic opening
+  check(scored > 400, `the voice model scored the microphone as it was heard (${scored} frames)`);
+}
 await ev('__onetake.stopMic()');
 const segs = await ev<{ slide: number; sec: number; joined: boolean }[]>(
   '__onetake.state.segments.map(s=>({slide:s.slide, sec:+(s.pcm.length/s.sampleRate).toFixed(2), joined:s.joined}))',
@@ -164,6 +170,12 @@ check(segs[3]?.joined === true, 'the split phrase continues on the next slide');
 check(
   (segs[0]?.sec ?? 0) > 1.8 && (segs[0]?.sec ?? 0) < 2.6,
   'first phrase keeps its length plus pre-roll and tail',
+);
+// the last phrase (8.7 to 11.2 s, split at 10.0) is followed by two seconds of typing, which crosses
+// the speech line every 300 ms: a level-only detector would have kept the phrase open through it
+check(
+  (segs[3]?.sec ?? 0) > 1.0 && (segs[3]?.sec ?? 0) < 2.0,
+  `typing after the last phrase is not kept as speech (${segs[3]?.sec ?? 0} s)`,
 );
 await page.screenshot('recording.png');
 

@@ -29,11 +29,79 @@ function harness() {
     onSpeechStart: () => starts++,
     onSpeechEnd: (p) => phrases.push(p),
   });
-  const feed = (block: () => Float32Array, ms: number) => {
-    for (let i = 0; i < ms / 10; i++) vad.process(block());
+  const feed = (block: () => Float32Array, ms: number, speech: number | null = null) => {
+    for (let i = 0; i < ms / 10; i++) vad.process(block(), speech);
   };
   return { vad, phrases, feed, starts: () => starts };
 }
+
+describe('VoiceActivityDetector with the voice model', () => {
+  it('does not start a phrase on loud sound the model does not hear as a voice', () => {
+    const h = harness();
+    h.feed(loud, 3000, 0.05);
+    expect(h.vad.speaking).toBe(false);
+    expect(h.starts()).toBe(0);
+    // and the line stays where the user put it instead of climbing above the noise
+    expect(h.vad.threshold).toBe(-45);
+    expect(h.vad.voice).toBe(0.05);
+  });
+
+  it('ends a phrase in loud noise once the model hears no voice', () => {
+    // the bug this guards against: typing, breathing or a fan kept a level-only phrase open for minutes
+    const h = harness();
+    h.feed(quiet, 500, 0.02);
+    h.feed(loud, 1000, 0.9);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, 1000, 0.1);
+    expect(h.vad.speaking).toBe(false);
+    expect(h.phrases).toHaveLength(1);
+    const p = h.phrases[0]!;
+    expect(p).not.toBeNull();
+    // 1000 ms of voice plus the pre-roll and the 150 ms tail: none of the noisy second
+    expect(p.blocks.length).toBeLessThanOrEqual(100 + 23 + 15);
+    expect(p.loudMs).toBeGreaterThanOrEqual(990);
+  });
+
+  it('needs the level over the line to start, but not to go on', () => {
+    const h = harness();
+    h.feed(quiet, 1000, 0.95); // a faint voice from the next room
+    expect(h.vad.speaking).toBe(false);
+    h.feed(loud, 500, 0.95);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(quiet, 2000, 0.95); // trailing off at the end of a sentence
+    expect(h.vad.speaking).toBe(true);
+  });
+
+  it('keeps a phrase through a dip below the start score', () => {
+    const h = harness();
+    h.feed(loud, 500, 0.9);
+    h.feed(loud, 500, 0.4);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, 1000, 0.2);
+    expect(h.vad.speaking).toBe(false);
+  });
+
+  it('survives a short pause the model scores as no voice', () => {
+    const h = harness();
+    h.feed(loud, 500, 0.9);
+    h.feed(quiet, 400, 0.02);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, 500, 0.9);
+    h.feed(quiet, 1000, 0.02);
+    expect(h.phrases).toHaveLength(1);
+  });
+
+  it('falls back to level the moment the score goes away', () => {
+    const h = harness();
+    h.feed(loud, 500, 0.9);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, 2000, null); // the model failed: the loud blocks keep the phrase going by level
+    expect(h.vad.speaking).toBe(true);
+    expect(h.vad.voice).toBeNull();
+    h.feed(quiet, 1000, null);
+    expect(h.vad.speaking).toBe(false);
+  });
+});
 
 describe('VoiceActivityDetector', () => {
   it('keeps one phrase with pre-roll and a short tail', () => {

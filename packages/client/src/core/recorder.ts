@@ -101,8 +101,9 @@ export class Recorder {
     this.vad.gate = this.gateOpen;
   }
 
-  process(block: Float32Array): void {
-    this.vad.process(block);
+  /** Takes the next block with the voice model's latest score (null: decide by level alone). */
+  process(block: Float32Array, speech: number | null = null): void {
+    this.vad.process(block, speech);
   }
 
   /** Switching modes ends the phrase being spoken and lets go of the talk key. */

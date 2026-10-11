@@ -30,6 +30,7 @@ import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { ProjectStore } from '../storage/db.js';
 import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
+import { Confirm } from '../ui/confirm.js';
 import { h, setLabel, syncRangeFill } from '../ui/dom.js';
 import { Editor } from '../ui/editor.js';
 import { ExportDialog } from '../ui/export-dialog.js';
@@ -64,6 +65,8 @@ export class App {
   private readonly editor: Editor;
   private readonly folderPicker: FolderPicker;
   private readonly welcome: Welcome;
+  /** The question asked before the slides close with phrases still on them. */
+  private readonly confirm: Confirm;
   private prefs: Prefs = loadPrefs();
   /** The detector and the mode driving it; exists while the mic is on. */
   private recorder: Recorder | null = null;
@@ -74,7 +77,6 @@ export class App {
   private metaTimer = 0;
   private meterRaf = 0;
   private replaceArmedAt = 0;
-  private newArmedAt = 0;
   private serverCaps: ServerCapabilities | null = null;
   private browserCaps: BrowserCapabilities = {
     videoCodecs: [],
@@ -95,6 +97,7 @@ export class App {
     this.refs = buildLayout(root);
     this.applyTheme(this.prefs.theme);
     this.toast = new Toast(document.body);
+    this.confirm = new Confirm(document.body);
     this.meter = new LevelMeter(this.refs.meter, this.refs.meterNote);
     this.film = new Filmstrip(this.refs.film, this.refs.filmInfo, (i) => this.goTo(i));
     this.list = new TimelineList(this.refs.segs, this.refs.segInfo, {
@@ -323,7 +326,7 @@ export class App {
     r.btnStopPreview.onclick = () => this.stopPreview();
     r.btnEdit.onclick = () => this.openEditor();
     r.btnExport.onclick = () => this.openExport();
-    r.btnNew.onclick = () => void this.newProject();
+    r.btnClose.onclick = () => void this.closeSlides();
     r.micSelect.onchange = () => {
       if (this.store.state.armed) {
         this.stopMic();
@@ -378,9 +381,15 @@ export class App {
   /* Slides                                                              */
   /* ------------------------------------------------------------------ */
 
-  /** True while a modal (export, folder picker, welcome, editor) owns the keyboard and drops. */
+  /** True while a modal (export, folder picker, welcome, editor, a question) owns the keyboard and drops. */
   private dialogOpen(): boolean {
-    return this.exportDialog.isOpen || this.folderPicker.isOpen || this.welcome.isOpen || this.editor.isOpen;
+    return (
+      this.exportDialog.isOpen ||
+      this.folderPicker.isOpen ||
+      this.welcome.isOpen ||
+      this.editor.isOpen ||
+      this.confirm.isOpen
+    );
   }
 
   async filesChosen(fileList: Iterable<File>): Promise<void> {
@@ -390,7 +399,7 @@ export class App {
       return;
     }
     this.welcome.close();
-    if (this.store.state.segments.length > 0 && !this.confirmTwice('replace')) return;
+    if (this.store.state.segments.length > 0 && !this.confirmReplace()) return;
     const source = picked.kind === 'presentation' ? await this.convertPresentation(picked) : picked;
     if (!source) return;
     await this.loadSlideSource(source);
@@ -484,22 +493,14 @@ export class App {
     return `${count} image${count === 1 ? '' : 's'}`;
   }
 
-  private confirmTwice(kind: 'replace' | 'new'): boolean {
+  /** Swapping the deck under existing phrases goes ahead only when the file is loaded twice in a row. */
+  private confirmReplace(): boolean {
     const now = Date.now();
-    if (kind === 'replace') {
-      if (now - this.replaceArmedAt < CONFIRM_WINDOW_MS) return true;
-      this.replaceArmedAt = now;
-      this.toast.show(
-        'You already have recordings. Phrase numbers stay tied to slide numbers. Load again to confirm.',
-      );
-      return false;
-    }
-    if (now - this.newArmedAt < CONFIRM_WINDOW_MS) {
-      this.newArmedAt = 0;
-      return true;
-    }
-    this.newArmedAt = now;
-    this.toast.show('This deletes all recordings and slides. Click New again to confirm.');
+    if (now - this.replaceArmedAt < CONFIRM_WINDOW_MS) return true;
+    this.replaceArmedAt = now;
+    this.toast.show(
+      'You already have recordings. Phrase numbers stay tied to slide numbers. Load again to confirm.',
+    );
     return false;
   }
 
@@ -544,6 +545,9 @@ export class App {
     this.refs.btnExport.title = has ? 'Save the finished video' : 'Record something first';
     // In press to speak, letting go of the key is the mute: the button would only add noise.
     this.refs.btnMute.hidden = !s.armed || s.mode === 'hold';
+    // The × after the deck name: there is nothing to close until slides or phrases exist.
+    this.refs.btnClose.hidden = s.slides.length === 0 && !has;
+    this.refs.btnClose.disabled = s.exporting;
     this.updateSteps();
     this.updateCoach();
   }
@@ -1114,12 +1118,34 @@ export class App {
     );
   }
 
-  async newProject(): Promise<void> {
-    if (!this.confirmTwice('new')) return;
-    if (this.store.state.armed) this.stopMic();
-    if (this.store.state.previewing) this.stopPreview();
-    await this.db.clear();
+  /**
+   * Closes the slides and abandons the session: the deck, every phrase and the saved copy all go, and
+   * the stage is back to "Load your slides". Slides with nothing recorded on them close at once;
+   * otherwise the user is asked first, because the phrases cannot be brought back.
+   */
+  async closeSlides(): Promise<void> {
     const s = this.store.state;
+    if (s.slides.length === 0 && s.segments.length === 0) return;
+    if (s.exporting) return;
+    // Nothing said from here on is recorded: the phrase in progress ends now, so the count below is
+    // right, and the mic goes back to listening if the user keeps working.
+    this.recorder?.setPaused(true);
+    const n = s.segments.length;
+    if (n > 0) {
+      const ok = await this.confirm.ask({
+        title: 'Close these slides?',
+        message: `The ${n === 1 ? 'phrase' : `${n} phrases`} recorded on them (${fmtTime(totalDuration(s.segments))}) will be deleted. This cannot be undone.`,
+        confirm: 'Close and delete',
+        cancel: 'Keep working',
+      });
+      if (!ok) {
+        this.syncPaused();
+        return;
+      }
+    }
+    if (s.armed) this.stopMic();
+    if (s.previewing) this.stopPreview();
+    await this.db.clear();
     s.segments = [];
     s.deleted = [];
     s.current = 0;
@@ -1140,6 +1166,11 @@ export class App {
     this.list.render([], [], false);
     this.updateSlideStats();
     this.updateButtons();
+    this.toast.show(
+      n > 0
+        ? `Slides closed. ${n === 1 ? 'The phrase was' : `${n} phrases were`} deleted.`
+        : 'Slides closed.',
+    );
   }
 
   /** Internals exposed for the end-to-end test runner. */
@@ -1161,6 +1192,7 @@ export class App {
       undoDelete: () => this.undoDelete(),
       loadSlideSource: (src: SlideSource) => this.loadSlideSource(src),
       filesChosen: (files: Iterable<File>) => this.filesChosen(files),
+      closeSlides: () => this.closeSlides(),
       openExport: () => this.openExport(),
       exportDialog: this.exportDialog,
       openEditor: () => this.openEditor(),

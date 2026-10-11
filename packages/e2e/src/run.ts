@@ -750,6 +750,63 @@ check(
   `fastest mode picks the measured winner for compression (${systemNow.ffmpeg?.fastestEncoder ?? '?'}, hardware=${winnerIsHardware}) and veryfast`,
 );
 
+// 9. closing the slides: the × after the deck name asks first while phrases exist, Escape and
+// "Keep working" back out, confirming clears the slides, the phrases and the saved copy
+page.step('closing the slides');
+await ev('__onetake.exportDialog.close()');
+const confirmOpen = () => ev<boolean>('document.getElementById("confirm").classList.contains("on")');
+const phrasesBefore = await ev<number>('__onetake.state.segments.length');
+check(
+  !(await ev<boolean>('document.getElementById("btnClose").hidden')),
+  'the × after the deck name is shown',
+);
+await ev('document.getElementById("btnClose").click()');
+await sleep(150);
+check(await confirmOpen(), 'closing with phrases on the slides asks first');
+check(
+  (await ev<string>('document.activeElement?.id ?? ""')) === 'confirmNo',
+  'the safe answer (Keep working) has the focus',
+);
+await page.screenshot('close-confirm.png');
+// Escape as a page event: the dialog's handler is on the document and does not check isTrusted.
+// (Twice, an Escape injected through CDP with this dialog open was followed by the renderer
+// freezing for good, even to Debugger.pause; the key itself is covered above, on the editor.)
+await ev(
+  '(document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }))',
+);
+await sleep(100);
+check(
+  !(await confirmOpen()) && (await ev<number>('__onetake.state.segments.length')) === phrasesBefore,
+  'Escape keeps the session',
+);
+await ev('document.getElementById("btnClose").click()');
+await sleep(150);
+await ev('document.getElementById("confirmNo").click()');
+await sleep(100);
+check(
+  !(await confirmOpen()) && (await ev<number>('__onetake.state.segments.length')) === phrasesBefore,
+  'Keep working keeps the session',
+);
+await ev('document.getElementById("btnClose").click()');
+await sleep(150);
+await ev('document.getElementById("confirmYes").click()');
+check(
+  await page.waitFor('__onetake.state.slides.length === 0 && __onetake.state.segments.length === 0'),
+  'Close and delete clears the slides and the phrases',
+);
+check(
+  (await ev<boolean>('document.getElementById("btnClose").hidden')) &&
+    (await ev<string>('getComputedStyle(document.getElementById("empty")).display')) !== 'none',
+  'the stage is back to "Load your slides" and the × is gone',
+);
+await page.reload();
+await page.waitForApp();
+await sleep(800);
+check(
+  !(await ev<boolean>('document.getElementById("restore").classList.contains("on")')),
+  'nothing is offered to resume after closing',
+);
+
 const bad = page.errors();
 check(bad.length === 0, `no page errors${bad.length ? `: ${bad.join(' | ')}` : ''}`);
 if (page.logs.length) console.log('console:', page.logs.join('\n'));

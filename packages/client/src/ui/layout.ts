@@ -9,6 +9,8 @@ export interface LayoutRefs {
   btnLoad: HTMLButtonElement;
   /** Name of the loaded deck, next to the Load button. */
   deckName: HTMLElement;
+  /** The × after the deck name: closes the slides and abandons the session. Hidden while nothing is loaded. */
+  btnClose: HTMLButtonElement;
   /** Numbered badges in the top bar: 1 slides, 2 mic, 3 export. */
   stepSlides: HTMLElement;
   stepMic: HTMLElement;
@@ -30,7 +32,6 @@ export interface LayoutRefs {
   /** Opens the editor: play with a scrub bar, re-record, cut, add or remove clips. */
   btnEdit: HTMLButtonElement;
   btnExport: HTMLButtonElement;
-  btnNew: HTMLButtonElement;
   btnHelp: HTMLButtonElement;
   /** Switches between grauity's dark and light themes. */
   btnTheme: HTMLButtonElement;
@@ -121,6 +122,17 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     label('Load slides'),
   );
   const deckName = h('span', { class: 'deck', id: 'deckName', hidden: true });
+  const btnClose = h(
+    'button',
+    {
+      id: 'btnClose',
+      class: 'ghost icon',
+      hidden: true,
+      title: 'Close these slides and abandon the session',
+      attrs: { 'aria-label': 'Close slides' },
+    },
+    icon('close', 16),
+  );
   const stepSlides = stepBadge('stepSlides', 1, 'Load your slides');
   const stepMic = stepBadge('stepMic', 2, 'Start the mic and talk');
   const stepExport = stepBadge('stepExport', 3, 'Preview, edit and export');
@@ -188,12 +200,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('download'),
     h('span', { class: 'label' }, 'Export', h('span', { class: 'long' }, ' video')),
   );
-  const btnNew = h(
-    'button',
-    { id: 'btnNew', class: 'ghost', title: 'Discard everything and start a new lecture' },
-    icon('plus'),
-    label('New'),
-  );
   const btnHelp = h(
     'button',
     { id: 'btnHelp', class: 'ghost', title: 'How it works' },
@@ -217,7 +223,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       h('span', { class: 'by' }, 'Newton School'),
     ),
     fileInput,
-    h('div', { class: 'group', id: 'gSlides' }, stepSlides, btnLoad, deckName),
+    h('div', { class: 'group', id: 'gSlides' }, stepSlides, btnLoad, deckName, btnClose),
     h(
       'div',
       { class: 'group', id: 'gMic' },
@@ -238,7 +244,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     ),
     h('div', { class: 'spacer' }),
     h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnEdit, btnExport),
-    h('div', { class: 'group tools' }, btnNew, btnHelp, btnTheme),
+    h('div', { class: 'group tools' }, btnHelp, btnTheme),
   );
 
   /* ------------------------------------------------------------------ stage */
@@ -441,6 +447,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     fileInput,
     btnLoad,
     deckName,
+    btnClose,
     stepSlides,
     stepMic,
     stepExport,
@@ -459,7 +466,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     btnPreview,
     btnEdit,
     btnExport,
-    btnNew,
     btnHelp,
     btnTheme,
     stage,

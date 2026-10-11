@@ -171,7 +171,7 @@ Click **Export video**. In the dialog you choose:
 
 The **Plan** panel shows the two stages (what the browser encodes, what the server does afterwards), an estimate of the upload size and the final size, warnings, and any reason the export cannot run. Progress covers encoding, upload and ffmpeg, and you can cancel at any point. When it's done, **Show in folder** opens Finder or Explorer at the file.
 
-To start a new lecture, click **New**. It discards the slides and all phrases.
+To close the slides and start over, click the **×** after the deck's name in the top bar. Slides with nothing recorded on them close at once; otherwise the app asks before deleting the phrases, because they cannot be brought back.
 
 ## Keyboard shortcuts
 
@@ -482,7 +482,7 @@ Everything is written to IndexedDB (database `one-take`) the moment it exists:
 
 The recording mode (Auto or Press to speak), the theme and the tips setting are browser preferences, kept in `localStorage` rather than with the project.
 
-Reload the tab or close it and come back, and you continue where you left off. **New** clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
+Reload the tab or close it and come back, and you continue where you left off. The **×** after the deck's name clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
 
 ## Design system
 

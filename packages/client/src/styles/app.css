@@ -98,6 +98,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* the × after the deck name closes it; it turns red on hover, like the question it leads to */
+#btnClose {
+  color: var(--muted);
+}
+#btnClose:hover:not(:disabled) {
+  color: var(--text-emphasis-error-default);
+}
 #micSel {
   max-width: 150px;
   font-size: var(--font-size-12px);
@@ -1098,6 +1105,17 @@ button.x .ico {
   color: var(--muted);
 }
 
+/* ---------------------------------------------------------------- confirm: a question before something is lost */
+.confirm .box {
+  width: 440px;
+}
+.confirm p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-14px);
+  line-height: 1.5;
+}
+
 /* ---------------------------------------------------------------- folder picker */
 .picker .box {
   width: 620px;
@@ -1762,7 +1780,7 @@ button.x .ico {
     padding-left: var(--spacing-10px);
     padding-right: var(--spacing-10px);
   }
-  /* New and Help become icon buttons; their titles still say what they do */
+  /* Help becomes an icon button; its title still says what it does */
   #top .tools .label {
     display: none;
   }

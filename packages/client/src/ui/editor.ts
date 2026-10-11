@@ -954,6 +954,9 @@ export class Editor {
         result.segments,
         `Removed ${fmtTime(result.removedSec)} of silence from ${result.changed} clip${result.changed === 1 ? '' : 's'}`,
       );
+    } catch (error) {
+      console.warn('Remove pauses failed', error);
+      this.deps.toast.show('The voice model failed while listening; nothing was changed.');
     } finally {
       this.scanning = false;
       this.rebuild();

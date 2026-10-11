@@ -588,6 +588,105 @@ check(
   'Backspace and Ctrl+Z round-trip a phrase',
 );
 
+// 7b. the editor: scrub, select a stretch of a clip and cut it, split, move to another slide, delete,
+// undo each one, and check that a change reaches IndexedDB. (Takes need the microphone, which the
+// fake device has already played out; verify-editor in the job notes covers re-recording.)
+page.step('editing');
+const mouseAt = async (type: 'mousePressed' | 'mouseReleased' | 'mouseMoved', x: number, y: number) =>
+  page.send('Input.dispatchMouseEvent', {
+    type,
+    x,
+    y,
+    button: 'left',
+    buttons: type === 'mouseReleased' ? 0 : 1,
+    clickCount: 1,
+  });
+const along = async (selector: string, from: number, to: number) => {
+  const r = await ev<{ x: number; y: number; w: number; h: number }>(
+    `(() => { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; })()`,
+  );
+  const y = r.y + r.h / 2;
+  await mouseAt('mouseMoved', r.x + r.w * from, y);
+  await mouseAt('mousePressed', r.x + r.w * from, y);
+  if (from !== to) await mouseAt('mouseMoved', r.x + r.w * to, y);
+  await mouseAt('mouseReleased', r.x + r.w * to, y);
+  await sleep(120);
+};
+const clipLens = () => ev<number[]>('__onetake.state.segments.map(s => s.pcm.length)');
+await ev('__onetake.openEditor()');
+check(
+  await ev<boolean>('document.getElementById("editor").classList.contains("on")'),
+  'editor opens from the test hook',
+);
+check(
+  (await ev<number>('document.querySelectorAll("#edClips .seg").length')) === 4 &&
+    (await ev<number>('document.querySelectorAll("#edScrub .blk").length')) === 4,
+  'editor lists the four clips and draws one scrub block each',
+);
+await along('#edScrub .blocks', 0.6, 0.6);
+const edTime = await ev<string>('document.getElementById("edTime").textContent');
+check(/^0:0[3-6] \/ 0:0\d$/.test(edTime), `scrub bar moved the playhead (${edTime})`);
+await ev('document.querySelector("#edClips .seg[data-i=\\"1\\"]").click()');
+const lensBefore = await clipLens();
+await along('#edWave', 0.25, 0.75);
+check(
+  !(await ev<boolean>('document.getElementById("edCut").disabled')),
+  `dragging across the waveform selects a stretch (${await ev<string>('document.getElementById("edWaveHint").textContent')})`,
+);
+await ev('document.getElementById("edCut").click()');
+await sleep(100);
+const lensCut = await clipLens();
+check(
+  lensCut.length === 4 && Math.abs((lensCut[1] ?? 0) / (lensBefore[1] ?? 1) - 0.5) < 0.06,
+  `cut removed half of clip 2 (${lensBefore[1]} -> ${lensCut[1]} samples)`,
+);
+await page.press('z', MODIFIER.ctrl);
+await sleep(100);
+check((await clipLens())[1] === lensBefore[1], 'Ctrl+Z in the editor restores the cut audio');
+await along('#edWave', 0.5, 0.5);
+await ev('document.getElementById("edSplit").click()');
+await sleep(100);
+const split = await ev<{ n: number; joined: boolean; sum: number }>(
+  '(() => { const s = __onetake.state.segments; return { n: s.length, joined: s[2].joined && s[2].prevId === s[1].id, sum: s[1].pcm.length + s[2].pcm.length }; })()',
+);
+check(
+  split.n === 5 && split.joined && split.sum === lensBefore[1],
+  'split makes two halves that still play back to back',
+);
+await page.press('z', MODIFIER.ctrl);
+await sleep(100);
+await ev(
+  '(() => { const s = document.getElementById("edSlide"); s.value = "3"; s.dispatchEvent(new Event("change")); })()',
+);
+await sleep(100);
+check(
+  (await ev<number>('__onetake.state.segments[1].slide')) === 3,
+  'the Slide list moves a clip to another slide',
+);
+await page.press('Delete');
+await sleep(100);
+check((await ev<number>('__onetake.state.segments.length')) === 3, 'Delete removes the selected clip');
+await ev('document.getElementById("edUndo").click()');
+await sleep(100);
+check(
+  (await ev<number>('__onetake.state.segments.length')) === 4 &&
+    (await ev<number>('__onetake.state.segments[1].slide')) === 3,
+  'Undo brings the clip back, still on the new slide',
+);
+await page.screenshot('editor.png');
+await page.press('Escape');
+await sleep(100);
+check(
+  !(await ev<boolean>('document.getElementById("editor").classList.contains("on")')) &&
+    (await ev<string>('document.querySelector("#segs .seg[data-i=\\"1\\"] .meta b").textContent')) ===
+      'Slide 4',
+  'Escape closes the editor and the main timeline shows the moved clip',
+);
+const stored = await ev<number | null>(
+  `new Promise((resolve) => { const req = indexedDB.open('one-take'); req.onerror = () => resolve(null); req.onsuccess = () => { const db = req.result; const id = __onetake.state.segments[1].id; const get = db.transaction('segments').objectStore('segments').get(id); get.onsuccess = () => { db.close(); resolve(get.result ? get.result.slide : null); }; get.onerror = () => resolve(null); }; })`,
+);
+check(stored === 3, 'the edit was written to IndexedDB');
+
 // 8. the export dialog opens and plans without blockers
 await ev('__onetake.openExport()');
 await sleep(300);

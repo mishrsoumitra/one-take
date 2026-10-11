@@ -1312,20 +1312,389 @@ button.x .ico {
   cursor: pointer;
 }
 
+/* ---------------------------------------------------------------- the editor */
+/* a player with a scrub bar on the left, the clips on the right, the tools for the selected clip
+   (and the take panel while recording) under the player */
+.editor .box {
+  width: 1240px;
+  max-width: 96vw;
+  height: 92vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--spacing-12px);
+  padding: var(--spacing-16px) var(--spacing-20px);
+  overflow: hidden;
+}
+.editor .spacer {
+  flex: 1;
+}
+.editor .head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-10px);
+}
+.editor .head > .ico {
+  color: var(--accent-text);
+}
+.editor .head h3 {
+  margin: 0;
+}
+.editor .head .info {
+  color: var(--muted);
+  font-size: var(--font-size-13px, 13px);
+  font-variant-numeric: tabular-nums;
+  margin-left: var(--spacing-4px);
+}
+.editor .head .x {
+  margin-left: auto;
+}
+.editor .body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--spacing-16px);
+  min-height: 0;
+}
+.editor .left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-12px);
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+/* the player: the slide on black, transport buttons, the scrub bar */
+.editor .player {
+  flex: 1 1 auto;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  background: var(--stage);
+  border-radius: var(--corner-radius-12px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.editor .screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.editor .screen img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.editor .screen img[hidden] {
+  display: none;
+}
+.editor .screen .noslide {
+  color: var(--neutral-400);
+  font-size: var(--font-size-14px, 14px);
+}
+.editor .screen .noslide[hidden] {
+  display: none;
+}
+.editor .bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-6px);
+  padding: var(--spacing-8px) var(--spacing-10px) var(--spacing-6px);
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.editor .bar .time {
+  margin-left: var(--spacing-6px);
+  font-size: var(--font-size-13px, 13px);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* the scrub bar: one block per clip, as wide as the clip is long; the quiet before a clip is the
+   darker lead-in of its block; the playhead is a white line */
+.editor .scrub {
+  position: relative;
+  padding: 0 var(--spacing-10px) var(--spacing-10px);
+  background: var(--panel);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.editor .scrub .blocks {
+  display: flex;
+  gap: 2px;
+  height: 22px;
+}
+.editor .scrub .blk {
+  flex: 1 1 0;
+  min-width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(to right, var(--panel2) var(--gap, 0%), var(--accent-tint) var(--gap, 0%));
+  border: 1px solid transparent;
+  transition: border-color 0.1s;
+}
+.editor .scrub .blk:hover {
+  border-color: var(--accent-line);
+}
+.editor .scrub .blk.sel {
+  background: linear-gradient(to right, var(--panel2) var(--gap, 0%), var(--accent) var(--gap, 0%));
+}
+/* left is set from the playhead position, as a percentage of the blocks' width */
+.editor .scrub .head {
+  position: absolute;
+  top: -3px;
+  height: 28px;
+  width: 2px;
+  margin-left: calc(var(--spacing-10px) - 1px);
+  background: var(--neutral-0);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.editor .scrub .head[hidden] {
+  display: none;
+}
+/* the selected clip and its tools */
+.editor .clip,
+.editor .take {
+  flex: none;
+  background: var(--panel2);
+  border-radius: var(--corner-radius-12px);
+  padding: var(--spacing-12px) var(--spacing-14px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-8px);
+}
+.editor .clip[hidden],
+.editor .take[hidden] {
+  display: none;
+}
+.editor .clip .title,
+.editor .take .title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-12px);
+  min-height: var(--spacing-32px);
+}
+.editor .clip .title b,
+.editor .take .title b {
+  font-size: var(--font-size-14px, 14px);
+  font-weight: var(--font-weight-semibold);
+}
+.editor .slidepick,
+.editor .pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-8px);
+  color: var(--muted);
+  font-size: var(--font-size-13px, 13px);
+}
+.editor .slidepick select,
+.editor .pick select {
+  min-width: 110px;
+}
+.editor .wave {
+  display: block;
+  width: 100%;
+  height: 72px;
+  border-radius: var(--corner-radius-8px);
+  background: var(--neutral-1000);
+  border: 1px solid var(--neutral-750);
+  cursor: crosshair;
+  touch-action: none;
+  --wave-bar: var(--brand-400);
+  --wave-sel: color-mix(in srgb, var(--brand-500) 28%, transparent);
+  --wave-sel-line: var(--brand-500);
+  --wave-tick: var(--alpha-12);
+  --wave-head: var(--neutral-0);
+}
+.editor .clip .hint,
+.editor .take .hint {
+  font-size: var(--font-size-12px);
+  color: var(--muted);
+  min-height: 16px;
+}
+.editor .clip .actions,
+.editor .take .actions {
+  flex-wrap: wrap;
+  gap: var(--spacing-8px);
+  margin-top: var(--spacing-2px, 2px);
+}
+/* the take panel: pick where, press Record, watch the meter */
+.editor .take {
+  border: 1px solid var(--accent-line);
+}
+.editor .take .title > .ico {
+  color: var(--accent-text);
+}
+.editor .take .where {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-14px);
+  flex-wrap: wrap;
+}
+.editor .take .thumb {
+  width: 72px;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: var(--stage);
+  border-radius: var(--corner-radius-4px);
+  border: 1px solid var(--line);
+}
+.editor .take .thumb[hidden],
+.editor .take .pick[hidden] {
+  display: none;
+}
+.editor .take .meterrow {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-10px);
+}
+.editor .take .meter {
+  flex: 1 1 0;
+  min-width: 120px;
+  height: 30px;
+  background: var(--neutral-1000);
+  border-radius: var(--corner-radius-8px);
+  border: 1px solid var(--neutral-750);
+  --meter-tick: var(--alpha-12);
+  --meter-noise: var(--alpha-20);
+  --meter-line: var(--neutral-0);
+  --meter-idle: var(--brand-500);
+  --meter-loud: var(--yellow-400);
+  --meter-speaking: var(--error-500);
+  --meter-muted: var(--neutral-700);
+}
+.editor .take .status {
+  min-width: 150px;
+  font-size: var(--font-size-13px, 13px);
+  font-weight: var(--font-weight-medium);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.editor .take .status.rec {
+  color: var(--rec-text);
+}
+/* press to speak inside a take: the same hold button as on the stage, in the row */
+.editor .take .hold {
+  gap: var(--spacing-6px);
+  border-color: var(--accent-line);
+}
+.editor .take .hold[hidden] {
+  display: none;
+}
+.editor .take .hold .ico {
+  color: var(--accent-text);
+}
+.editor .take .hold.on {
+  background: var(--rec);
+  border-color: var(--rec);
+  color: var(--neutral-0);
+}
+.editor .take .hold.on .ico {
+  color: var(--neutral-0);
+}
+.editor .take .result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6px);
+  padding-top: var(--spacing-8px);
+  border-top: 1px dashed var(--line);
+  font-size: var(--font-size-13px, 13px);
+}
+.editor .take .result[hidden] {
+  display: none;
+}
+/* the clips, in playback order, in the same rows as the timeline on the main screen */
+.editor .clips {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel2);
+  border-radius: var(--corner-radius-12px);
+}
+.editor .clips h4 {
+  margin: 0;
+  padding: var(--spacing-12px) var(--spacing-14px) var(--spacing-6px);
+  display: flex;
+  align-items: center;
+}
+.editor .clips h4 span {
+  margin-left: auto;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+.editor .clips .list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--spacing-4px) var(--spacing-8px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4px);
+}
+.editor .clips .seg {
+  grid-template-columns: 22px 54px 1fr;
+  cursor: pointer;
+  background: var(--panel);
+}
+.editor .clips .seg.sel {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+.editor .clips .seg:focus-visible {
+  outline: 2px solid var(--accent-line);
+}
+.editor .clips .empty {
+  color: var(--muted);
+  padding: var(--spacing-16px) var(--spacing-12px);
+  font-size: var(--font-size-13px, 13px);
+  text-align: center;
+  line-height: 1.5;
+}
+.editor .clips .actions {
+  padding: var(--spacing-6px) var(--spacing-10px) var(--spacing-10px);
+  margin-top: 0;
+}
+.editor .foot {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-12px);
+}
+@media (max-width: 1100px) {
+  /* a narrow window: the clips go under the player, which gives up most of its height */
+  .editor .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 170px;
+  }
+  .editor .player {
+    min-height: 150px;
+  }
+  .editor .wave {
+    height: 56px;
+  }
+  .editor .foot .keys {
+    display: none;
+  }
+}
+
 /* ---------------------------------------------------------------- narrower windows */
 /* the top bar must stay one row down to 1180 px: things leave it in order of how much they are
-   missed (measured with the mic on in auto mode, the widest state) */
-@media (max-width: 1800px) {
+   missed (measured with the mic on in auto mode, the widest state; the Edit button, between Preview
+   and Export, is in the count) */
+@media (max-width: 1840px) {
   .brand .by {
     display: none;
   }
 }
-@media (max-width: 1700px) {
+@media (max-width: 1730px) {
   #top .stat {
     display: none;
   }
 }
-@media (max-width: 1500px) {
+@media (max-width: 1640px) {
   #top .deck {
     display: none;
   }
@@ -1333,7 +1702,18 @@ button.x .ico {
     max-width: 120px;
   }
 }
-@media (max-width: 1440px) {
+@media (max-width: 1550px) {
+  /* Edit becomes a pen icon; its title still says what it does */
+  #btnEdit .label {
+    display: none;
+  }
+  #btnEdit {
+    width: var(--spacing-32px);
+    min-width: var(--spacing-32px);
+    padding: var(--spacing-4px);
+  }
+}
+@media (max-width: 1520px) {
   /* the mode switch keeps its icons (an ear, a hand); the titles still say what each one does */
   .segmented .opt .label {
     display: none;
@@ -1342,7 +1722,7 @@ button.x .ico {
     padding: 0 var(--spacing-6px);
   }
 }
-@media (max-width: 1366px) {
+@media (max-width: 1390px) {
   /* Mute becomes an icon button; its title and the M key still say what it does */
   #btnMute .label {
     display: none;
@@ -1353,7 +1733,7 @@ button.x .ico {
     padding: var(--spacing-4px);
   }
 }
-@media (max-width: 1300px) {
+@media (max-width: 1370px) {
   #micSel {
     max-width: 100px;
   }
@@ -1363,7 +1743,18 @@ button.x .ico {
     display: none;
   }
 }
-@media (max-width: 1180px) {
+@media (max-width: 1290px) {
+  /* Preview becomes a play icon next to the pen; the step badge and the titles still say what they do */
+  #btnPreview .label {
+    display: none;
+  }
+  #btnPreview {
+    width: var(--spacing-32px);
+    min-width: var(--spacing-32px);
+    padding: var(--spacing-4px);
+  }
+}
+@media (max-width: 1230px) {
   #keys {
     display: none;
   }

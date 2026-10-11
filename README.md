@@ -42,6 +42,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Two ways to drive the mic.** *Auto* listens all the time and decides for you. *Press to speak* records only while you hold `Space` or the big button on the stage, so the app is never listening when you have not asked it to; the dead air at either end of a press is still trimmed. Switch at any time, even mid-recording.
 - **PDF, PowerPoint or images.** Drop a PDF, a `.pptx` / `.ppsx` / `.pptm` deck or a set of images. PowerPoint files are turned into PDF on the local server in plain JavaScript; no Office, Keynote or LibreOffice needed.
 - **Slides follow your navigation.** Change slides with the arrow keys, a presenter clicker, or a click on a thumbnail. If you change slides mid-sentence, the sentence stays intact across both slides.
+- **Fix it afterwards.** The editor plays the lecture with a scrub bar and works clip by clip (a clip is one phrase on one slide): re-record a clip and the new voice takes its place, cut a stretch of audio out of one, split it, move it to another slide, delete it, or record a new clip and drop it in anywhere. Undo steps back through every change.
 - **Any container.** MP4, fragmented MP4, QuickTime MOV, Matroska MKV, WebM, HLS (`index.m3u8` plus segments) and MPEG-DASH (`manifest.mpd` plus segments).
 - **Any quality.** Resolution presets from 360p to 4K or a custom size, frame rate from 1 to 120 fps, four quality levels or an exact bitrate, H.264 / H.265 / VP9 / AV1 video, AAC or Opus audio, and key-frame spacing.
 - **Compression on the server.** ffmpeg re-encodes with a CRF quality target, x264 / x265 speed presets, the `stillimage` tune for slides, a different output frame rate, scaling, a bitrate cap, and hardware encoders when your machine has them.
@@ -145,7 +146,22 @@ If you change slides while speaking (in either mode, including during a press), 
 
 **Preview** plays the lecture with the slides switching at the right moments. `▶` on a phrase plays from there. Drag phrases to reorder them. Press `Esc` to stop.
 
-### 7. Export the video
+### 7. Edit the video
+
+Click **Edit** to open the editor. It shows the lecture as a player with a scrub bar on the left and the list of clips on the right. A clip is one phrase on one slide, which is exactly what the timeline on the main screen shows; the editor only gives you more ways to change them.
+
+- **Play and scrub.** `▶` plays from the playhead; click or drag the bar under the slide to move through the lecture, even into the middle of a phrase. `Space` plays and pauses, `←` `→` jump between clips.
+- **Re-record a clip.** Select it and click **Re-record**. The mic opens (in the same mode as the top bar: auto, or hold `Space` to speak), you say it again, press **Stop**, listen to the take, and **Use this take**. The new voice replaces the old clip at the same place in the video, on the same slide. Pauses in the take are cut out, as always, so a take with two sentences and a breath in between becomes two clips.
+- **Cut a stretch of audio.** Drag across the waveform of the selected clip to select a stretch, then **Cut selection** removes it (the two sides are joined with a short fade) or **Keep only selection** throws away everything else. **Play selection** lets you hear it first.
+- **Split a clip.** Put the playhead inside the clip (click on the waveform) and click **Split at playhead**. The two halves still play back to back; now a new clip can go between them.
+- **Add a clip.** **Add clip after** records a new clip after the selected one; **Add a clip** under the list lets you pick any slide and any position (at the start, or after any clip). Pick the slide, record, listen, use.
+- **Move a clip to another slide.** The **Slide** list next to the clip's name changes which slide it shows; the audio stays the same.
+- **Delete a clip** with the **Delete** button or the `Delete` key.
+- **Undo** (`Cmd/Ctrl+Z`) steps back through everything you did since opening the editor.
+
+Every change is saved the moment it is made, so there is no Save button: **Done** (or `Esc`) just closes the editor. The main microphone is turned off while the editor is open, because the editor records its own takes.
+
+### 8. Export the video
 
 Click **Export video**. In the dialog you choose:
 
@@ -170,6 +186,8 @@ To start a new lecture, click **New**. It discards the slides and all phrases.
 | `M`                                    | Mute / unmute (Auto only)                                |
 | `R`                                    | Mic on / off                                             |
 | `Esc`                                  | Stop the preview                                         |
+
+In the editor: `Space` plays and pauses, `←` `→` select the previous or next clip, `Delete` / `Backspace` removes the selected clip, `Cmd/Ctrl+Z` undoes the last change, and `Esc` stops playback, cancels a take, or closes the editor. While a press-to-speak take is recording, `Space` is the talk key.
 
 Shortcuts are ignored while you type in a field or while a dialog is open. Most presenter clickers send `PageDown` and `PageUp`, so they work out of the box.
 
@@ -459,7 +477,7 @@ A headset or USB microphone gives the cleanest cut. Mute (`M`) when you need to 
 Everything is written to IndexedDB (database `one-take`) the moment it exists:
 
 - the slide source (the PDF or the image files), so slides can be re-rendered,
-- every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase,
+- every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made),
 - the project state: phrase order, current slide, your detector settings and the last export settings.
 
 The recording mode (Auto or Press to speak), the theme and the tips setting are browser preferences, kept in `localStorage` rather than with the project.
@@ -708,13 +726,13 @@ one-take/
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
-    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback
-    │       ├── core/             VoiceActivityDetector, Recorder (auto / press to speak), timeline builder, PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback (seekable), take recording for the editor
+    │       ├── core/             VoiceActivityDetector, Recorder (auto / press to speak), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb)
     │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, export dialog, folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       ├── ui/               layout, editor, export dialog, folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
     │   └── public/fonts/         Mona Sans (variable weight, OFL)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
@@ -764,7 +782,7 @@ npm test
 
 - `shared`: the planner (every branch of what-runs-where), key-frame alignment, ladders, size and frame estimates for a three-hour lecture, even-size rounding, file name sanitising, formatting.
 - `server`: the ffmpeg argument builder and capability parsing, the job manager (unique names, short uploads, cancel during upload and during ffmpeg, replace rules, faststart remux, HLS and DASH packaging), and the HTTP app (loopback checks, validation, the SPA fallback, a full export through the API). Tests that need ffmpeg run only when it is installed.
-- `client`: the voice detector, the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses), the timeline builder and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
+- `client`: the voice detector, the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses), the timeline builder, the editor's edit functions (cutting and keeping a stretch, splitting, replacing and inserting clips, which clip is under a time, waveform peaks) and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
 
 ### End-to-end run
 

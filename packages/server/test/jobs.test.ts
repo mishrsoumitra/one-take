@@ -311,9 +311,19 @@ describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
     );
     await upload(jobs, dash.id, sample);
     const dashDone = waitForEnd(jobs, dash.id);
+    const seen: ExportJob['progress'][] = [];
+    const unsubscribe = jobs.subscribe(dash.id, (e) => {
+      if (e.type === 'job') seen.push(e.job.progress);
+    });
     await jobs.finish(dash.id, sample.length);
     const dashFinal = await dashDone;
+    unsubscribe();
     expect(dashFinal.state, dashFinal.error ?? '').toBe('done');
+    // ffmpeg's own counters travel with the progress while it encodes
+    const withCounters = seen.filter((p) => p.stage === 'process' && p.outTimeSec !== null);
+    expect(withCounters.length).toBeGreaterThan(0);
+    expect(withCounters.some((p) => p.fps !== null)).toBe(true);
+    expect(dashFinal.progress).toMatchObject({ stage: 'done', outTimeSec: null, process: null });
     const dashFiles = await fs.readdir(path.join(tmp, 'stream-dash'));
     expect(dashFiles).toContain('manifest.mpd');
     expect(dashFiles.some((f) => f.endsWith('.m4s'))).toBe(true);
@@ -360,9 +370,16 @@ describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
     );
   }, 60_000);
 
-  it('cancels a running ffmpeg job', async () => {
+  it('cancels a running ffmpeg job, sampling its process while it runs', async () => {
     if (!ffmpeg) return;
-    const jobs = new JobManager({ ffmpeg });
+    const sampled: number[] = [];
+    const jobs = new JobManager({
+      ffmpeg,
+      processLoad: (pid) => {
+        sampled.push(pid);
+        return Promise.resolve({ pid, cpuPercent: 350, rssBytes: 123 });
+      },
+    });
     const job = await jobs.create(
       request({
         fileName: 'slow',
@@ -398,8 +415,22 @@ describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
     });
     await jobs.finish(job.id, sample.length);
     await processing;
+    // the sampler runs about once a second while ffmpeg is up and lands in the progress
+    const withProcess = new Promise<ExportJob['progress']>((resolve) => {
+      const unsub = jobs.subscribe(job.id, (e) => {
+        if (e.type === 'job' && e.job.progress.process !== null) {
+          unsub();
+          resolve(e.job.progress);
+        }
+      });
+    });
+    const progress = await withProcess;
+    expect(progress.process).toMatchObject({ cpuPercent: 350, rssBytes: 123 });
+    expect(sampled.length).toBeGreaterThan(0);
+    expect(sampled[0]).toBe(progress.process?.pid);
     const cancelled = await jobs.cancel(job.id);
     expect(cancelled.state).toBe('cancelled');
+    expect(cancelled.progress.process).toBeNull();
     await new Promise((r) => setTimeout(r, 300));
     expect((await fs.readdir(tmp)).filter((n) => n.startsWith('slow'))).toEqual([]);
   }, 60_000);

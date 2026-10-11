@@ -15,6 +15,8 @@ import {
   type FfmpegInfo,
   type JobEvent,
   type JobOutput,
+  type JobProgress,
+  type ProcessLoad,
   type SystemProfile,
 } from '@one-take/shared';
 
@@ -51,9 +53,27 @@ export interface JobManagerOptions {
   log?: (message: string) => void;
   /** The machine profile: decides how many re-encodes run at once and whether decoding uses the GPU. */
   system?: SystemProfile | null;
+  /** Reads a process's CPU and memory, for the ffmpeg figures in the progress; null when it cannot. */
+  processLoad?: (pid: number) => Promise<ProcessLoad | null>;
 }
 
 const GENERATED_EXTENSIONS = new Set(['m3u8', 'mpd', 'ts', 'm4s', 'mp4', 'tmp']);
+/** How often the ffmpeg process is sampled for CPU and memory while it runs. */
+const PROCESS_SAMPLE_MS = 1000;
+
+/** A progress record with the ffmpeg figures left empty unless given. */
+function progressOf(
+  p: Pick<JobProgress, 'stage' | 'percent' | 'message'> & Partial<JobProgress>,
+): JobProgress {
+  return {
+    speed: null,
+    outTimeSec: null,
+    fps: null,
+    outputBytes: null,
+    process: null,
+    ...p,
+  };
+}
 
 export class JobManager {
   private readonly jobs = new Map<string, InternalJob>();
@@ -62,12 +82,14 @@ export class JobManager {
   private readonly log: (message: string) => void;
   /** Re-encodes compete for the same cores, so only `maxEncodeJobs` run at once; the rest wait here. */
   private readonly encodeSlots: Semaphore;
+  private readonly processLoad: ((pid: number) => Promise<ProcessLoad | null>) | null;
 
   constructor(options: JobManagerOptions) {
     this.ffmpeg = options.ffmpeg;
     this.keepFinished = options.keepFinished ?? 50;
     this.log = options.log ?? (() => undefined);
     this.encodeSlots = new Semaphore(Math.max(1, options.system?.maxEncodeJobs ?? 1));
+    this.processLoad = options.processLoad ?? null;
   }
 
   /** How many re-encodes may run at the same time. */
@@ -146,7 +168,7 @@ export class JobManager {
       directory,
       state: 'uploading',
       bytesReceived: 0,
-      progress: { stage: 'upload', percent: 0, message: 'Receiving video from the browser…', speed: null },
+      progress: progressOf({ stage: 'upload', percent: 0, message: 'Receiving video from the browser…' }),
       outputs: [],
       error: null,
       upload: request.upload,
@@ -194,12 +216,11 @@ export class JobManager {
     internal.writeChain = run.catch(() => undefined);
     await run;
     const estimated = job.upload.estimatedBytes;
-    job.progress = {
+    job.progress = progressOf({
       stage: 'upload',
       percent: estimated > 0 ? Math.min(99, Math.round((job.bytesReceived / estimated) * 100)) : null,
       message: 'Receiving video from the browser…',
-      speed: null,
-    };
+    });
     return job;
   }
 
@@ -239,7 +260,7 @@ export class JobManager {
     }
     job.state = 'cancelled';
     job.error = 'Cancelled';
-    job.progress = { stage: 'done', percent: null, message: 'Cancelled', speed: null };
+    job.progress = progressOf({ stage: 'done', percent: null, message: 'Cancelled' });
     job.updatedAt = new Date().toISOString();
     await removeQuietly(internal.uploadPath);
     await removeQuietly(internal.tempOutputPath);
@@ -262,7 +283,7 @@ export class JobManager {
     job.updatedAt = new Date().toISOString();
     try {
       if (job.processing === null) {
-        job.progress = { stage: 'finalize', percent: null, message: 'Moving file into place…', speed: null };
+        job.progress = progressOf({ stage: 'finalize', percent: null, message: 'Moving file into place…' });
         this.emit(internal);
         if (await pathExists(internal.finalPath)) await removeQuietly(internal.finalPath);
         await fs.rename(internal.uploadPath, internal.finalPath);
@@ -287,49 +308,73 @@ export class JobManager {
         job.command = formatCommand(this.ffmpeg.path, plan.args);
         const reencode = spec.video.mode === 'encode';
         if (reencode && !this.encodeSlots.tryAcquire()) {
-          job.progress = {
+          job.progress = progressOf({
             stage: 'process',
             percent: null,
             message: 'Waiting for another export to finish re-encoding…',
-            speed: null,
-          };
+          });
           this.emit(internal);
           await this.encodeSlots.acquire(internal.abort.signal);
         }
-        job.progress = {
+        job.progress = progressOf({
           stage: 'process',
           percent: 0,
           message: reencode
             ? 'Compressing with ffmpeg…'
             : `Packaging as ${CONTAINER_INFO[spec.container].label}…`,
-          speed: null,
-        };
+        });
         this.emit(internal);
         this.log(`job ${job.id}: ${job.command}`);
         const duration = job.upload.durationSec;
         let lastEmit = 0;
+        const timers: { sampler: NodeJS.Timeout | null } = { sampler: null };
         try {
           await runFfmpeg(this.ffmpeg.path, plan.args, {
             cwd: plan.cwd,
             signal: internal.abort.signal,
-            onProgress: (t, speed) => {
+            onSpawn: (pid) => {
+              // CPU and memory of the ffmpeg process, about once a second, for the live meters.
+              const read = this.processLoad;
+              if (!read) return;
+              let busy = false;
+              timers.sampler = setInterval(() => {
+                if (busy || job.state !== 'processing') return;
+                busy = true;
+                void read(pid)
+                  .then((load) => {
+                    if (!load || job.progress.stage !== 'process') return;
+                    job.progress = { ...job.progress, process: load };
+                    this.emit(internal);
+                  })
+                  .catch(() => undefined)
+                  .finally(() => {
+                    busy = false;
+                  });
+              }, PROCESS_SAMPLE_MS);
+            },
+            onProgress: (p) => {
               const now = Date.now();
               if (now - lastEmit < 250) return;
               lastEmit = now;
+              const t = p.outTimeSec ?? 0;
               job.progress = {
+                ...job.progress,
                 stage: 'process',
                 percent: duration > 0 ? Math.min(99, Math.round((t / duration) * 100)) : null,
-                message: job.progress.message,
-                speed,
+                speed: p.speed,
+                outTimeSec: p.outTimeSec,
+                fps: p.fps,
+                outputBytes: p.outputBytes,
               };
               this.emit(internal);
             },
             onLog: (line) => this.emitLog(internal, line),
           });
         } finally {
+          if (timers.sampler) clearInterval(timers.sampler);
           if (reencode) this.encodeSlots.release();
         }
-        job.progress = { stage: 'finalize', percent: 99, message: 'Moving result into place…', speed: null };
+        job.progress = progressOf({ stage: 'finalize', percent: 99, message: 'Moving result into place…' });
         this.emit(internal);
         if (await pathExists(internal.finalPath)) await removeQuietly(internal.finalPath);
         await fs.rename(internal.tempOutputPath, internal.finalPath);
@@ -337,7 +382,7 @@ export class JobManager {
       }
       job.outputs = await this.describeOutput(internal.finalPath);
       job.state = 'done';
-      job.progress = { stage: 'done', percent: 100, message: 'Saved', speed: null };
+      job.progress = progressOf({ stage: 'done', percent: 100, message: 'Saved' });
       job.updatedAt = new Date().toISOString();
       this.emit(internal);
       this.log(`job ${job.id} done → ${internal.finalPath}`);
@@ -352,7 +397,7 @@ export class JobManager {
     const { job } = internal;
     job.state = 'failed';
     job.error = message;
-    job.progress = { stage: 'done', percent: null, message: `Failed: ${message}`, speed: null };
+    job.progress = progressOf({ stage: 'done', percent: null, message: `Failed: ${message}` });
     job.updatedAt = new Date().toISOString();
     await removeQuietly(internal.uploadPath);
     await removeQuietly(internal.tempOutputPath);

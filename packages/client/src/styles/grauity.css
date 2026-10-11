@@ -440,6 +440,12 @@ kbd {
 .modal.on {
   display: flex;
 }
+/* dialogs that open on top of another dialog (the folder picker from the export dialog, a question
+   from the editor) sit one layer up, whatever order they were added to the page in */
+.modal.picker,
+.modal.confirm {
+  z-index: var(--z-index-popover-overlay);
+}
 .modal .box {
   width: 480px;
   max-width: 94vw;

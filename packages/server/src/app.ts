@@ -11,6 +11,7 @@ import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
 import { type ConverterService } from './services/convert.js';
 import { type JobManager } from './services/jobs.js';
+import { type LoadMonitor } from './services/load.js';
 import { ApiError, errorMessage } from './util/errors.js';
 
 export interface AppDependencies {
@@ -18,6 +19,8 @@ export interface AppDependencies {
   jobs: JobManager;
   converter: ConverterService;
   capabilities: () => ServerCapabilities;
+  /** The live CPU and memory figures behind `/api/system/load`. */
+  load: LoadMonitor;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);

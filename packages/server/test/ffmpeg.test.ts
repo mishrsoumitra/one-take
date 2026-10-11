@@ -327,8 +327,15 @@ describe('parsers', () => {
     expect(parseProgressLine('out_time_us=1500000')).toEqual({ outTimeSec: 1.5 });
     expect(parseProgressLine('out_time_ms=1500000')).toEqual({ outTimeSec: 1.5 });
     expect(parseProgressLine('speed=12.3x')).toEqual({ speed: 12.3 });
+    expect(parseProgressLine('speed=N/A')).toEqual({});
+    expect(parseProgressLine('fps=412.50')).toEqual({ fps: 412.5 });
+    expect(parseProgressLine('total_size=1048576')).toEqual({ outputBytes: 1048576 });
+    expect(parseProgressLine('bitrate= 812.3kbits/s')).toEqual({ bitrateKbps: 812.3 });
+    expect(parseProgressLine('bitrate=N/A')).toEqual({});
     expect(parseProgressLine('out_time_us=N/A')).toEqual({});
-    expect(parseProgressLine('progress=end')).toEqual({});
+    expect(parseProgressLine('progress=end')).toEqual({ end: true });
+    expect(parseProgressLine('progress=continue')).toEqual({ end: true });
+    expect(parseProgressLine('frame=12')).toEqual({});
   });
 
   it('formats commands for humans', () => {

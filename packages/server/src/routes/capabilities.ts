@@ -8,4 +8,6 @@ export function registerCapabilityRoutes(app: FastifyInstance, deps: AppDependen
   app.get('/api/capabilities', () => deps.capabilities());
   /** The pre-flight result on its own: CPU, memory, GPU, disk, working hardware encoders, tier. */
   app.get('/api/system', () => deps.capabilities().system);
+  /** How busy the machine is right now; the browser polls this once a second during an export. */
+  app.get('/api/system/load', () => deps.load.sample());
 }

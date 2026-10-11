@@ -430,7 +430,12 @@ if (!values['no-export']) {
   const exportStart = Date.now();
   const result = await ev<{
     job: { state: string; outputs: { path: string; bytes: number }[]; error: string | null };
-    timing: { elapsedMs: number; encodeMs: number; videoSeconds: number };
+    timing: {
+      elapsedMs: number;
+      encodeMs: number;
+      videoSeconds: number;
+      eta: { first: number | null; max: number | null; samples: number; bases: string[] };
+    };
   }>(
     `__onetake.exportWith(${JSON.stringify({ fileName: 'stress', container: 'mp4', resolution: { preset: '360p' }, fps: 5 })})`,
     15 * 60_000, // a long session takes a while to encode; the watchdog covers the rest
@@ -440,6 +445,17 @@ if (!values['no-export']) {
     result.job.state === 'done',
     `export of ${fmt(tl.total)} done in ${exportSec.toFixed(1)} s${result.job.error ? ` (${result.job.error})` : ''}`,
   );
+  // The time left must never have painted a very different picture from the real time: at no point
+  // may it have claimed more than three times what the export actually took (plus a little slack).
+  const eta = result.timing.eta;
+  console.log(
+    `time left: first ${eta.first?.toFixed(0) ?? 'none'} s, highest ${eta.max?.toFixed(0) ?? 'none'} s, real ${exportSec.toFixed(0)} s, basis ${eta.bases.join(' → ') || 'none'} over ${eta.samples} updates`,
+  );
+  check(
+    eta.max !== null && eta.max <= exportSec * 3 + 30,
+    `time left never claimed more than three times the real export time (${eta.max?.toFixed(0) ?? '?'} s against ${exportSec.toFixed(0)} s)`,
+  );
+  check(eta.bases.includes('measured'), 'time left settled on the measured speed');
   const file = result.job.outputs[0]?.path ?? '';
   if (fs.existsSync(file)) {
     const p = probe(file);

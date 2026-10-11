@@ -103,6 +103,50 @@
   font-size: var(--font-size-12px);
   padding: 0 var(--spacing-6px);
 }
+/* the recording mode: a two-option segmented control (two NSButtons sharing one tinted track).
+   The chosen option is raised on the panel colour, the other one sits flat on the track. */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--corner-radius-8px);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  border: 1px solid var(--line);
+}
+.segmented .opt {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 var(--spacing-8px);
+  border-radius: 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  gap: var(--spacing-4px);
+}
+.segmented .opt .ico {
+  font-size: 15px;
+}
+.segmented .opt:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.segmented .opt[aria-checked='true'] {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.segmented .opt[aria-checked='true']:hover:not(:disabled) {
+  background: var(--panel);
+}
+/* the "press to speak" option carries the recording colour while it is chosen, so the mode is obvious */
+.segmented #modeHold[aria-checked='true'] {
+  color: var(--rec-text);
+}
+.segmented .opt:active:not(:disabled) {
+  transform: none;
+}
 #btnHelp {
   color: var(--muted);
 }
@@ -329,6 +373,73 @@ body.dragging #stage::after {
 }
 #capFlag.on {
   display: flex;
+}
+/* press to speak: the big hold-to-talk button, bottom centre of the stage. Red and larger while held. */
+#btnHold {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 4;
+  height: 52px;
+  min-height: 52px;
+  padding: 0 var(--spacing-20px) 0 var(--spacing-16px);
+  gap: var(--spacing-10px);
+  border-radius: 9999px;
+  border: 2px solid var(--accent-line);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text);
+  font-size: var(--font-size-16px);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: var(--backdrop-blur-8px);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    background-color 0.15s ease-in-out,
+    color 0.15s ease-in-out,
+    border-color 0.15s ease-in-out,
+    transform 0.15s ease-in-out;
+}
+#btnHold[hidden] {
+  display: none;
+}
+#btnHold .ico {
+  color: var(--accent-text);
+}
+#btnHold kbd {
+  margin-left: var(--spacing-4px);
+}
+#btnHold:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--accent);
+}
+#btnHold:active:not(:disabled),
+#btnHold.held {
+  transform: translateX(-50%) scale(1.04);
+}
+#btnHold.held {
+  background: var(--rec);
+  border-color: var(--rec);
+  color: var(--neutral-0);
+  box-shadow:
+    var(--shadow-float),
+    0 0 0 8px color-mix(in srgb, var(--rec) 30%, transparent);
+}
+#btnHold.held .ico {
+  color: var(--neutral-0);
+}
+#btnHold.held kbd {
+  background: color-mix(in srgb, var(--neutral-0) 20%, transparent);
+  border-color: color-mix(in srgb, var(--neutral-0) 35%, transparent);
+  color: var(--neutral-0);
+}
+#btnHold:focus-visible {
+  outline: 3px solid var(--accent-line);
+}
+/* the tip moves up out of the hold button's way */
+#stage.hold-on #coach {
+  bottom: 82px;
 }
 #previewFlag {
   position: absolute;
@@ -1202,23 +1313,54 @@ button.x .ico {
 }
 
 /* ---------------------------------------------------------------- narrower windows */
-/* the top bar must stay one row: things leave it in order of how much they are missed */
-@media (max-width: 1600px) {
+/* the top bar must stay one row down to 1180 px: things leave it in order of how much they are
+   missed (measured with the mic on in auto mode, the widest state) */
+@media (max-width: 1800px) {
   .brand .by {
     display: none;
   }
 }
-@media (max-width: 1440px) {
+@media (max-width: 1700px) {
   #top .stat {
     display: none;
   }
 }
-@media (max-width: 1380px) {
+@media (max-width: 1500px) {
   #top .deck {
     display: none;
   }
   #micSel {
     max-width: 120px;
+  }
+}
+@media (max-width: 1440px) {
+  /* the mode switch keeps its icons (an ear, a hand); the titles still say what each one does */
+  .segmented .opt .label {
+    display: none;
+  }
+  .segmented .opt {
+    padding: 0 var(--spacing-6px);
+  }
+}
+@media (max-width: 1366px) {
+  /* Mute becomes an icon button; its title and the M key still say what it does */
+  #btnMute .label {
+    display: none;
+  }
+  #btnMute {
+    width: var(--spacing-32px);
+    min-width: var(--spacing-32px);
+    padding: var(--spacing-4px);
+  }
+}
+@media (max-width: 1300px) {
+  #micSel {
+    max-width: 100px;
+  }
+  /* "Export video" becomes "Export", "Hold Space to speak" becomes "Hold Space" */
+  #btnExport .long,
+  #statusText .long {
+    display: none;
   }
 }
 @media (max-width: 1180px) {
@@ -1228,9 +1370,6 @@ button.x .ico {
   #top {
     padding-left: var(--spacing-10px);
     padding-right: var(--spacing-10px);
-  }
-  #micSel {
-    max-width: 110px;
   }
   /* New and Help become icon buttons; their titles still say what they do */
   #top .tools .label {

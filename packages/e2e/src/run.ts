@@ -1,66 +1,37 @@
 /**
  * End-to-end check: real server (with ffmpeg), built client, headless Chrome with a fake microphone.
- * Records a lecture with slide changes mid-speech, exports to MP4, HLS, DASH, WebM and an in-memory MP4,
- * verifies every output with ffprobe, then reloads, resumes and plays the preview.
+ * Records a lecture with slide changes mid-speech in auto mode, then in press-to-speak mode with the
+ * real Space key, exports to MP4, HLS, DASH, WebM and an in-memory MP4, verifies every output with
+ * ffprobe, then reloads, resumes and plays the preview.
  *
  *   npm run e2e            (builds first)
  *   tsx packages/e2e/src/run.ts --out /tmp/one-take-e2e
  */
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { Cdp } from './cdp.js';
+import {
+  audio,
+  check,
+  finish,
+  MODIFIER,
+  Page,
+  probe,
+  ROOT,
+  sleep,
+  startChrome,
+  startServer,
+  video,
+} from './harness.js';
 import { writeFixtures } from './make-fixtures.js';
 
 const { values } = parseArgs({
   options: { out: { type: 'string' }, port: { type: 'string' }, keep: { type: 'boolean' } },
 });
-const ROOT = path.resolve(new URL('../../..', import.meta.url).pathname);
 const OUT = path.resolve(values.out ?? path.join(ROOT, 'packages/e2e/out'));
 const PORT = Number(values.port ?? 4399);
 const CDP_PORT = PORT + 1;
-const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-const failures: string[] = [];
-function check(condition: boolean, message: string): void {
-  console.log(`${condition ? '  ok ' : ' FAIL'} ${message}`);
-  if (!condition) failures.push(message);
-}
-
-interface Probe {
-  streams: {
-    codec_type: string;
-    codec_name: string;
-    width?: number;
-    height?: number;
-    r_frame_rate?: string;
-    sample_rate?: string;
-  }[];
-  format: { duration?: string; format_name?: string };
-}
-function probe(file: string): Probe {
-  const out = execFileSync('ffprobe', [
-    '-v',
-    'error',
-    '-show_entries',
-    'stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate',
-    '-show_entries',
-    'format=duration,format_name',
-    '-of',
-    'json',
-    file,
-  ]);
-  return JSON.parse(out.toString()) as Probe;
-}
-function video(p: Probe) {
-  return p.streams.find((s) => s.codec_type === 'video');
-}
-function audio(p: Probe) {
-  return p.streams.find((s) => s.codec_type === 'audio');
-}
 
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -68,41 +39,8 @@ const fixtures = await writeFixtures(path.join(OUT, 'fixtures'));
 const exportsDir = path.join(OUT, 'exports');
 fs.mkdirSync(exportsDir, { recursive: true });
 
-const children: ChildProcess[] = [];
-process.on('exit', () => {
-  for (const c of children) {
-    try {
-      c.kill('SIGKILL');
-    } catch {
-      /* gone */
-    }
-  }
-});
-
 // 1. server with the built client
-const server = spawn(
-  process.execPath,
-  [
-    path.join(ROOT, 'packages/server/dist/index.js'),
-    '--port',
-    String(PORT),
-    '--dir',
-    exportsDir,
-    '--log-level',
-    'warn',
-  ],
-  { stdio: ['ignore', 'inherit', 'inherit'] },
-);
-children.push(server);
-let healthy = false;
-for (let i = 0; i < 100 && !healthy; i++) {
-  try {
-    healthy = (await fetch(`http://127.0.0.1:${PORT}/api/health`)).ok;
-  } catch {
-    await sleep(100);
-  }
-}
-check(healthy, 'server is up');
+await startServer(PORT, exportsDir);
 const caps = (await (await fetch(`http://127.0.0.1:${PORT}/api/capabilities`)).json()) as {
   ffmpeg: { version: string } | null;
   presentations: { extensions: string[]; renderer: string };
@@ -150,99 +88,17 @@ if (process.platform === 'darwin') {
   check(serverHw === 'h264_videotoolbox', 'VideoToolbox H.264 encoder verified on this Mac');
 }
 
-// 2. headless Chrome with the WAV as microphone
-const chrome = spawn(
-  CHROME,
-  [
-    '--headless=new',
-    `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=${path.join(OUT, 'profile')}`,
-    '--no-first-run',
-    '--hide-scrollbars',
-    '--window-size=1400,900',
-    '--use-fake-device-for-media-stream',
-    '--use-fake-ui-for-media-stream',
-    `--use-file-for-fake-audio-capture=${fixtures.wav}%noloop`,
-    '--autoplay-policy=no-user-gesture-required',
-    '--disable-features=AudioServiceSandbox',
-  ],
-  { stdio: 'ignore' },
-);
-children.push(chrome);
-const cdp = new Cdp(CDP_PORT);
-await cdp.connect();
-const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
-const { sessionId: S } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-  targetId,
-  flatten: true,
-});
-const logs: string[] = [];
-cdp.on((m) => {
-  if (m.sessionId !== S) return;
-  if (m.method === 'Runtime.consoleAPICalled') {
-    const p = m.params as { type: string; args: { value?: unknown; description?: string }[] };
-    const text = p.args
-      .map((a) => {
-        const v = a.value ?? a.description;
-        if (v === undefined) return '';
-        return typeof v === 'string' ? v : JSON.stringify(v);
-      })
-      .join(' ');
-    logs.push(`${p.type}: ${text}`);
-  }
-  if (m.method === 'Runtime.exceptionThrown') {
-    const p = m.params as { exceptionDetails: { text: string; exception?: { description?: string } } };
-    logs.push(`EXCEPTION: ${p.exceptionDetails.exception?.description ?? p.exceptionDetails.text}`);
-  }
-});
-await cdp.send('Page.enable', {}, S);
-await cdp.send('Runtime.enable', {}, S);
-const ev = async <T = unknown>(expression: string): Promise<T> => {
-  const r = await cdp.send<{
-    result: { value: T };
-    exceptionDetails?: { text: string; exception?: { description?: string } };
-  }>('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, S);
-  if (r.exceptionDetails)
-    throw new Error(`page error: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
-  return r.result.value;
-};
-const screenshot = async (name: string) => {
-  const shot = await cdp.send<{ data: string }>('Page.captureScreenshot', { format: 'png' }, S);
-  fs.writeFileSync(path.join(OUT, name), Buffer.from(shot.data, 'base64'));
-};
-
-process.on('uncaughtException', (error) => {
-  console.error(error);
-  if (logs.length) console.error('console:', logs.join('\n'));
-  process.exit(1);
-});
-process.on('unhandledRejection', (error) => {
-  console.error(error);
-  if (logs.length) console.error('console:', logs.join('\n'));
-  process.exit(1);
-});
-
-const loaded = cdp.waitFor('Page.loadEventFired', S);
-await cdp.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` }, S);
-await loaded;
-for (let i = 0; i < 50 && !(await ev<boolean>('Boolean(window.__onetake)')); i++) await sleep(100);
-check(await ev<boolean>('Boolean(window.__onetake)'), 'app booted');
-for (let i = 0; i < 50 && !(await ev<boolean>('Boolean(__onetake.serverCaps())')); i++) await sleep(100);
-check(await ev<boolean>('Boolean(__onetake.serverCaps())'), 'client sees the server');
-await cdp.send(
-  'Emulation.setDeviceMetricsOverride',
-  { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false },
-  S,
-);
+// 2. headless Chrome with the WAV as microphone, played once from the moment the mic starts
+startChrome({ cdpPort: CDP_PORT, profileDir: path.join(OUT, 'profile'), wav: fixtures.wav, loop: false });
+const page = await Page.open(CDP_PORT, OUT);
+page.watchdog(25 * 60_000); // the whole run, exports included
+page.step('loading the decks');
+const ev = <T = unknown>(expression: string, timeoutMs?: number) => page.ev<T>(expression, timeoutMs);
+await page.navigate(`http://127.0.0.1:${PORT}/`);
+await page.waitForApp();
 
 // 3. a PowerPoint deck goes through the server's JavaScript renderer, then the PDF replaces it
-const { root } = await cdp.send<{ root: { nodeId: number } }>('DOM.getDocument', {}, S);
-const { nodeId } = await cdp.send<{ nodeId: number }>(
-  'DOM.querySelector',
-  { nodeId: root.nodeId, selector: '#fileIn' },
-  S,
-);
-await cdp.send('DOM.setFileInputFiles', { files: [fixtures.pptx], nodeId }, S);
+await page.setFiles('#fileIn', [fixtures.pptx]);
 for (let i = 0; i < 300 && (await ev<number>('__onetake.state.slides.length')) < 3; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 3, 'pptx converted into three slides');
 const origin = await ev<{ name: string; warnings: string[] } | null>(
@@ -257,7 +113,7 @@ check(
   (await ev<string>('document.getElementById("dropHint")?.textContent ?? ""')).includes('.pptx'),
   'drop zone says .pptx files are accepted',
 );
-await screenshot('pptx-slide.png');
+await page.screenshot('pptx-slide.png');
 {
   const slide = await ev<{ width: number; height: number }>(
     '(()=>{const s=__onetake.slides()[0];return {width:s.width,height:s.height}})()',
@@ -268,7 +124,7 @@ await screenshot('pptx-slide.png');
   );
 }
 
-await cdp.send('DOM.setFileInputFiles', { files: [fixtures.pdf], nodeId }, S);
+await page.setFiles('#fileIn', [fixtures.pdf]);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 4; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 4, 'four slides rendered');
 if ((await ev<number>('__onetake.state.slides.length')) !== 4) {
@@ -277,7 +133,13 @@ if ((await ev<number>('__onetake.state.slides.length')) !== 4) {
 }
 
 // 4. record with slide changes; the fake microphone plays speech.wav from the moment the mic starts
-await ev('__onetake.startMic()');
+check((await ev<string>('__onetake.state.mode')) === 'auto', 'the app starts in auto mode');
+check(
+  (await ev<string>('document.getElementById("modeAuto").getAttribute("aria-checked")')) === 'true',
+  'the mode switch shows Auto',
+);
+page.step('recording in auto mode');
+check(await page.startMic(), 'mic started');
 const t0 = Date.now();
 const at = async (sec: number, fn: () => Promise<unknown>) => {
   const d = t0 + sec * 1000 - Date.now();
@@ -303,7 +165,99 @@ check(
   (segs[0]?.sec ?? 0) > 1.8 && (segs[0]?.sec ?? 0) < 2.6,
   'first phrase keeps its length plus pre-roll and tail',
 );
-await screenshot('recording.png');
+await page.screenshot('recording.png');
+
+// 4b. press to speak: the mic is on but hears nothing until Space is held. The WAV played once and is
+// now silent, so the mic is restarted (which rewinds the file) with the key work timed to its speech.
+await ev('document.getElementById("modeHold").click()');
+check((await ev<string>('__onetake.state.mode')) === 'hold', 'clicking Press to speak switches the mode');
+check(
+  (await ev<string>('document.getElementById("modeHold").getAttribute("aria-checked")')) === 'true' &&
+    (await ev<string>('document.getElementById("modeAuto").getAttribute("aria-checked")')) === 'false',
+  'the mode switch shows Press to speak',
+);
+check(
+  await ev<boolean>('JSON.parse(localStorage.getItem("one-take.prefs")).captureMode === "hold"'),
+  'the mode is remembered in the browser',
+);
+await ev('__onetake.goTo(3)');
+const before = segs.length;
+page.step('recording in press to speak');
+check(await page.startMic(), 'mic started again for press to speak');
+const t1 = Date.now();
+const at1 = async (sec: number, fn: () => Promise<unknown>) => {
+  const d = t1 + sec * 1000 - Date.now();
+  if (d > 0) await sleep(d);
+  await fn();
+};
+check(
+  (await ev<string>('document.getElementById("statusText").textContent')) === 'Hold Space to speak',
+  'status says to hold Space',
+);
+check(
+  !(await ev<boolean>('document.getElementById("btnHold").hidden')),
+  'the Hold to speak button is on the stage',
+);
+check(await ev<boolean>('document.getElementById("btnMute").hidden'), 'Mute is hidden in press to speak');
+check(
+  !(await ev<boolean>('document.getElementById("keyHold").hidden')) &&
+    (await ev<boolean>('document.getElementById("keyMute").hidden')),
+  'the shortcut legend shows Space and not M',
+);
+// the first phrase of the WAV (1.0-3.0 s) plays with the key up: nothing may be recorded
+await at1(3.6, () => Promise.resolve());
+check(
+  (await ev<number>('__onetake.state.segments.length')) === before,
+  'speech with the key up is not recorded',
+);
+// the second phrase (4.5-5.7 s) is caught by holding Space, with auto-repeat and a slide change inside
+await at1(4.2, () => page.key(' ', 'keyDown'));
+await at1(4.3, async () => {
+  check(await ev<boolean>('__onetake.state.held'), 'Space down: the key is held');
+  check(
+    await ev<boolean>('document.getElementById("btnHold").classList.contains("held")'),
+    'the stage button shows it is held',
+  );
+  check((await ev<number>('__onetake.state.current')) === 3, 'Space did not change the slide');
+  for (let i = 0; i < 4; i++) await page.key(' ', 'keyDown', { repeat: true });
+  check((await ev<number>('__onetake.state.current')) === 3, 'auto-repeat of Space does nothing');
+});
+await at1(5.1, () => page.press('ArrowLeft'));
+await at1(6.1, () => page.key(' ', 'keyUp'));
+await at1(6.3, async () => {
+  check(!(await ev<boolean>('__onetake.state.held')), 'Space up: the key is released');
+  const held = await ev<{ slide: number; joined: boolean; sec: number }[]>(
+    `__onetake.state.segments.slice(${before}).map(s=>({slide:s.slide, joined:s.joined, sec:+(s.pcm.length/s.sampleRate).toFixed(2)}))`,
+  );
+  console.log('held phrases:', JSON.stringify(held));
+  check(held.length === 2, 'one press with a slide change inside gives two joined parts');
+  check(
+    held[0]?.slide === 3 && held[1]?.slide === 2 && held[1].joined,
+    'the parts sit on slide 4 then slide 3 and continue each other',
+  );
+  const total = held.reduce((a, s) => a + s.sec, 0);
+  check(total > 1.0 && total < 2.2, `the press kept the phrase without its dead air (${total.toFixed(2)} s)`);
+});
+// the third phrase (8.7-11.2 s) is caught by holding the stage button with the mouse
+await at1(8.4, async () => check(await page.mouseDown('#btnHold'), 'mouse down on the stage button'));
+await at1(8.6, async () => check(await ev<boolean>('__onetake.state.held'), 'the stage button holds'));
+await at1(11.6, () => page.mouseUp('#btnHold'));
+await at1(11.8, async () => {
+  check(!(await ev<boolean>('__onetake.state.held')), 'mouse up releases');
+  check((await ev<number>('__onetake.state.segments.length')) === before + 3, 'the mouse press was recorded');
+});
+await page.screenshot('press-to-speak.png');
+await ev('__onetake.stopMic()');
+check(await ev<boolean>('document.getElementById("btnHold").hidden'), 'the stage button leaves with the mic');
+await ev('document.getElementById("modeAuto").click()');
+await ev('__onetake.goTo(0)');
+// In auto mode Space is the next-slide key again
+await page.press(' ');
+check((await ev<number>('__onetake.state.current')) === 1, 'in auto mode Space moves to the next slide');
+await ev('__onetake.goTo(0)');
+// the three press-to-speak phrases are removed so the export checks below see the original recording
+for (let i = 0; i < 3; i++) await ev('__onetake.deleteLast()');
+check((await ev<number>('__onetake.state.segments.length')) === 4, 'back to the four auto-mode phrases');
 
 // 5. exports through the server
 const tl = await ev<{ total: number; items: number }>(
@@ -361,8 +315,10 @@ interface ServerResult {
   encoder: { hardwareAcceleration: string; latencyMode: string } | null;
   timing: { elapsedMs: number; encodeMs: number; videoSeconds: number };
 }
-const exportServer = (overrides: Record<string, unknown>) =>
-  ev<ServerResult>(`__onetake.exportWith(${JSON.stringify(overrides)})`);
+const exportServer = (overrides: Record<string, unknown>) => {
+  page.step(`exporting ${JSON.stringify(overrides)}`);
+  return ev<ServerResult>(`__onetake.exportWith(${JSON.stringify(overrides)})`, 10 * 60_000);
+};
 const speed = (r: ServerResult) =>
   `${(r.timing.videoSeconds / (r.timing.encodeMs / 1000)).toFixed(1)}× real time encode, ${(r.timing.elapsedMs / 1000).toFixed(1)} s in all`;
 
@@ -574,8 +530,10 @@ check(
 );
 
 // g. in-memory export in the browser (no server involved)
+page.step('exporting in memory');
 const mem = await ev<{ kind: string; name: string; base64: string }>(
   `__onetake.exportWith(${JSON.stringify({ fileName: 'browser', destination: { kind: 'browser' }, container: 'mp4', resolution: { preset: '360p' }, fps: 5 })}, true)`,
+  10 * 60_000,
 );
 check(mem.kind === 'blob', 'browser export produced a file in memory');
 {
@@ -592,9 +550,8 @@ check(
 console.log('exports folder:', fs.readdirSync(exportsDir).join(', '));
 
 // 6. reload and resume
-const loaded2 = cdp.waitFor('Page.loadEventFired', S);
-await cdp.send('Page.reload', {}, S);
-await loaded2;
+page.step('reloading and resuming');
+await page.reload();
 await sleep(800);
 check(
   await ev<boolean>('document.getElementById("restore").classList.contains("on")'),
@@ -608,7 +565,8 @@ check(
     (await ev<number>('__onetake.state.slides.length')) === 4,
   'session restored with phrases and slides',
 );
-await screenshot('restored.png');
+check((await ev<string>('__onetake.state.mode')) === 'auto', 'the recording mode survived the reload');
+await page.screenshot('restored.png');
 
 // 7. preview walks through slides and stops; delete/undo round-trips
 await ev('document.getElementById("btnPreview").click()');
@@ -622,12 +580,12 @@ check(
   seen.some((s) => s.startsWith('2')) && seen[seen.length - 1]?.endsWith('x') === true,
   'preview reached slide 3 and stopped by itself',
 );
-await ev('__onetake.deleteLast()');
+await page.press('Backspace');
 const afterDelete = await ev<number>('__onetake.state.segments.length');
-await ev('__onetake.undoDelete()');
+await page.press('z', MODIFIER.ctrl);
 check(
   afterDelete === 3 && (await ev<number>('__onetake.state.segments.length')) === 4,
-  'delete and undo round-trip',
+  'Backspace and Ctrl+Z round-trip a phrase',
 );
 
 // 8. the export dialog opens and plans without blockers
@@ -659,7 +617,7 @@ check(
   resourceLines.length >= 3 && resourceLines[0] === 'Browser encodes',
   'plan shows which stage runs on what',
 );
-await screenshot('export-dialog.png');
+await page.screenshot('export-dialog.png');
 // switching to "smallest file" turns the server GPU encoder off and picks a slow preset
 await ev('document.querySelector("#perfModes input[value=quality]").click()');
 await sleep(100);
@@ -693,14 +651,9 @@ check(
   `fastest mode picks the measured winner for compression (${systemNow.ffmpeg?.fastestEncoder ?? '?'}, hardware=${winnerIsHardware}) and veryfast`,
 );
 
-const bad = logs.filter((l) => l.startsWith('EXCEPTION') || l.startsWith('error'));
+const bad = page.errors();
 check(bad.length === 0, `no page errors${bad.length ? `: ${bad.join(' | ')}` : ''}`);
-if (logs.length) console.log('console:', logs.join('\n'));
+if (page.logs.length) console.log('console:', page.logs.join('\n'));
 
-cdp.close();
-if (failures.length) {
-  console.error(`\n${failures.length} check(s) failed:\n- ${failures.join('\n- ')}`);
-  process.exit(1);
-}
-console.log(`\nall checks passed; outputs in ${OUT}`);
-process.exit(0);
+page.close();
+finish(`outputs in ${OUT}`);

@@ -15,6 +15,8 @@ export type IconName =
   | 'download'
   | 'folder'
   | 'folder-open'
+  | 'hearing'
+  | 'hold'
   | 'image'
   | 'mic'
   | 'micmute'

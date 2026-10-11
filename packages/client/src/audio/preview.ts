@@ -1,6 +1,8 @@
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 
+import { acquireAudio, releaseAudio } from './context.js';
+
 export interface PreviewCallbacks {
   /** Called every animation frame with the item currently playing and the position in seconds. */
   onTick: (itemIndex: number, nowSec: number, totalSec: number) => void;
@@ -29,8 +31,7 @@ export class PreviewPlayer {
     if (this._playing) this.stop();
     if (timeline.items.length === 0) return;
     const index = Math.max(0, Math.min(timeline.items.length - 1, fromIndex));
-    this.context ??= new AudioContext();
-    if (this.context.state === 'suspended') await this.context.resume();
+    this.context = await acquireAudio('preview');
     this.timeline = timeline;
     this.offset = timeline.items[index]?.from ?? 0;
     this.nextIdx = index;
@@ -42,6 +43,7 @@ export class PreviewPlayer {
   }
 
   stop(): void {
+    const wasPlaying = this._playing;
     this._playing = false;
     cancelAnimationFrame(this.raf);
     for (const s of this.sources) {
@@ -52,6 +54,7 @@ export class PreviewPlayer {
       }
     }
     this.sources = [];
+    if (wasPlaying) releaseAudio('preview');
   }
 
   private tick = (): void => {

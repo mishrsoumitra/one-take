@@ -1,4 +1,5 @@
 /** Small per-browser preferences (not project data) kept in localStorage; every access is fail-safe. */
+import { type CaptureMode } from '../core/recorder.js';
 
 const KEY = 'one-take.prefs';
 
@@ -12,9 +13,11 @@ export interface Prefs {
   tips: boolean;
   /** Dark (the default, like a projection room) or light. */
   theme: Theme;
+  /** `auto`: the detector decides when you speak. `hold`: only while the talk key or button is held. */
+  captureMode: CaptureMode;
 }
 
-const DEFAULT_PREFS: Prefs = { welcomeSeen: false, tips: true, theme: 'dark' };
+const DEFAULT_PREFS: Prefs = { welcomeSeen: false, tips: true, theme: 'dark', captureMode: 'auto' };
 
 export function loadPrefs(): Prefs {
   try {
@@ -25,6 +28,10 @@ export function loadPrefs(): Prefs {
       welcomeSeen: typeof parsed.welcomeSeen === 'boolean' ? parsed.welcomeSeen : DEFAULT_PREFS.welcomeSeen,
       tips: typeof parsed.tips === 'boolean' ? parsed.tips : DEFAULT_PREFS.tips,
       theme: parsed.theme === 'light' || parsed.theme === 'dark' ? parsed.theme : DEFAULT_PREFS.theme,
+      captureMode:
+        parsed.captureMode === 'hold' || parsed.captureMode === 'auto'
+          ? parsed.captureMode
+          : DEFAULT_PREFS.captureMode,
     };
   } catch {
     return { ...DEFAULT_PREFS };

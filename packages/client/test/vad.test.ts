@@ -89,6 +89,22 @@ describe('VoiceActivityDetector', () => {
     expect(h.phrases[0]!.continuation).toBe(true);
   });
 
+  it('stores nothing for a slide that was skipped past mid-sentence', () => {
+    const h = harness();
+    h.feed(quiet, 300);
+    h.feed(loud, 600);
+    expect(h.vad.split()).not.toBeNull(); // first part, on the slide being left
+    expect(h.vad.split()).toBeNull(); // straight on to the next slide: nothing was said in between
+    h.feed(quiet, 50);
+    expect(h.vad.split()).toBeNull(); // a sliver of quiet is not a phrase either
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, 300);
+    h.feed(quiet, 1000);
+    expect(h.phrases).toHaveLength(1);
+    expect(h.phrases[0]!.continuation).toBe(true);
+    expect(h.phrases[0]!.loudMs).toBeGreaterThanOrEqual(290);
+  });
+
   it('ends instead of splitting when the speaker already went quiet', () => {
     const h = harness();
     h.feed(quiet, 300);

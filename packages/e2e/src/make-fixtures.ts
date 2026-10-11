@@ -1,6 +1,6 @@
 /**
  * Builds test fixtures: a 4-page 16:9 PDF, a 3-slide PowerPoint deck and a WAV that imitates speech
- * with thinking pauses.
+ * with thinking pauses; for the stress run, a 12-page PDF and a sixty-second voice loop.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -135,22 +135,57 @@ export const SPEECH_PLAN: [kind: 'silence' | 'speech' | 'click', seconds: number
 ];
 
 export function makeWav(): Buffer {
-  const pieces = SPEECH_PLAN.map(([kind, sec]) =>
-    kind === 'speech' ? speech(sec) : kind === 'click' ? click(sec) : silence(sec),
+  return wavFromPieces(
+    SPEECH_PLAN.map(([kind, sec]) =>
+      kind === 'speech' ? speech(sec) : kind === 'click' ? click(sec) : silence(sec),
+    ),
   );
-  const total = pieces.reduce((a, p) => a + p.length, 0);
-  const data = Buffer.alloc(total * 2);
-  let o = 0;
-  for (const p of pieces) {
-    for (const sample of p) {
+}
+
+/**
+ * A lecturer's voice for the stress run: `seconds` of bursts between half a second and five seconds
+ * long, at varying loudness, with thinking pauses between them and the odd click. Seeded, so every
+ * run hears the same. Written piece by piece into one buffer, so an hour of voice is affordable.
+ *
+ * The file is made long enough to be played once rather than looped: on this Chrome, stopping a
+ * microphone fed by a looping capture file can deadlock the page inside `MediaStreamTrack.stop()`.
+ */
+export function makeStressWav(seconds = 60): Buffer {
+  let seed = 987654321;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const totalSamples = Math.round(seconds * SAMPLE_RATE);
+  const data = Buffer.alloc(totalSamples * 2);
+  let written = 0;
+  const put = (piece: Float64Array) => {
+    for (const sample of piece) {
+      if (written >= totalSamples) return;
       const v = Math.max(-1, Math.min(1, sample));
-      data.writeInt16LE(Math.round(v * 32767), o);
-      o += 2;
+      data.writeInt16LE(Math.round(v * 32767), written * 2);
+      written++;
     }
+  };
+  while (written < totalSamples) {
+    put(silence(0.3 + random() * 2.2));
+    if (random() < 0.08) {
+      put(click(0.05 + random() * 0.1));
+      put(silence(1.5));
+      continue;
+    }
+    const gain = 0.4 + random() * 0.6;
+    const burst = speech(0.5 + random() * 4.5);
+    for (let i = 0; i < burst.length; i++) burst[i] = (burst[i] ?? 0) * gain;
+    put(burst);
   }
+  return Buffer.concat([wavHeader(data.length), data]);
+}
+
+function wavHeader(dataBytes: number): Buffer {
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
-  header.writeUInt32LE(36 + data.length, 4);
+  header.writeUInt32LE(36 + dataBytes, 4);
   header.write('WAVE', 8);
   header.write('fmt ', 12);
   header.writeUInt32LE(16, 16);
@@ -161,8 +196,49 @@ export function makeWav(): Buffer {
   header.writeUInt16LE(2, 32);
   header.writeUInt16LE(16, 34);
   header.write('data', 36);
-  header.writeUInt32LE(data.length, 40);
-  return Buffer.concat([header, data]);
+  header.writeUInt32LE(dataBytes, 40);
+  return header;
+}
+
+function wavFromPieces(pieces: Float64Array[]): Buffer {
+  const total = pieces.reduce((a, p) => a + p.length, 0);
+  const data = Buffer.alloc(total * 2);
+  let o = 0;
+  for (const p of pieces) {
+    for (const sample of p) {
+      const v = Math.max(-1, Math.min(1, sample));
+      data.writeInt16LE(Math.round(v * 32767), o);
+      o += 2;
+    }
+  }
+  return Buffer.concat([wavHeader(data.length), data]);
+}
+
+/** A twelve-page deck and `seconds` of voice for the stress run. */
+export function writeStressFixtures(
+  dir: string,
+  seconds = 60,
+): { pdf: string; wav: string; pages: number; seconds: number } {
+  fs.mkdirSync(dir, { recursive: true });
+  const titles = [
+    'Welcome',
+    'Why the sky is blue',
+    'Rayleigh scattering',
+    'Wavelength and intensity',
+    'Why not violet?',
+    'Sunsets are red',
+    'Haze and dust',
+    'Other planets',
+    'Mars at dusk',
+    'Summary',
+    'Further reading',
+    'Questions',
+  ];
+  const pdf = path.join(dir, 'lecture.pdf');
+  const wav = path.join(dir, 'talk.wav');
+  fs.writeFileSync(pdf, makePdf(titles));
+  fs.writeFileSync(wav, makeStressWav(seconds));
+  return { pdf, wav, pages: titles.length, seconds };
 }
 
 export async function writeFixtures(dir: string): Promise<{ pdf: string; pptx: string; wav: string }> {

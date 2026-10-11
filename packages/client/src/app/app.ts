@@ -15,6 +15,7 @@ import { MicCapture } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
+import { Recorder, type CaptureMode } from '../core/recorder.js';
 import {
   buildTimeline,
   durationPerSlide,
@@ -24,13 +25,12 @@ import {
   type Segment,
   type Timeline,
 } from '../core/timeline.js';
-import { VoiceActivityDetector } from '../core/vad.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { ProjectStore } from '../storage/db.js';
 import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
-import { setLabel, syncRangeFill } from '../ui/dom.js';
+import { h, setLabel, syncRangeFill } from '../ui/dom.js';
 import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
@@ -63,14 +63,16 @@ export class App {
   private readonly folderPicker: FolderPicker;
   private readonly welcome: Welcome;
   private prefs: Prefs = loadPrefs();
-  private vad: VoiceActivityDetector | null = null;
+  /** The detector and the mode driving it; exists while the mic is on. */
+  private recorder: Recorder | null = null;
+  /** The start in progress, so a second Start (a double press, a held R key) joins it instead of racing it. */
+  private micStarting: Promise<void> | null = null;
   private sampleRate = 48000;
   private segmentCounter = 0;
   private metaTimer = 0;
   private meterRaf = 0;
   private replaceArmedAt = 0;
   private newArmedAt = 0;
-  private continuationPrevId: string | null = null;
   private serverCaps: ServerCapabilities | null = null;
   private browserCaps: BrowserCapabilities = {
     videoCodecs: [],
@@ -136,12 +138,12 @@ export class App {
       },
       onExportingChange: (exporting) => {
         this.store.state.exporting = exporting;
-        if (this.vad) this.vad.gate = this.gateOpen();
+        this.syncPaused();
         this.updateButtons();
       },
       onBeforeExport: () => {
         if (this.store.state.previewing) this.stopPreview();
-        this.vad?.end();
+        this.recorder?.end();
       },
     });
   }
@@ -151,8 +153,10 @@ export class App {
   /* ------------------------------------------------------------------ */
 
   async init(): Promise<void> {
+    this.store.state.mode = this.prefs.captureMode;
     this.wire();
     this.syncSliders();
+    this.updateModeSwitch();
     this.drawMeter();
     // both side panels show their placeholder from the first paint
     this.film.render([]);
@@ -278,6 +282,21 @@ export class App {
     });
     r.btnArm.onclick = () => (this.store.state.armed ? this.stopMic() : void this.startMic());
     r.btnMute.onclick = () => this.toggleMute();
+    r.btnModeAuto.onclick = () => this.setMode('auto');
+    r.btnModeHold.onclick = () => this.setMode('hold');
+    // The hold button follows the pointer, not clicks: down starts, up (anywhere) or a cancel ends.
+    r.btnHold.onpointerdown = (e) => {
+      e.preventDefault(); // keeps focus where it was and stops touch from scrolling or selecting
+      r.btnHold.setPointerCapture(e.pointerId);
+      this.hold(true);
+    };
+    const holdUp = (e: PointerEvent) => {
+      if (r.btnHold.hasPointerCapture(e.pointerId)) r.btnHold.releasePointerCapture(e.pointerId);
+      this.hold(false);
+    };
+    r.btnHold.onpointerup = holdUp;
+    r.btnHold.onpointercancel = holdUp;
+    r.btnHold.oncontextmenu = (e) => e.preventDefault();
     r.navPrev.onclick = () => this.goTo(this.store.state.current - 1);
     r.navNext.onclick = () => this.goTo(this.store.state.current + 1);
     r.btnPreview.onclick = () =>
@@ -323,6 +342,8 @@ export class App {
         escape: () => {
           if (this.store.state.previewing) this.stopPreview();
         },
+        holdStart: () => this.hold(true),
+        holdEnd: () => void this.hold(false),
       },
       () => this.dialogOpen(),
     );
@@ -476,19 +497,8 @@ export class App {
     const s = this.store.state;
     if (s.previewing) return;
     if (index === s.current || index < 0 || index >= s.slides.length) return;
-    if (s.speaking && this.vad) {
-      const blocks = this.vad.split();
-      if (blocks) {
-        const seg = this.addSegment(
-          blocks,
-          s.current,
-          this.continuationPrevId !== null,
-          this.continuationPrevId,
-          true,
-        );
-        this.continuationPrevId = seg.id;
-      }
-    }
+    // A sentence in progress is split here: the part so far goes on the slide being left.
+    this.recorder?.setSlide(index);
     this.showSlide(index);
     this.saveMeta();
   }
@@ -510,7 +520,8 @@ export class App {
     this.refs.btnExport.disabled = !has || s.exporting;
     this.refs.btnPreview.title = has ? 'Play back what you have recorded so far' : 'Record something first';
     this.refs.btnExport.title = has ? 'Save the finished video' : 'Record something first';
-    this.refs.btnMute.hidden = !s.armed;
+    // In press to speak, letting go of the key is the mute: the button would only add noise.
+    this.refs.btnMute.hidden = !s.armed || s.mode === 'hold';
     this.updateSteps();
     this.updateCoach();
   }
@@ -539,13 +550,27 @@ export class App {
     const s = this.store.state;
     if (s.slides.length === 0 || s.previewing || s.exporting) return null;
     const n = s.segments.length;
+    const hold = s.mode === 'hold';
     if (!s.armed) {
-      return n === 0
-        ? 'Step 2 · Click Start mic (or press R), then just talk. Pauses are cut out automatically.'
-        : 'Step 3 · Preview to check it, or Export video when you are done. Start mic again to keep recording.';
+      if (n > 0) {
+        return 'Step 3 · Preview to check it, or Export video when you are done. Start mic again to keep recording.';
+      }
+      return hold
+        ? 'Step 2 · Click Start mic (or press R). Then hold Space, or the button on the stage, while you talk.'
+        : 'Step 2 · Click Start mic (or press R), then just talk. Pauses are cut out automatically.';
     }
     if (s.muted) return 'Muted. Press M or click Unmute to continue recording.';
+    if (hold && s.held) {
+      return s.speaking
+        ? 'Recording. Let go when you finish the thought; what you held is kept, the dead air is not.'
+        : 'Go ahead and talk. Let go of Space (or the button) when you are done.';
+    }
     if (n >= 3) return null;
+    if (hold) {
+      return n === 0
+        ? 'Hold Space (or the button below) while you speak and let go while you think. Nothing is recorded in between.'
+        : 'Hold again for the next phrase. → ← change slides, even mid-sentence; Backspace removes the last phrase.';
+    }
     if (s.speaking) {
       return 'Recording. Pause whenever you like: the phrase is kept, the pause is not.';
     }
@@ -579,70 +604,134 @@ export class App {
     sel.value = current;
   }
 
-  private gateOpen(): boolean {
+  /** Preview and export pause the recorder; it stops listening until they end. */
+  private syncPaused(): void {
     const s = this.store.state;
-    return s.armed && !s.muted && !s.previewing && !s.exporting;
+    this.recorder?.setPaused(s.previewing || s.exporting);
   }
 
-  async startMic(): Promise<void> {
+  /* ------------------------------------------------------------------ */
+  /* Recording mode: auto, or press to speak                            */
+  /* ------------------------------------------------------------------ */
+
+  /** Auto: the detector decides. Press to speak: only while Space or the stage button is held. */
+  setMode(mode: CaptureMode): void {
+    const s = this.store.state;
+    if (s.mode === mode) return;
+    s.mode = mode;
+    s.held = false;
+    if (mode === 'hold' && s.muted) {
+      // letting go of the key is the mute in this mode; a stale mute would silence every press
+      s.muted = false;
+      this.recorder?.setMuted(false);
+    }
+    this.recorder?.setMode(mode);
+    this.prefs = savePrefs({ captureMode: mode });
+    this.updateModeSwitch();
+    this.updateStatus();
+    this.updateButtons();
+    if (!this.prefs.tips) {
+      this.toast.show(
+        mode === 'hold'
+          ? 'Press to speak: hold Space or the button on the stage while you talk; let go while you think.'
+          : 'Auto: the mic listens the whole time and pauses are cut out.',
+      );
+    }
+  }
+
+  /**
+   * The talk key or button went down or up. Returns true when press to speak owns the key, so
+   * Space never changes slides in that mode, even while the mic is off.
+   */
+  hold(down: boolean): boolean {
+    const s = this.store.state;
+    if (s.mode !== 'hold') return false;
+    if (!s.armed) {
+      if (down && s.slides.length > 0) this.toast.show('Start the mic first (R), then hold Space to speak.');
+      return true;
+    }
+    if (s.previewing || s.exporting) return true;
+    const changed = this.recorder?.hold(down) ?? false;
+    s.held = this.recorder?.held ?? false;
+    if (changed) this.updateStatus();
+    return true;
+  }
+
+  private updateModeSwitch(): void {
+    const mode = this.store.state.mode;
+    this.refs.btnModeAuto.setAttribute('aria-checked', String(mode === 'auto'));
+    this.refs.btnModeHold.setAttribute('aria-checked', String(mode === 'hold'));
+    this.refs.keyHold.hidden = mode !== 'hold';
+    this.refs.keyMute.hidden = mode === 'hold';
+  }
+
+  startMic(): Promise<void> {
+    if (this.store.state.armed) return Promise.resolve();
+    this.micStarting ??= this.openMic().finally(() => {
+      this.micStarting = null;
+    });
+    return this.micStarting;
+  }
+
+  private async openMic(): Promise<void> {
     const s = this.store.state;
     if (s.slides.length === 0) {
       this.toast.show('Load your slides first');
       return;
     }
-    const vad = new VoiceActivityDetector(BLOCK_MS, this.store.settings, {
-      onSpeechStart: () => {
-        this.store.state.speaking = true;
-        this.continuationPrevId = null;
-        this.refs.capFlagText.textContent = 'RECORDING';
-        this.updateStatus();
+    const recorder = new Recorder(
+      BLOCK_MS,
+      this.store.settings,
+      { mode: s.mode, slide: s.current },
+      {
+        onPhrase: (phrase) =>
+          this.addSegment(phrase.blocks, phrase.slide, phrase.joined, phrase.prevId, true).id,
+        onSpeakingChange: (speaking) => {
+          this.store.state.speaking = speaking;
+          if (speaking) this.refs.capFlagText.textContent = 'RECORDING';
+          this.updateStatus();
+        },
       },
-      onSpeechEnd: (phrase) => {
-        this.store.state.speaking = false;
-        if (phrase)
-          this.addSegment(
-            phrase.blocks,
-            this.store.state.current,
-            phrase.continuation,
-            phrase.continuation ? this.continuationPrevId : null,
-            true,
-          );
-        this.continuationPrevId = null;
-        this.updateStatus();
-      },
-    });
+    );
     try {
       const info = await this.mic.start({
         deviceId: this.refs.micSelect.value || undefined,
         blockMs: BLOCK_MS,
         onBlock: (block) => this.onBlock(block),
       });
+      if (!info) return; // stopped again before it had opened
       this.sampleRate = info.sampleRate;
     } catch (error) {
       this.toast.show(`Microphone not available: ${(error as Error).message}`);
       return;
     }
     void this.listMics();
-    this.vad = vad;
+    this.recorder = recorder;
     s.armed = true;
     s.muted = false;
+    s.held = false;
     s.speaking = false;
-    vad.gate = this.gateOpen();
+    this.syncPaused();
     this.updateStatus();
     this.updateButtons();
     this.meterLoop();
     if (!this.prefs.tips) {
-      this.toast.show('Listening. Speak whenever you are ready; silence is skipped automatically.');
+      this.toast.show(
+        s.mode === 'hold'
+          ? 'Mic on. Hold Space or the button on the stage while you speak.'
+          : 'Listening. Speak whenever you are ready; silence is skipped automatically.',
+      );
     }
   }
 
   stopMic(): void {
-    this.vad?.end();
+    this.recorder?.end();
     this.mic.stop();
-    this.vad = null;
+    this.recorder = null;
     const s = this.store.state;
     s.armed = false;
     s.muted = false;
+    s.held = false;
     s.speaking = false;
     this.updateStatus();
     this.updateButtons();
@@ -652,16 +741,20 @@ export class App {
   toggleMute(): void {
     const s = this.store.state;
     if (!s.armed) return;
-    this.vad?.end();
+    if (s.mode === 'hold') {
+      this.toast.show('Press to speak only records while you hold Space, so there is nothing to mute.');
+      return;
+    }
     s.muted = !s.muted;
-    if (this.vad) this.vad.gate = this.gateOpen();
+    this.recorder?.setMuted(s.muted);
     this.updateStatus();
   }
 
   private onBlock(block: Float32Array): void {
-    const vad = this.vad;
-    if (!vad) return;
-    vad.process(block);
+    const recorder = this.recorder;
+    if (!recorder) return;
+    recorder.process(block);
+    const { vad } = recorder;
     if (vad.speaking && Math.round(vad.currentMs / BLOCK_MS) % 20 === 0) {
       this.refs.capFlagText.textContent = `RECORDING ${fmtSec(vad.currentMs / 1000)}`;
     }
@@ -715,8 +808,8 @@ export class App {
 
   deleteLast(): void {
     const s = this.store.state;
-    if (s.speaking && this.vad) {
-      this.vad.discard();
+    if (s.speaking && this.recorder) {
+      this.recorder.discard();
       this.toast.show('Dropped the phrase you were just saying. Go again.');
       return;
     }
@@ -771,17 +864,34 @@ export class App {
     } else if (s.speaking) {
       pill.classList.add('rec');
       text = 'Recording';
+    } else if (s.mode === 'hold') {
+      pill.classList.add(s.held ? 'listen' : 'hold');
+      text = s.held ? 'Speak now' : 'Hold Space';
     } else {
       pill.classList.add('listen');
       text = 'Listening';
     }
     this.refs.statusText.textContent = text;
+    // the rest of the sentence leaves on narrow windows so the top bar stays one row
+    if (text === 'Hold Space') this.refs.statusText.append(h('span', { class: 'long' }, ' to speak'));
     this.refs.capFlag.classList.toggle('on', s.armed && s.speaking && !s.muted && !s.previewing);
+    // the hold button lives on the stage only in press to speak with the mic on
+    const holdShown = s.armed && s.mode === 'hold' && !s.previewing && !s.exporting;
+    this.refs.btnHold.hidden = !holdShown;
+    this.refs.btnHold.classList.toggle('held', holdShown && s.held);
+    this.refs.btnHoldText.textContent = s.held ? (s.speaking ? 'Recording' : 'Speak now') : 'Hold to speak';
+    this.refs.stage.classList.toggle('hold-on', holdShown);
     setLabel(this.refs.btnArm, s.armed ? 'Stop mic' : 'Start mic');
     setButtonIcon(this.refs.btnArm, s.armed ? 'square-filled' : 'mic');
     this.refs.btnArm.classList.toggle('rec', s.armed);
     this.refs.btnArm.classList.toggle('primary', !s.armed);
-    if (s.slides.length > 0) this.refs.btnArm.title = s.armed ? 'Stop listening (R)' : 'Start listening (R)';
+    if (s.slides.length > 0) {
+      this.refs.btnArm.title = s.armed
+        ? 'Stop the mic (R)'
+        : s.mode === 'hold'
+          ? 'Start the mic (R); then hold Space to speak'
+          : 'Start listening (R)';
+    }
     setLabel(this.refs.btnMute, s.muted ? 'Unmute' : 'Mute');
     setButtonIcon(this.refs.btnMute, s.muted ? 'mic' : 'micmute');
     this.refs.btnMute.title = s.muted ? 'Unmute (M)' : 'Mute (M)';
@@ -804,9 +914,9 @@ export class App {
       armed: s.armed,
       muted: s.muted,
       speaking: s.speaking,
-      level: this.vad?.level ?? -90,
-      threshold: this.vad?.threshold ?? this.store.settings.threshold,
-      noise: this.vad?.noise ?? -60,
+      level: this.recorder?.vad.level ?? -90,
+      threshold: this.recorder?.vad.threshold ?? this.store.settings.threshold,
+      noise: this.recorder?.vad.noise ?? -60,
       settingThreshold: this.store.settings.threshold,
     });
   }
@@ -851,11 +961,10 @@ export class App {
     const s = this.store.state;
     if (s.segments.length === 0) return;
     if (s.previewing) this.stopPreview();
-    this.vad?.end();
     const tl = this.timeline('recorded');
     this.previewTimeline = tl;
     s.previewing = true;
-    if (this.vad) this.vad.gate = this.gateOpen();
+    this.syncPaused();
     this.updateStatus();
     this.refs.previewFlag.classList.add('on');
     setLabel(this.refs.btnPreview, 'Stop preview');
@@ -881,7 +990,7 @@ export class App {
     this.refs.previewFlag.classList.remove('on');
     setLabel(this.refs.btnPreview, 'Preview');
     setButtonIcon(this.refs.btnPreview, 'play');
-    if (this.vad) this.vad.gate = this.gateOpen();
+    this.syncPaused();
     this.updateStatus();
   }
 
@@ -982,10 +1091,14 @@ export class App {
     return {
       state: this.store.state,
       settings: this.store.settings,
-      vad: () => this.vad,
+      vad: () => this.recorder?.vad ?? null,
+      recorder: () => this.recorder,
       api: this.api,
       startMic: () => this.startMic(),
       stopMic: () => this.stopMic(),
+      setMode: (mode: CaptureMode) => this.setMode(mode),
+      hold: (down: boolean) => this.hold(down),
+      toggleMute: () => this.toggleMute(),
       goTo: (i: number) => this.goTo(i),
       timeline: (order: PhraseOrder) => this.timeline(order),
       deleteLast: () => this.deleteLast(),

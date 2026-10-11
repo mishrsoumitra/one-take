@@ -1,6 +1,13 @@
-/** A minimal Chrome DevTools Protocol client on Node's built-in WebSocket; no dependencies. */
+/**
+ * A minimal Chrome DevTools Protocol client on Node's built-in WebSocket; no dependencies.
+ *
+ * Every call has a deadline. A browser that stops answering (a crashed tab, a promise in the page
+ * that never settles) makes the call reject instead of leaving the script waiting forever.
+ */
 
 type Listener = (message: { method: string; params: unknown; sessionId?: string }) => void;
+
+export const DEFAULT_TIMEOUT_MS = 60_000;
 
 export class Cdp {
   private ws: WebSocket | null = null;
@@ -45,13 +52,37 @@ export class Cdp {
         for (const l of this.listeners) l({ method: m.method, params: m.params, sessionId: m.sessionId });
       }
     };
+    ws.onclose = () => {
+      for (const [id, p] of this.pending) {
+        this.pending.delete(id);
+        p.reject(new Error('Chrome closed the connection'));
+      }
+    };
     this.ws = ws;
   }
 
-  send<T = unknown>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+  send<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = ++this.nextId;
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id))
+          reject(new Error(`${method} did not answer within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v as T);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
       this.ws?.send(JSON.stringify({ id, method, params, sessionId }));
     });
   }
@@ -60,14 +91,19 @@ export class Cdp {
     this.listeners.push(listener);
   }
 
-  waitFor(method: string, sessionId?: string): Promise<unknown> {
-    return new Promise((resolve) => {
+  waitFor(method: string, sessionId?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
+    return new Promise((resolve, reject) => {
       const l: Listener = (m) => {
         if (m.method === method && (!sessionId || m.sessionId === sessionId)) {
+          clearTimeout(timer);
           this.listeners.splice(this.listeners.indexOf(l), 1);
           resolve(m.params);
         }
       };
+      const timer = setTimeout(() => {
+        this.listeners.splice(this.listeners.indexOf(l), 1);
+        reject(new Error(`${method} did not arrive within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
       this.listeners.push(l);
     });
   }

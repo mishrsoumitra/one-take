@@ -1,8 +1,8 @@
 import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
 
 import { h, label } from './dom.js';
-import { icon, nstMark } from './icon.js';
-import { shortcut } from './kbd.js';
+import { icon, nstMark, type IconName } from './icon.js';
+import { kbd, shortcut } from './kbd.js';
 
 export interface LayoutRefs {
   fileInput: HTMLInputElement;
@@ -15,6 +15,10 @@ export interface LayoutRefs {
   stepExport: HTMLElement;
   micSelect: HTMLSelectElement;
   btnArm: HTMLButtonElement;
+  /** Auto / press to speak, as a two-button segmented control. */
+  modeSwitch: HTMLElement;
+  btnModeAuto: HTMLButtonElement;
+  btnModeHold: HTMLButtonElement;
   btnMute: HTMLButtonElement;
   statusPill: HTMLElement;
   statusText: HTMLElement;
@@ -45,6 +49,9 @@ export interface LayoutRefs {
   slideTime: HTMLElement;
   capFlag: HTMLElement;
   capFlagText: HTMLElement;
+  /** Press to speak: the big hold-to-talk button at the bottom of the stage. */
+  btnHold: HTMLButtonElement;
+  btnHoldText: HTMLElement;
   previewFlag: HTMLElement;
   previewTime: HTMLElement;
   btnStopPreview: HTMLButtonElement;
@@ -66,6 +73,9 @@ export interface LayoutRefs {
   gapV: HTMLElement;
   hang: HTMLInputElement;
   hangV: HTMLElement;
+  /** Shortcut legend entries that only make sense in one of the two modes. */
+  keyMute: HTMLElement;
+  keyHold: HTMLElement;
   film: HTMLElement;
   filmInfo: HTMLElement;
   segs: HTMLElement;
@@ -79,6 +89,16 @@ function stepBadge(id: string, n: number, title: string): HTMLElement {
     { class: 'step', id, title, attrs: { 'aria-label': `Step ${n}: ${title}` } },
     h('span', { class: 'n' }, String(n)),
     icon('check', 16),
+  );
+}
+
+/** One option of the mode switch: a radio in a segmented control, with its icon and label. */
+function modeOption(id: string, name: IconName, text: string, title: string): HTMLButtonElement {
+  return h(
+    'button',
+    { id, class: 'opt', title, attrs: { role: 'radio', 'aria-checked': 'false' } },
+    icon(name, 16),
+    label(text),
   );
 }
 
@@ -114,6 +134,29 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('mic'),
     label('Start mic'),
   );
+  const btnModeAuto = modeOption(
+    'modeAuto',
+    'hearing',
+    'Auto',
+    'Automatic: the mic listens the whole time and the app decides when you are speaking. Pauses are cut out.',
+  );
+  const btnModeHold = modeOption(
+    'modeHold',
+    'hold',
+    'Press to speak',
+    'Press to speak: nothing is recorded unless you hold Space or the button on the stage. Let go while you think.',
+  );
+  const modeSwitch = h(
+    'div',
+    {
+      class: 'segmented',
+      id: 'modeSwitch',
+      title: 'How the mic is driven',
+      attrs: { role: 'radiogroup', 'aria-label': 'Recording mode' },
+    },
+    btnModeAuto,
+    btnModeHold,
+  );
   const btnMute = h(
     'button',
     { id: 'btnMute', hidden: true, title: 'Mute (M)' },
@@ -135,7 +178,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     'button',
     { id: 'btnExport', class: 'primary', disabled: true, title: 'Save the finished video' },
     icon('download'),
-    label('Export video'),
+    h('span', { class: 'label' }, 'Export', h('span', { class: 'long' }, ' video')),
   );
   const btnNew = h(
     'button',
@@ -172,6 +215,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       { class: 'group', id: 'gMic' },
       stepMic,
       btnArm,
+      modeSwitch,
       micSelect,
       btnMute,
       statusPill,
@@ -252,6 +296,19 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const overlay = h('div', { id: 'overlay', hidden: true }, slideNo, slideTime);
   const capFlagText = h('span', null, 'RECORDING');
   const capFlag = h('div', { id: 'capFlag' }, h('span', { class: 'dot' }), capFlagText);
+  const btnHoldText = h('span', { class: 'label' }, 'Hold to speak');
+  const btnHold = h(
+    'button',
+    {
+      id: 'btnHold',
+      hidden: true,
+      title: 'Press and hold while you speak; let go while you think. Space does the same.',
+      attrs: { 'aria-label': 'Hold to speak', 'aria-keyshortcuts': 'Space' },
+    },
+    icon('mic', 24),
+    btnHoldText,
+    kbd('Space'),
+  );
   const previewTime = h('span', { id: 'previewTime' }, '0:00');
   const btnStopPreview = h('button', { id: 'btnStopPreview' }, 'Stop');
   const previewFlag = h('div', { id: 'previewFlag' }, 'Preview ', previewTime, btnStopPreview);
@@ -282,6 +339,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     navNext,
     overlay,
     capFlag,
+    btnHold,
     previewFlag,
     restore,
     coach,
@@ -304,6 +362,11 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const gapV = h('b', { id: 'gapV' }, '0.15 s');
   const hang = h('input', { type: 'range', id: 'hang', min: 300, max: 1500, step: 50, value: '700' });
   const hangV = h('b', { id: 'hangV' }, '0.70 s');
+  const keyHold = shortcut('hold to speak', 'Space');
+  keyHold.id = 'keyHold';
+  keyHold.hidden = true;
+  const keyMute = shortcut('mute', 'M');
+  keyMute.id = 'keyMute';
   const bottom = h(
     'section',
     { id: 'bottom' },
@@ -341,9 +404,10 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       h(
         'span',
         { class: 'hint keys', id: 'keys' },
+        keyHold,
         shortcut('slides', '→', '←'),
         shortcut('remove last phrase', 'Backspace'),
-        shortcut('mute', 'M'),
+        keyMute,
         shortcut('mic on / off', 'R'),
       ),
     ),
@@ -374,6 +438,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stepExport,
     micSelect,
     btnArm,
+    modeSwitch,
+    btnModeAuto,
+    btnModeHold,
     btnMute,
     statusPill,
     statusText,
@@ -400,6 +467,8 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     slideTime,
     capFlag,
     capFlagText,
+    btnHold,
+    btnHoldText,
     previewFlag,
     previewTime,
     btnStopPreview,
@@ -420,6 +489,8 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     gapV,
     hang,
     hangV,
+    keyMute,
+    keyHold,
     film,
     filmInfo,
     segs,

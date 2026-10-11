@@ -1,4 +1,5 @@
 import processorUrl from './capture-processor.ts?worker&url';
+import { acquireAudio, releaseAudio } from './context.js';
 
 export interface MicStartOptions {
   deviceId?: string;
@@ -12,7 +13,13 @@ export interface MicInfo {
   blockMs: number;
 }
 
-/** Microphone capture through an AudioWorklet, with a ScriptProcessor fallback for old browsers. */
+/**
+ * Microphone capture through an AudioWorklet, with a ScriptProcessor fallback for old browsers.
+ *
+ * Opening the microphone takes a moment. A `stop()` that arrives while a `start()` is still waiting
+ * for the browser wins: the stream that then arrives is released at once and `start()` returns null,
+ * so a quick stop (or a second start) can never leave a forgotten stream holding the mic open.
+ */
 export class MicCapture {
   private context: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -20,6 +27,8 @@ export class MicCapture {
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- kept only as a fallback
   private node: AudioWorkletNode | ScriptProcessorNode | null = null;
   private workletReady = false;
+  /** Bumped by every start and stop; a start whose number is stale was overtaken and gives up. */
+  private generation = 0;
 
   static async listDevices(): Promise<MediaDeviceInfo[]> {
     try {
@@ -38,9 +47,11 @@ export class MicCapture {
     return this.stream !== null;
   }
 
-  async start(options: MicStartOptions): Promise<MicInfo> {
+  /** Opens the microphone; null when a stop (or another start) overtook this one while it was opening. */
+  async start(options: MicStartOptions): Promise<MicInfo | null> {
     if (this.stream) this.stop();
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const gen = ++this.generation;
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: options.deviceId ? { exact: options.deviceId } : undefined,
         echoCancellation: true,
@@ -50,30 +61,50 @@ export class MicCapture {
       },
       video: false,
     });
-    this.context ??= new AudioContext();
-    if (this.context.state === 'suspended') await this.context.resume();
-    const ctx = this.context;
+    if (gen !== this.generation) {
+      for (const track of stream.getTracks()) track.stop();
+      return null;
+    }
+    this.stream = stream;
+    const ctx = await acquireAudio('mic');
+    if (ctx !== this.context) this.workletReady = false; // a new context has no modules yet
+    this.context = ctx;
+    let worklet = this.workletReady;
+    if (!worklet) {
+      try {
+        await ctx.audioWorklet.addModule(processorUrl);
+        this.workletReady = worklet = true;
+      } catch (error) {
+        console.warn('AudioWorklet unavailable, falling back to ScriptProcessor', error);
+      }
+    }
+    // a stop during the waits above has already released the stream
+    if (gen !== this.generation) {
+      releaseAudio('mic');
+      return null;
+    }
     const size = Math.round((ctx.sampleRate * options.blockMs) / 1000);
     const blockMs = (size / ctx.sampleRate) * 1000;
-    this.source = ctx.createMediaStreamSource(this.stream);
-    try {
-      if (!this.workletReady) {
-        await ctx.audioWorklet.addModule(processorUrl);
-        this.workletReady = true;
+    this.source = ctx.createMediaStreamSource(stream);
+    if (worklet) {
+      try {
+        const node = new AudioWorkletNode(ctx, 'one-take-capture', {
+          numberOfInputs: 1,
+          numberOfOutputs: 0,
+          channelCount: 1,
+          channelCountMode: 'explicit',
+          processorOptions: { size },
+        });
+        node.port.onmessage = (e: MessageEvent<Float32Array>) => options.onBlock(e.data);
+        this.source.connect(node);
+        this.node = node;
+      } catch (error) {
+        console.warn('AudioWorkletNode failed, falling back to ScriptProcessor', error);
+        worklet = false;
       }
-      const node = new AudioWorkletNode(ctx, 'one-take-capture', {
-        numberOfInputs: 1,
-        numberOfOutputs: 0,
-        channelCount: 1,
-        channelCountMode: 'explicit',
-        processorOptions: { size },
-      });
-      node.port.onmessage = (e: MessageEvent<Float32Array>) => options.onBlock(e.data);
-      this.source.connect(node);
-      this.node = node;
-    } catch (error) {
+    }
+    if (!worklet) {
       /* eslint-disable @typescript-eslint/no-deprecated -- ScriptProcessor is the only fallback where AudioWorklet is missing */
-      console.warn('AudioWorklet unavailable, falling back to ScriptProcessor', error);
       const node = ctx.createScriptProcessor(1024, 1, 1);
       let acc = new Float32Array(size);
       let n = 0;
@@ -97,13 +128,19 @@ export class MicCapture {
   }
 
   stop(): void {
+    this.generation++;
     if (this.node) {
+      if ('port' in this.node) {
+        // tells the processor to let go: a worklet node that keeps returning true would otherwise
+        // run on the audio thread for the life of the context, one more after every restart
+        this.node.port.postMessage('stop');
+        this.node.port.onmessage = null;
+      }
       try {
         this.node.disconnect();
       } catch {
         /* already disconnected */
       }
-      if ('port' in this.node) this.node.port.onmessage = null;
       this.node = null;
     }
     if (this.source) {
@@ -117,6 +154,7 @@ export class MicCapture {
     if (this.stream) {
       for (const track of this.stream.getTracks()) track.stop();
       this.stream = null;
+      releaseAudio('mic');
     }
   }
 }

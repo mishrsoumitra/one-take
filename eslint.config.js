@@ -15,6 +15,7 @@ export default defineConfig(
       '**/node_modules/**',
       '.claude/**',
       'packages/e2e/out/**',
+      'packages/e2e/stress-out/**',
       'packages/e2e/fixtures/**',
       'e2e-out/**',
     ],

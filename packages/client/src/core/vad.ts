@@ -4,6 +4,9 @@
  * A phrase starts after three loud blocks and keeps `prerollMs` of audio from before that moment. It ends
  * after `hangoverMs` of quiet, of which only `tailMs` is kept. Bursts shorter than `minSpeechMs` are
  * dropped unless they continue a phrase that was split by a slide change.
+ *
+ * The detector does not know how it is being driven: `gate` is opened and closed by the recorder,
+ * which in press-to-speak mode only opens it while the talk key is held.
  */
 import { rmsDb } from './pcm.js';
 
@@ -39,7 +42,7 @@ export class VoiceActivityDetector {
   private curLoud = 0;
   private continuation = false;
   private _speaking = false;
-  /** When false, blocks only keep the pre-roll warm (muted, preview, export). */
+  /** When false (muted, preview, export, talk key up), blocks only feed the level and noise readings. */
   gate = true;
 
   constructor(
@@ -60,6 +63,11 @@ export class VoiceActivityDetector {
 
   get quietMs(): number {
     return this.quietRun * this.blockMs;
+  }
+
+  /** Audio held in memory right now: the pre-roll plus the phrase being spoken. Bounded while idle. */
+  get bufferedMs(): number {
+    return (this.pre.length + this.cur.length) * this.blockMs;
   }
 
   reset(): void {
@@ -84,7 +92,9 @@ export class VoiceActivityDetector {
     const loud = db > this.threshold;
 
     if (!this.gate) {
-      this.pushPre(block);
+      // Nothing heard while the gate is closed is kept, not even as pre-roll: what was said while
+      // muted, during a preview, or before the talk key went down never reaches a phrase.
+      this.pre = [];
       this.loudRun = 0;
       return;
     }
@@ -108,8 +118,9 @@ export class VoiceActivityDetector {
 
   /**
    * The slide changed while speaking. Returns the blocks spoken so far (to be stored on the old slide)
-   * and continues the phrase on the new slide, or returns null when the speaker had already gone quiet
-   * (in which case the phrase simply ends).
+   * and continues the phrase on the new slide. Returns null when there is nothing to store: the speaker
+   * had already gone quiet (the phrase simply ends), or nothing was said since the previous split (the
+   * phrase carries on, still joined to the part before).
    */
   split(): Float32Array[] | null {
     if (!this._speaking) return null;
@@ -117,10 +128,17 @@ export class VoiceActivityDetector {
       this.end();
       return null;
     }
+    if (this.curLoud === 0) {
+      // Nothing was said on the slide being left (two slide changes in quick succession): the sentence
+      // simply moves on, and the sliver of quiet since the last split is dropped rather than stored.
+      this.cur = [];
+      this.quietRun = 0;
+      return null;
+    }
     const blocks = this.cur;
     this.cur = [];
     this.continuation = true;
-    this.curLoud = Number.MAX_SAFE_INTEGER / 1000; // a continuation is always kept
+    this.curLoud = 0;
     return blocks;
   }
 
@@ -150,7 +168,9 @@ export class VoiceActivityDetector {
     this.loudRun = 0;
     this.cur = [];
     this.continuation = false;
-    const keep = loudMs >= this.settings.minSpeechMs || continuation;
+    // A continuation is kept however short it is, as long as something was actually said on the new
+    // slide; a slide change right at the end of a sentence must not leave a silent stub behind.
+    const keep = loudMs >= this.settings.minSpeechMs || (continuation && loudMs > 0);
     this.callbacks.onSpeechEnd(keep ? { blocks, loudMs, continuation } : null);
   }
 

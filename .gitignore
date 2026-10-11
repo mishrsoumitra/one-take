@@ -9,5 +9,6 @@ coverage/
 /tmp/
 /e2e-out/
 /packages/e2e/out/
+/packages/e2e/stress-out/
 /packages/e2e/fixtures/
 .claude/worktrees/

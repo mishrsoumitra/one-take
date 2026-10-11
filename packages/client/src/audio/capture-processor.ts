@@ -6,15 +6,21 @@ class CaptureProcessor extends AudioWorkletProcessor {
   private readonly size: number;
   private buffer: Float32Array;
   private filled = 0;
+  /** Set by the 'stop' message; the processor then ends and can be collected. */
+  private stopped = false;
 
   constructor(options?: { processorOptions?: Record<string, unknown> }) {
     super(options);
     const size = options?.processorOptions?.size;
     this.size = typeof size === 'number' && size > 0 ? size : 480;
     this.buffer = new Float32Array(this.size);
+    this.port.onmessage = (e: MessageEvent<unknown>) => {
+      if (e.data === 'stop') this.stopped = true;
+    };
   }
 
   override process(inputs: Float32Array[][]): boolean {
+    if (this.stopped) return false;
     const channel = inputs[0]?.[0];
     if (!channel) return true;
     for (const sample of channel) {

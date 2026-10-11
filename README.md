@@ -8,6 +8,8 @@ Turn a slide deck plus your voice into a lecture video, without ever pressing pa
 
 Load your slides, start the mic and talk. Only the moments you speak are kept. When you stop to think, nothing is recorded. When you speak again, the new phrase is appended right after the last one, so the finished video sounds like one continuous take. Move through the slides whenever you like and the video follows you.
 
+You choose how much the app hears. In **Auto** the mic listens the whole time and the app decides when you are speaking. In **Press to speak** nothing is recorded unless you hold `Space` (or the button on the stage); let go while you think, and the app hears nothing in between.
+
 Everything runs on your own computer. The browser records and encodes, and a small local server saves the result into any folder you choose and packages it with ffmpeg. Nothing leaves your machine.
 
 ## Contents
@@ -37,6 +39,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 ## What you get
 
 - **Pauses cut automatically.** A voice detector listens in 10 ms blocks. A phrase starts when you speak and ends when you've been quiet for a moment. The gaps in between never make it into the video.
+- **Two ways to drive the mic.** *Auto* listens all the time and decides for you. *Press to speak* records only while you hold `Space` or the big button on the stage, so the app is never listening when you have not asked it to; the dead air at either end of a press is still trimmed. Switch at any time, even mid-recording.
 - **PDF, PowerPoint or images.** Drop a PDF, a `.pptx` / `.ppsx` / `.pptm` deck or a set of images. PowerPoint files are turned into PDF on the local server in plain JavaScript; no Office, Keynote or LibreOffice needed.
 - **Slides follow your navigation.** Change slides with the arrow keys, a presenter clicker, or a click on a thumbnail. If you change slides mid-sentence, the sentence stays intact across both slides.
 - **Any container.** MP4, fragmented MP4, QuickTime MOV, Matroska MKV, WebM, HLS (`index.m3u8` plus segments) and MPEG-DASH (`manifest.mpd` plus segments).
@@ -111,19 +114,26 @@ Slides are rasterised once, at up to 2560×1440, and kept as JPEGs. Decks with h
 
 Click **Start mic**. Chrome asks for microphone permission the first time. Pick a different microphone from the **Microphone** list if you have more than one.
 
+Next to **Start mic** is the mode switch, **Auto | Press to speak**:
+
+- **Auto** (the default): the mic is live the whole time you are recording. The detector decides when a phrase starts and ends; you never touch anything while you talk.
+- **Press to speak**: the mic is on, but nothing is heard until you hold `Space` or the **Hold to speak** button that appears at the bottom of the stage. Hold it while you talk and let go while you think. The status pill reads *Hold Space to speak* while the key is up, *Speak now* once it is down, and *Recording* while you talk. Nothing from before the press or after the release can end up in a phrase, not even as pre-roll. The dead air between pressing and your first word, and between your last word and letting go, is trimmed just like a pause in Auto, and a pause inside one press that is longer than *Phrase ends after* is cut too. Mute is hidden in this mode, because letting go of the key is the mute.
+
+The choice is remembered in this browser. Switching while a phrase is being spoken ends that phrase first.
+
 The **Mic level** meter shows your voice against a white line, the *speech line*. Your voice should go clearly past it, and room noise should stay under it. If not, move the **Speech line** slider until it does. The line also rises by itself when the room gets noisy, so a fan or an air conditioner won't trigger a phrase.
 
 ### 3. Talk, pause, talk again
 
 While you speak, a red **RECORDING** flag shows and the phrase grows in the timeline. Pause as long as you like; nothing is recorded while you're quiet. When you speak again, the new phrase is placed right after the last one with a short gap. The total recorded time is shown at the top.
 
-Press `M` to mute while you talk to someone in the room. Press `R` or **Stop** to turn the mic off.
+In Auto, press `M` to mute while you talk to someone in the room. In Press to speak, just let go. Press `R` or **Stop** to turn the mic off.
 
 ### 4. Move through the slides
 
-Use `→` and `←`, `PageDown` and `PageUp`, `Space`, a presenter clicker, or click a thumbnail in the film strip. Each thumbnail shows how many seconds you've recorded on that slide.
+Use `→` and `←`, `PageDown` and `PageUp`, a presenter clicker, or click a thumbnail in the film strip. In Auto, `Space` also moves to the next slide; in Press to speak, `Space` is the talk key and never changes slides. Each thumbnail shows how many seconds you've recorded on that slide.
 
-If you change slides while speaking, the sentence is split at that moment and continues on the new slide without a gap or a fade. In the video the slide changes exactly where you pressed the key.
+If you change slides while speaking (in either mode, including during a press), the sentence is split at that moment and continues on the new slide without a gap or a fade. In the video the slide changes exactly where you pressed the key. Skipping straight past a slide mid-sentence stores nothing on it.
 
 ### 5. Fix a mistake
 
@@ -151,12 +161,13 @@ To start a new lecture, click **New**. It discards the slides and all phrases.
 
 | Keys                                   | What happens                                             |
 | -------------------------------------- | -------------------------------------------------------- |
-| `→` `PageDown` `Space` `Enter` `↓`     | Next slide                                               |
+| `→` `PageDown` `Enter` `↓`             | Next slide                                               |
+| `Space`                                | Auto: next slide. Press to speak: hold while you talk    |
 | `←` `PageUp` `↑`                       | Previous slide                                           |
 | `Home` / `End`                         | First / last slide                                       |
 | `Backspace` / `Delete`                 | Remove the phrase being spoken, or the last finished one |
 | `Cmd/Ctrl+Z`                           | Bring back the last removed phrase                       |
-| `M`                                    | Mute / unmute                                            |
+| `M`                                    | Mute / unmute (Auto only)                                |
 | `R`                                    | Mic on / off                                             |
 | `Esc`                                  | Stop the preview                                         |
 
@@ -433,8 +444,11 @@ How it decides:
 
 - The noise floor follows the quiet parts of the room: it drops quickly and rises slowly, and is clamped between −90 and −30 dBFS.
 - A phrase starts after 30 ms (three blocks) above the line.
-- Changing slides mid-phrase splits it. The part spoken so far is stored on the old slide and the rest continues on the new slide, joined without a gap. A continuation is always kept, even if it is short.
-- Muting, stopping the mic, previewing or exporting ends the current phrase.
+- Changing slides mid-phrase splits it. The part spoken so far is stored on the old slide and the rest continues on the new slide, joined without a gap. A continuation is kept however short it is, as long as something was said on the new slide; a slide skipped past mid-sentence, or a change that lands right at the end of a sentence, stores nothing.
+- Muting, stopping the mic, previewing, exporting, switching modes and (in Press to speak) letting go of the key end the current phrase.
+- Opening the microphone takes a moment. A stop that arrives while it is still opening wins (the stream is released the moment it arrives), a second start joins the one in progress instead of racing it, and a held `R` or `M` key does not toggle on auto-repeat.
+
+The detector has a gate. The recorder (`packages/client/src/core/recorder.ts`) opens it when the mic may be heard: in Auto whenever the mic is on and not muted, in Press to speak only while the key or button is held, and never during a preview or an export. While the gate is closed the detector only feeds the level meter; it keeps nothing, not even pre-roll, so a phrase can never begin with sound from before a press or from a muted stretch. Inside an open gate both modes behave the same: pre-roll, hangover, tail and the minimum length all apply, which is why a press is trimmed at both ends and a long pause inside a press is still cut.
 
 The microphone is opened in mono with echo cancellation, noise suppression and automatic gain control turned on. Capture runs in an AudioWorklet, with a ScriptProcessor fallback for browsers that lack it.
 
@@ -447,6 +461,8 @@ Everything is written to IndexedDB (database `one-take`) the moment it exists:
 - the slide source (the PDF or the image files), so slides can be re-rendered,
 - every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase,
 - the project state: phrase order, current slide, your detector settings and the last export settings.
+
+The recording mode (Auto or Press to speak), the theme and the tips setting are browser preferences, kept in `localStorage` rather than with the project.
 
 Reload the tab or close it and come back, and you continue where you left off. **New** clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
 
@@ -692,8 +708,8 @@ one-take/
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
-    │       ├── audio/            MicCapture (AudioWorklet), capture processor, preview playback
-    │       ├── core/             VoiceActivityDetector, timeline builder, PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback
+    │       ├── core/             VoiceActivityDetector, Recorder (auto / press to speak), timeline builder, PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb)
     │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
@@ -703,9 +719,11 @@ one-take/
     │   └── public/fonts/         Mona Sans (variable weight, OFL)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
         └── src/
-            ├── run.ts            boots server + headless Chrome, records, exports, probes with ffprobe
+            ├── run.ts            boots server + headless Chrome, records in both modes, exports, probes with ffprobe
+            ├── stress.ts         talks through the app for minutes or hours, checking phrases, timelines, heap, resume and export
+            ├── harness.ts        shared: server and Chrome start-up, a page over the DevTools Protocol, real key and mouse input
             ├── cdp.ts            minimal Chrome DevTools Protocol client on Node's WebSocket
-            └── make-fixtures.ts  writes a 4-page PDF and a WAV that imitates speech with pauses
+            └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs that imitate speech with pauses
 ```
 
 Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
@@ -724,6 +742,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | `npm run format`       | Prettier. `npm run format:check` only checks.                                                              |
 | `npm test`             | Unit tests with Vitest (`npm run test:watch` to keep them running).                                        |
 | `npm run e2e`          | Builds, then drives the built app in headless Chrome. See below.                                           |
+| `npm run e2e:stress`   | Builds, then talks through the app in headless Chrome for minutes or hours, checking as it goes. See below. |
 | `npm run check`        | Typecheck, lint, format check and unit tests. Run this before you commit.                                  |
 | `npm run doctor`       | System check and resource map for a one-hour 1080p lecture, without starting the server.                    |
 | `npm run bench`        | `doctor --bench`: races the H.264 encoders on this machine (`--height 2160` for 4K).                        |
@@ -745,7 +764,7 @@ npm test
 
 - `shared`: the planner (every branch of what-runs-where), key-frame alignment, ladders, size and frame estimates for a three-hour lecture, even-size rounding, file name sanitising, formatting.
 - `server`: the ffmpeg argument builder and capability parsing, the job manager (unique names, short uploads, cancel during upload and during ffmpeg, replace rules, faststart remux, HLS and DASH packaging), and the HTTP app (loopback checks, validation, the SPA fallback, a full export through the API). Tests that need ffmpeg run only when it is installed.
-- `client`: the voice detector, the timeline builder and the PCM helpers (these are pure, so they run in Node).
+- `client`: the voice detector, the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses), the timeline builder and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
 
 ### End-to-end run
 
@@ -761,12 +780,27 @@ The runner needs Chrome, ffmpeg and ffprobe. It:
 2. starts the real server on port 4399 with the built client,
 3. starts headless Chrome with the WAV as a fake microphone (`--use-file-for-fake-audio-capture`) and drives it over the DevTools Protocol,
 4. loads the slides, records with a slide change mid-sentence, and checks that four phrases exist and one continues across slides,
+4. switches to Press to speak and, with real key and mouse events, checks that speech with the key up records nothing, that holding `Space` (auto-repeat included) records exactly one press with a slide change inside it as two joined parts, that the stage button works with the mouse, that `Space` never changes slides in that mode and does again in Auto, and that the mode is remembered,
 5. exports MP4 (checks faststart, 5 fps and AAC), HLS by stream copy at 480p with 2 s segments (checks the playlist, the init segment, the segment count and H.264), DASH with compression (checks that the ffmpeg command carried CRF 30 and the `stillimage` tune), WebM (checks no ffmpeg was needed), a compressed HEVC file (checks it is smaller than the MP4) and an in-memory MP4 saved in the browser, probing each with ffprobe,
 6. reloads the page, checks the project resumed, and plays the preview.
 
 Set `CHROME` to the path of your Chrome binary if it is not at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. `--keep` leaves the output folder in place for inspection.
 
-The app exposes `window.__onetake` with the store, the detector, slide loading, navigation, deletion, undo and `exportWith(overrides, inMemory)`, so you can script the same checks from the DevTools console.
+Neither runner can wait forever. Every call into the browser has a deadline (60 s by default, longer for exports) and each script arms a watchdog for the whole run; when either fires, the script prints the stage it was in, the page's console and a last screenshot (`stall.png`), and exits with a failure. Keys are sent as real DevTools input events, except letter keys (`M`, `R`, `Ctrl+Z`): on this Chrome (headless, macOS) one injected letter key turns into thousands of keydown events a second that never stop, so those are dispatched as `KeyboardEvent`s inside the page, which reach the app's handler the same way. Run the scripts with their output unpiped (not through `tail`), or the progress lines only appear at the end.
+
+The app exposes `window.__onetake` with the store, the detector, the recorder, `setMode`, `hold`, slide loading, navigation, deletion, undo and `exportWith(overrides, inMemory)`, so you can script the same checks from the DevTools console.
+
+### Stress run
+
+```sh
+npm run e2e:stress                                   # builds, then two minutes
+npx tsx packages/e2e/src/stress.ts --minutes 30
+npx tsx packages/e2e/src/stress.ts --hours 3 --out /tmp/one-take-stress --no-export
+```
+
+The stress runner (`packages/e2e/src/stress.ts`) plays a generated voice as the microphone (bursts of half a second to five seconds at varying loudness, thinking pauses, the odd click), long enough to cover the whole run and played once (runs beyond an hour loop it; see the note in `make-fixtures.ts`), through a twelve-slide deck. It first checks the two modes deterministically: Auto records; switching to Press to speak with the mic on records nothing for six seconds of talk; holding `Space` for four seconds (with auto-repeat) records and does not move the slide; holding the stage button with the mouse records. Then it runs a seeded random session: slide moves with real `→` `←` `PageDown` `Home` `End` presses and film-strip jumps, mode switches, presses with slide changes inside them, `Backspace` and `Ctrl+Z`, mutes, mic restarts with `R`, and (with `--preview`) previews stopped with `Esc`. Once a minute it checks every phrase (valid slide, non-empty, sane sample rate, unique id) and both timelines (items match phrases, times chain exactly, totals finite), and logs phrases, seconds recorded, PCM bytes and the V8 heap. At the end it stops the mic, checks the detector is idle, that pauses really were removed, and that the heap did not grow unduly, then reloads, resumes (same phrases, same seconds, same mode), previews, exports the whole session to MP4 and checks the file's duration against the timeline. `--seed` replays a run; `--no-export` skips the final export for very long runs; `--verbose` prints every action with its time, leaves console breadcrumbs around each microphone and Web Audio call, and lets a stall report interrupt the page and print its JavaScript call stack.
+
+**Known limitation of the headless run.** Previews in the middle of the random session are opt-in (`--preview`). In this headless Chrome with the fake microphone, once a preview has played, a later mic stop wedges the browser's audio stack after about a minute: every call the app makes completes (the breadcrumbs show the track stopping and the context suspending), the JavaScript stack cannot be interrupted, and the page then stops answering inside native code. The same action list without previews passes, and so does the preview at the end of the run. It has not been reproduced with a real microphone, so the sequence worth checking by hand on real hardware is: record, preview, record more, stop the mic, start it again.
 
 ## Browser support
 

@@ -1,3 +1,4 @@
+import { type CaptureMode } from '../core/recorder.js';
 import { type Segment } from '../core/timeline.js';
 
 import { DEFAULT_SETTINGS, type Settings, type Slide, type SlideSource } from './types.js';
@@ -10,6 +11,10 @@ export interface AppState {
   deleted: { seg: Segment; index: number }[];
   armed: boolean;
   muted: boolean;
+  /** How the mic is driven: the detector alone, or only while the talk key is held. */
+  mode: CaptureMode;
+  /** Press-to-speak: the talk key or button is down right now. */
+  held: boolean;
   speaking: boolean;
   previewing: boolean;
   exporting: boolean;
@@ -29,6 +34,8 @@ export class Store {
     deleted: [],
     armed: false,
     muted: false,
+    mode: 'auto',
+    held: false,
     speaking: false,
     previewing: false,
     exporting: false,

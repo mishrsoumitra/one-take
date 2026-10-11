@@ -528,11 +528,28 @@ export function buildFfmpegArgs(
 /* Runner                                                              */
 /* ------------------------------------------------------------------ */
 
+/** What ffmpeg's `-progress` output says about the encode so far. */
+export interface FfmpegProgress {
+  /** Seconds of output written. */
+  outTimeSec: number | null;
+  /** Encoding speed relative to real time. */
+  speed: number | null;
+  /** Frames per second being encoded. */
+  fps: number | null;
+  /** Bytes written to the output so far. */
+  outputBytes: number | null;
+  /** Output bitrate in kbit/s. */
+  bitrateKbps: number | null;
+}
+
 export interface RunOptions {
   cwd: string;
   signal: AbortSignal;
-  onProgress?: (outTimeSec: number, speed: number | null) => void;
+  /** Called once per progress block (every half second or so) with everything the block carried. */
+  onProgress?: (progress: FfmpegProgress) => void;
   onLog?: (line: string) => void;
+  /** Called with the child's process id once it is running, for load sampling. */
+  onSpawn?: (pid: number) => void;
 }
 
 export class FfmpegError extends Error {
@@ -546,12 +563,17 @@ export class FfmpegError extends Error {
   }
 }
 
-/** Parses one `-progress` block line; returns the time in seconds when the line carries it. */
-export function parseProgressLine(line: string): { outTimeSec?: number; speed?: number } {
+/**
+ * Parses one `-progress` line. A block is a run of `key=value` lines ended by `progress=continue` or
+ * `progress=end`; the values the UI uses come back under their names, `end: true` marks the end of a
+ * block, and anything else (or `N/A`) is `{}`.
+ */
+export function parseProgressLine(line: string): Partial<FfmpegProgress> & { end?: boolean } {
   const eq = line.indexOf('=');
   if (eq < 0) return {};
   const key = line.slice(0, eq).trim();
   const value = line.slice(eq + 1).trim();
+  if (key === 'progress') return { end: true };
   if (key === 'out_time_us' || key === 'out_time_ms') {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? { outTimeSec: n / 1e6 } : {};
@@ -559,6 +581,18 @@ export function parseProgressLine(line: string): { outTimeSec?: number; speed?: 
   if (key === 'speed') {
     const n = Number(value.replace('x', ''));
     return Number.isFinite(n) ? { speed: n } : {};
+  }
+  if (key === 'fps') {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? { fps: n } : {};
+  }
+  if (key === 'total_size') {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? { outputBytes: n } : {};
+  }
+  if (key === 'bitrate') {
+    const n = Number(value.replace(/k?bits\/s$/, ''));
+    return Number.isFinite(n) && n >= 0 ? { bitrateKbps: n } : {};
   }
   return {};
 }
@@ -576,12 +610,20 @@ export function runFfmpeg(ffmpegPath: string, args: string[], options: RunOption
     });
     const stderrLines: string[] = [];
     let stdoutBuffer = '';
-    let lastSpeed: number | null = null;
+    // Values carry over between blocks: ffmpeg prints `speed=N/A` on the first block, for instance.
+    const progress: FfmpegProgress = {
+      outTimeSec: null,
+      speed: null,
+      fps: null,
+      outputBytes: null,
+      bitrateKbps: null,
+    };
 
     const onAbort = () => {
       child.kill('SIGKILL');
     };
     options.signal.addEventListener('abort', onAbort, { once: true });
+    if (child.pid !== undefined) options.onSpawn?.(child.pid);
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -590,9 +632,9 @@ export function runFfmpeg(ffmpegPath: string, args: string[], options: RunOption
       while (nl >= 0) {
         const line = stdoutBuffer.slice(0, nl);
         stdoutBuffer = stdoutBuffer.slice(nl + 1);
-        const p = parseProgressLine(line);
-        if (p.speed !== undefined) lastSpeed = p.speed;
-        if (p.outTimeSec !== undefined) options.onProgress?.(p.outTimeSec, lastSpeed);
+        const { end, ...p } = parseProgressLine(line);
+        Object.assign(progress, p);
+        if (end && progress.outTimeSec !== null) options.onProgress?.({ ...progress });
         nl = stdoutBuffer.indexOf('\n');
       }
     });

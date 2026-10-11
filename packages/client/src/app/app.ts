@@ -1219,6 +1219,13 @@ export class App {
     const plan = planExport(request, this.serverCaps, this.browserCaps);
     const started = performance.now();
     let encodeMs = 0;
+    // what the time left said along the way, so the tests can judge it against the real time
+    const eta = {
+      first: null as number | null,
+      max: null as number | null,
+      samples: 0,
+      bases: [] as string[],
+    };
     const result = await runExport({
       request,
       plan,
@@ -1228,6 +1235,12 @@ export class App {
       signal: new AbortController().signal,
       onProgress: (p) => {
         if (p.stage === 'encoding') encodeMs = performance.now() - started;
+        if (p.remainingSec !== null && p.stage !== 'done') {
+          eta.first ??= p.remainingSec;
+          eta.max = Math.max(eta.max ?? 0, p.remainingSec);
+          eta.samples++;
+          if (p.basis && eta.bases[eta.bases.length - 1] !== p.basis) eta.bases.push(p.basis);
+        }
       },
       forceInMemory: inMemory,
     });
@@ -1236,6 +1249,7 @@ export class App {
       elapsedMs,
       encodeMs: Math.round(encodeMs),
       videoSeconds: this.timeline(request.order).total,
+      eta,
     };
     if (result.kind === 'blob') {
       const bytes = new Uint8Array(await result.blob.arrayBuffer());

@@ -314,6 +314,17 @@ When you save to a folder, the server receives the chunks (`PUT /api/exports/:id
 
 The browser follows the job over server-sent events and falls back to polling if the stream drops.
 
+### Following an export
+
+Once you press **Export**, the settings give way to a progress view:
+
+- **Time left**, in large type, with a note on where the figure comes from: _from the plan_ before anything has been measured, _settling on the measured speed_ while the first tenth of a stage runs, then _measured over the last few seconds_. Elapsed time, the share done and the bytes written sit beside it, over one bar for the whole export.
+- **The steps**: _Encode in the browser_, then _Compress with ffmpeg_ or _Package as HLS_ on the server when the plan has a server stage, then _Save_. Each shows its own percentage, its time left, and what it is doing right now: frames per second, speed against real time, bytes written, and for ffmpeg its CPU use.
+- **This computer, live**: the whole machine's CPU use and memory, polled from the server once a second, plus the browser encoder's figures and the page's heap, so you can see what the export costs while it runs.
+- **Cancel export** at any stage; when it finishes, the saved path, its size and how long it took, with _Show in folder_ and _Back to settings_.
+
+The time left does not fall into the usual trap of "1 h 30 min" at the start and "30 s" a minute later. That figure comes from dividing the work left by the average speed since the start, which at the start is dominated by set-up time during which nothing counted as progress. Here the estimate starts from what the plan expected (the resource map), hands over to a speed measured over a sliding window of the last few seconds once a little work has been done, and follows a measured drop quickly but a rise only slowly. The arithmetic lives in `packages/shared/src/eta.ts` and is unit-tested against a simulated one-hour lecture: the first figure is the plan's, and no figure along the way exceeds twice it.
+
 ### What runs where
 
 The planner in `packages/shared/src/plan.ts` is a pure function. The export dialog calls it to show the plan before anything runs, and the same decisions are unit-tested.
@@ -580,6 +591,7 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | `GET`    | `/api/health`                 | `{ ok, name, version }`.                                                                         |
 | `GET`    | `/api/capabilities`           | Server version, platform, home and default folders, ffmpeg info (path, version, encoders, muxers), ffprobe path, and shortcut folders for the picker. |
 | `GET`    | `/api/system`                 | The system check: CPU, memory, GPU, disk, verified hardware encoders, benchmark winner and tier.  |
+| `GET`    | `/api/system/load`            | How busy the machine is right now: whole-machine CPU use since the previous call, memory, and the server process. The export view polls it once a second. |
 | `POST`   | `/api/convert?name=deck.pptx` | A PowerPoint file as `application/octet-stream`; answers with `application/pdf`. Renderer notes come in the `x-one-take-warnings` header. |
 | `GET`    | `/api/fs/list?path=&files=1`  | Lists a folder: entries, parent, whether it exists and is writable, and free bytes. `files=1` includes files. Defaults to the home folder. |
 | `POST`   | `/api/fs/mkdir`               | `{ path }`. Creates a folder (and parents) and returns its listing.                              |
@@ -600,7 +612,7 @@ POST /api/exports ──▶ uploading ──▶ processing ──▶ done
                          └──────────────┴──────▶ failed / cancelled
 ```
 
-While `uploading`, the progress stage is `upload` and the percent is bytes received against the estimate. While `processing`, the stage is `process` with ffmpeg's percent and speed (relative to real time), then `finalize` while the result is moved into place. A job without ffmpeg work goes straight from `uploading` to `finalize`.
+While `uploading`, the progress stage is `upload` and the percent is bytes received against the estimate. While `processing`, the stage is `process` with ffmpeg's percent, speed (relative to real time), seconds of output so far (`outTimeSec`), frames per second, bytes written, and, about once a second, the ffmpeg process's CPU use and resident memory (`process`), then `finalize` while the result is moved into place. A job without ffmpeg work goes straight from `uploading` to `finalize`.
 
 ### Creating a job
 
@@ -702,6 +714,7 @@ one-take/
     │       ├── presets.ts        resolution presets, frame rates, quality levels, CRF ranges, ladder rungs
     │       ├── plan.ts           planExport(): request + capabilities → browser plan + server spec + warnings + blockers
     │       ├── estimate.ts       size and frame estimates from a plan
+    │       ├── eta.ts            time left that starts from the plan and settles on a windowed measured rate
     │       ├── presentations.ts  accepted slide file types (PDF, PowerPoint, images)
     │       ├── system.ts         SystemProfile types and the machine tier
     │       ├── performance.ts    performance modes, browser capability probe results, applyPerformanceMode()
@@ -719,6 +732,7 @@ one-take/
     │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs(), progress parsing, runFfmpeg()
     │       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts
     │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder self-tests, benchmarkEncoders()
+    │       │   ├── load.ts       LoadMonitor: live CPU and memory for /api/system/load, ffmpeg process sampling
     │       │   ├── convert.ts    PptxConverter: runs the renderer in a worker thread with a heap limit
     │       │   └── pptx/         PowerPoint → PDF: html (text runs → paragraphs), layout (line breaking), fonts, geometry, render (pdfkit), worker
     │       └── util/             errors.ts (ApiError with stable codes), semaphore.ts (limits concurrent re-encodes)

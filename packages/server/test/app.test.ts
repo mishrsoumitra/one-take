@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp, hostIsLoopback, originIsLoopback } from '../src/app.js';
 import { PptxConverter, presentationSupport, type ConverterService } from '../src/services/convert.js';
 import { JobManager } from '../src/services/jobs.js';
+import { LoadMonitor } from '../src/services/load.js';
 
 let tmp: string;
 let staticDir: string;
@@ -38,6 +39,7 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
     },
     jobs: new JobManager({ ffmpeg: null }),
     converter,
+    load: new LoadMonitor(),
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
@@ -156,6 +158,20 @@ describe('app', () => {
       headers: { host: 'localhost:4317' },
     });
     expect(caps.json()).toMatchObject({ name: 'one-take-server', ffmpeg: null });
+    const load = await app.inject({
+      method: 'GET',
+      url: '/api/system/load',
+      headers: { host: 'localhost:4317' },
+    });
+    expect(load.statusCode).toBe(200);
+    const body = load.json<{
+      cpu: { cores: number };
+      memory: { totalBytes: number };
+      server: { pid: number };
+    }>();
+    expect(body.cpu.cores).toBeGreaterThan(0);
+    expect(body.memory.totalBytes).toBeGreaterThan(0);
+    expect(body.server.pid).toBe(process.pid);
     await app.close();
   });
 

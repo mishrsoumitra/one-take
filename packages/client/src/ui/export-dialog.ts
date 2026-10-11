@@ -23,6 +23,8 @@ import {
   estimateResources,
   formatBytes,
   formatDuration,
+  formatEta,
+  formatGb,
   hardwareCodecLabels,
   peakMemoryBytes,
   performanceWarnings,
@@ -38,6 +40,7 @@ import {
   type PerformanceMode,
   type ResourceLine,
   type ServerCapabilities,
+  type SystemLoad,
 } from '@one-take/shared';
 
 import { type ApiClient } from '../api/client.js';
@@ -47,9 +50,12 @@ import { canRecordRealtime, recordRealtime } from '../export/fallback.js';
 import {
   downloadBlob,
   ExportCancelledError,
+  FFMPEG_BYTES_SHOWN_FROM,
   runExport,
+  type ExportEstimates,
   type ExportProgress,
   type ExportResult,
+  type ExportStep,
 } from '../export/runner.js';
 
 import { clear, h, replaceChildren, syncRangeFill } from './dom.js';
@@ -105,6 +111,46 @@ function section(title: string, ...children: (HTMLElement | null)[]): HTMLElemen
   return h('section', { class: 'sec' }, h('h4', null, title), ...children);
 }
 
+/** A checkbox or radio with its text beside it; the text wraps under itself, never under the box. */
+function check(input: HTMLInputElement, text: string, ...rest: (HTMLElement | string)[]): HTMLElement {
+  return h('label', { class: 'check' }, input, h('span', null, text, ...rest));
+}
+
+/** A number field that fills its row, with its unit after it: `[ 4 ] s`. */
+function unit(input: HTMLElement, suffix: string): HTMLElement {
+  return h('span', { class: 'unit' }, input, h('span', { class: 'suffix' }, suffix));
+}
+
+/** Seconds since an export started, as `m:ss` or `h:mm:ss`. */
+function formatElapsed(seconds: number): string {
+  return formatDuration(seconds);
+}
+
+/** Why the time left reads what it does. */
+function basisText(p: ExportProgress): string {
+  if (p.stage === 'done') return '';
+  switch (p.basis) {
+    case 'measured':
+      return 'measured over the last few seconds';
+    case 'measuring':
+      return 'from the plan, settling on the measured speed';
+    case 'model':
+      return 'from the plan; measuring…';
+    case null:
+      return p.remainingSec === null ? 'measuring…' : '';
+  }
+}
+
+/** A step's own time left, as a short clause for its row. */
+function stepTimeLeft(step: ExportStep): string {
+  if (step.state === 'done')
+    return step.elapsedSec !== null ? `took ${formatElapsed(step.elapsedSec)}` : 'done';
+  if (step.remainingSec === null) return step.state === 'active' ? 'measuring…' : '';
+  const eta = formatEta(step.remainingSec);
+  const about = step.basis === 'measured' || step.remainingSec < 8 ? '' : 'about ';
+  return `${about}${eta} left`;
+}
+
 /** `45 s`, `3 min`, `1 h 20 min`. */
 function formatSeconds(seconds: number): string {
   if (seconds < 90) return `${Math.max(1, Math.round(seconds))} s`;
@@ -138,11 +184,20 @@ function number(
 
 export class ExportDialog {
   private readonly overlay: HTMLElement;
+  private readonly box: HTMLElement;
   private request: ExportRequest;
   private opened = false;
   private plan: ExportPlan | null = null;
+  /** The resource map of the current plan; its times seed the time left when an export starts. */
+  private resourceLines: readonly ResourceLine[] = [];
   private running: AbortController | null = null;
   private lastJobId: string | null = null;
+  private lastProgress: ExportProgress | null = null;
+  /** The computer's load, polled once a second while an export runs. */
+  private load: SystemLoad | null = null;
+  private loadTimer: number | null = null;
+  private loadFailed = false;
+  private view: 'settings' | 'progress' = 'settings';
   private readonly els: {
     sumTime: HTMLElement;
     sumSegs: HTMLElement;
@@ -197,15 +252,34 @@ export class ExportDialog {
     planBox: HTMLElement;
     warnings: HTMLElement;
     blockers: HTMLElement;
-    prog: HTMLElement;
-    bar: HTMLElement;
-    progLabel: HTMLElement;
-    progPct: HTMLElement;
-    progDetail: HTMLElement;
+    settings: HTMLElement;
+    // the exporting view
+    panel: HTMLElement;
+    panelTitle: HTMLElement;
+    panelSub: HTMLElement;
+    heroEta: HTMLElement;
+    heroBasis: HTMLElement;
+    kElapsed: HTMLElement;
+    kOverall: HTMLElement;
+    kWritten: HTMLElement;
+    bigBar: HTMLElement;
+    steps: HTMLElement;
+    status: HTMLElement;
+    cpuMeter: HTMLElement;
+    cpuBar: HTMLElement;
+    cpuText: HTMLElement;
+    memMeter: HTMLElement;
+    memBar: HTMLElement;
+    memText: HTMLElement;
+    factBrowser: HTMLElement;
+    factFfmpeg: HTMLElement;
+    factDisk: HTMLElement;
+    loadNote: HTMLElement;
     result: HTMLElement;
     btnExport: HTMLButtonElement;
     btnCancel: HTMLButtonElement;
     btnClose: HTMLButtonElement;
+    btnBack: HTMLButtonElement;
     fallback: HTMLElement;
   };
 
@@ -238,12 +312,24 @@ export class ExportDialog {
       this.update((q) => {
         if (q.destination.kind === 'server') q.destination.overwrite = e.overwrite.checked;
       });
-    e.folderRow = h(
-      'div',
-      { class: 'folderrow' },
-      e.folderPath,
-      h('button', { on: { click: () => void this.browse() } }, icon('folder-open', 16), 'Browse…'),
-      h('label', { class: 'inline' }, e.overwrite, ' replace an existing file of the same name'),
+    e.folderRow = row(
+      'Folder',
+      h(
+        'div',
+        { class: 'stack' },
+        h(
+          'div',
+          { class: 'folderrow' },
+          e.folderPath,
+          h(
+            'button',
+            { id: 'btnBrowse', on: { click: () => void this.browse() } },
+            icon('folder-open', 16),
+            'Browse…',
+          ),
+        ),
+        check(e.overwrite, 'replace an existing file of the same name'),
+      ),
     );
 
     e.container = h('select');
@@ -288,12 +374,7 @@ export class ExportDialog {
       e.hlsTypeRow,
       row(
         'Adaptive bitrate',
-        h(
-          'label',
-          { class: 'inline' },
-          e.ladder,
-          ' several renditions (1080p/720p/480p/360p) so the player can switch quality',
-        ),
+        check(e.ladder, 'several renditions (1080p/720p/480p/360p) so the player can switch quality'),
         'Re-encodes on the server with ffmpeg.',
       ),
     );
@@ -318,7 +399,14 @@ export class ExportDialog {
         q.resolution = { width: Number(e.width.value) || 1920, height: Number(e.height.value) || 1080 };
       }),
     );
-    e.customSize = h('span', { class: 'inline' }, e.width, ' × ', e.height, ' px');
+    e.customSize = h(
+      'span',
+      { class: 'unit pair' },
+      e.width,
+      h('span', { class: 'suffix' }, '×'),
+      e.height,
+      h('span', { class: 'suffix' }, 'px'),
+    );
 
     e.fps = h('select');
     e.fps.onchange = () =>
@@ -330,7 +418,7 @@ export class ExportDialog {
         if (v !== null) q.fps = Math.min(120, Math.max(1, v));
       }),
     );
-    e.customFpsWrap = h('span', { class: 'inline' }, e.customFps, ' fps');
+    e.customFpsWrap = unit(e.customFps, 'fps');
 
     e.quality = h('select');
     e.quality.onchange = () =>
@@ -341,7 +429,6 @@ export class ExportDialog {
             ? { kind: 'bitrate', kbps: Number(e.customKbps.value) || 5000 }
             : { kind: 'level', level: v as (typeof QUALITY_LEVELS)[number] };
       });
-    e.customKbpsWrap = h('span', { class: 'inline' });
     e.customKbps = number(
       r.video.quality.kind === 'bitrate' ? r.video.quality.kbps : 5000,
       100,
@@ -352,7 +439,7 @@ export class ExportDialog {
           if (v !== null) q.video.quality = { kind: 'bitrate', kbps: Math.round(v) };
         }),
     );
-    e.customKbpsWrap.append(e.customKbps, ' kbit/s');
+    e.customKbpsWrap = unit(e.customKbps, 'kbit/s');
 
     e.videoCodec = h('select');
     e.videoCodec.onchange = () =>
@@ -416,7 +503,7 @@ export class ExportDialog {
       });
     e.tuneRow = row(
       'Tune',
-      h('label', { class: 'inline' }, e.tune, ' optimise for still images (slides)'),
+      check(e.tune, 'optimise for still images (slides)'),
       'x264 only. Sharper text at the same size.',
     );
     e.outFps = number(
@@ -464,29 +551,17 @@ export class ExportDialog {
       row('Codec', e.compCodec),
       row(
         'Quality (CRF)',
-        h('span', { class: 'inline' }, e.crf, e.crfV),
+        h('span', { class: 'unit slider' }, e.crf, h('span', { class: 'suffix' }, e.crfV)),
         'Lower is better quality and a bigger file. 18 is near lossless, 23 is the x264 default, 28 is small.',
       ),
       row('Speed preset', e.preset, 'Slower presets squeeze out a smaller file for the same quality.'),
       e.tuneRow,
-      row(
-        'Output frame rate',
-        h('span', { class: 'inline' }, e.outFps, ' fps'),
-        'Leave empty to keep the recorded rate.',
-      ),
-      row(
-        'Scale to height',
-        h('span', { class: 'inline' }, e.outHeight, ' px'),
-        'Leave empty to keep the recorded size.',
-      ),
-      row(
-        'Max bitrate',
-        h('span', { class: 'inline' }, e.maxBitrate, ' kbit/s'),
-        'Caps peaks for streaming; leave empty for pure CRF.',
-      ),
+      row('Output frame rate', unit(e.outFps, 'fps'), 'Leave empty to keep the recorded rate.'),
+      row('Scale to height', unit(e.outHeight, 'px'), 'Leave empty to keep the recorded size.'),
+      row('Max bitrate', unit(e.maxBitrate, 'kbit/s'), 'Caps peaks for streaming; leave empty for pure CRF.'),
       row(
         'Hardware encoder',
-        h('label', { class: 'inline' }, e.hardware, ' prefer the GPU encoder when the server has one'),
+        check(e.hardware, 'prefer the GPU encoder when the server has one'),
         'Faster, but larger files than x264/x265 at the same quality.',
       ),
       e.compNote,
@@ -495,7 +570,7 @@ export class ExportDialog {
       'Compression (server, ffmpeg)',
       row(
         'Compress',
-        h('label', { class: 'inline' }, e.compEnabled, ' re-encode on the server with a CRF quality target'),
+        check(e.compEnabled, 're-encode on the server with a CRF quality target'),
         'The browser encodes at a high mezzanine quality first; ffmpeg then produces the final, smaller file.',
       ),
       e.compBody,
@@ -541,110 +616,190 @@ export class ExportDialog {
     e.warnings = h('ul', { class: 'warnings' });
     e.blockers = h('ul', { class: 'blockers' });
 
-    e.bar = h('i');
-    e.progLabel = h('span', null, 'Preparing…');
-    e.progPct = h('span', null, '0%');
-    e.progDetail = h('div', { class: 'hint' });
-    e.prog = h(
-      'div',
-      { id: 'prog' },
-      h('div', { id: 'bar', class: 'progress' }, e.bar),
-      h('div', { id: 'progText' }, e.progLabel, e.progPct),
-      e.progDetail,
-    );
-    e.result = h('div', { id: 'result', class: 'alert success' });
     e.fallback = h('div', { class: 'fallback alert warning', hidden: true });
+
+    // The exporting view: the time left, the steps, and what the computer is doing meanwhile.
+    e.panelTitle = h('div', { class: 'title', id: 'exportTitle' });
+    e.panelSub = h('div', { class: 'hint' });
+    e.heroEta = h('div', { class: 'hero-figure', id: 'etaFigure' }, '…');
+    e.heroBasis = h('div', { class: 'hint', id: 'etaBasis' });
+    e.kElapsed = h('b', { id: 'kElapsed' }, '0:00');
+    e.kOverall = h('b', { id: 'kOverall' }, '0 %');
+    e.kWritten = h('b', { id: 'kWritten' }, '0 B');
+    e.bigBar = h('i');
+    e.steps = h('ol', { class: 'steps', id: 'exportSteps' });
+    e.status = h('div', { class: 'status', id: 'exportStatus' });
+    e.cpuBar = h('i');
+    e.cpuText = h('span', { class: 'val', id: 'cpuText' }, '…');
+    e.memBar = h('i');
+    e.memText = h('span', { class: 'val', id: 'memText' }, '…');
+    const meter = (id: string, label: string, bar: HTMLElement, text: HTMLElement): HTMLElement =>
+      h(
+        'div',
+        { class: 'meter', id },
+        h('div', { class: 'meter-head' }, h('span', null, label), text),
+        h('div', { class: 'progress' }, bar),
+      );
+    e.cpuMeter = meter('cpuMeter', 'CPU, whole computer', e.cpuBar, e.cpuText);
+    e.memMeter = meter('memMeter', 'Memory in use', e.memBar, e.memText);
+    e.factBrowser = h('div', { class: 'fact', id: 'factBrowser' });
+    e.factFfmpeg = h('div', { class: 'fact', id: 'factFfmpeg' });
+    e.factDisk = h('div', { class: 'fact', id: 'factDisk' });
+    e.loadNote = h('div', { class: 'hint' });
+    const kpi = (label: string, value: HTMLElement): HTMLElement =>
+      h('div', { class: 'kpi' }, value, h('span', null, label));
+    e.result = h('div', { id: 'result', class: 'alert success', hidden: true });
+    e.panel = h(
+      'div',
+      { id: 'exportProgress', class: 'exporting', hidden: true },
+      h('div', { class: 'head' }, e.panelTitle, e.panelSub),
+      h(
+        'div',
+        { class: 'hero' },
+        h('div', { class: 'eta' }, h('div', { class: 'overline' }, 'Time left'), e.heroEta, e.heroBasis),
+        h(
+          'div',
+          { class: 'kpis' },
+          kpi('elapsed', e.kElapsed),
+          kpi('done', e.kOverall),
+          kpi('written', e.kWritten),
+        ),
+      ),
+      h('div', { class: 'progress big', id: 'bar' }, e.bigBar),
+      e.steps,
+      e.status,
+      section(
+        'This computer, live',
+        h('div', { class: 'meters' }, e.cpuMeter, e.memMeter),
+        h('div', { class: 'facts' }, e.factBrowser, e.factFfmpeg, e.factDisk),
+        e.loadNote,
+      ),
+      e.result,
+    );
 
     e.btnExport = h(
       'button',
-      { class: 'primary', on: { click: () => void this.start() } },
+      { class: 'primary', id: 'btnStartExport', on: { click: () => void this.start() } },
       icon('download'),
       'Export',
     );
     e.btnCancel = h(
       'button',
-      { class: 'danger', hidden: true, on: { click: () => this.cancel() } },
+      { class: 'danger', id: 'btnCancelExport', hidden: true, on: { click: () => this.cancel() } },
       'Cancel export',
     );
-    e.btnClose = h('button', { on: { click: () => this.close() } }, 'Close');
+    e.btnBack = h(
+      'button',
+      {
+        class: 'ghost',
+        id: 'btnBackToSettings',
+        hidden: true,
+        on: { click: () => this.setView('settings') },
+      },
+      icon('chevron-left', 16),
+      'Back to settings',
+    );
+    e.btnClose = h('button', { id: 'btnCloseExport', on: { click: () => this.close() } }, 'Close');
 
-    this.els = e;
-    this.overlay = h(
+    e.settings = h(
       'div',
-      { class: 'modal export', id: 'exportModal' },
+      { class: 'settings' },
       h(
         'div',
-        { class: 'box wide' },
-        h('h3', null, 'Export video'),
+        { class: 'summary' },
+        h('div', null, e.sumTime, h('span', null, 'video length')),
+        h('div', null, e.sumSegs, h('span', null, 'phrases')),
+        h('div', null, e.sumSlides, h('span', null, 'slides used')),
+      ),
+      h(
+        'div',
+        { class: 'cols' },
         h(
           'div',
-          { class: 'summary' },
-          h('div', null, e.sumTime, h('span', null, 'video length')),
-          h('div', null, e.sumSegs, h('span', null, 'phrases')),
-          h('div', null, e.sumSlides, h('span', null, 'slides used')),
+          { class: 'col' },
+          section(
+            'Destination',
+            row(
+              'Save to',
+              h(
+                'div',
+                { class: 'stack checks' },
+                check(e.destServer, 'a folder on this computer ', e.serverNote),
+                check(e.destBrowser, 'the browser (save dialog or download)'),
+              ),
+            ),
+            e.folderRow,
+            row('File name', e.fileName),
+          ),
+          section('Format', row('Container', e.container, undefined), e.containerNote, e.streaming),
+          section(
+            'Video',
+            row('Resolution', h('div', { class: 'stack' }, e.resolution, e.customSize)),
+            row(
+              'Frame rate',
+              h('div', { class: 'stack' }, e.fps, e.customFpsWrap),
+              'Slides are still images: 10–15 fps looks identical to 30 and exports faster.',
+            ),
+            row(
+              'Quality',
+              h('div', { class: 'stack' }, e.quality, e.customKbpsWrap),
+              'An upper bound; still slides compress far below it.',
+            ),
+            row('Video codec', e.videoCodec),
+            row('Key frame every', unit(e.keyInt, 's'), 'Smaller values seek faster and make bigger files.'),
+          ),
+          section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
         ),
         h(
           'div',
-          { class: 'cols' },
-          h(
-            'div',
-            { class: 'col' },
-            section(
-              'Destination',
-              row(
-                'Save to',
-                h(
-                  'div',
-                  { class: 'stack' },
-                  h('label', { class: 'inline' }, e.destServer, ' a folder on this computer ', e.serverNote),
-                  h('label', { class: 'inline' }, e.destBrowser, ' the browser (save dialog or download)'),
-                ),
-              ),
-              e.folderRow,
-              row('File name', e.fileName),
-            ),
-            section('Format', row('Container', e.container, undefined), e.containerNote, e.streaming),
-            section(
-              'Video',
-              row('Resolution', h('div', { class: 'stack' }, e.resolution, e.customSize)),
-              row(
-                'Frame rate',
-                h('span', { class: 'inline' }, e.fps, e.customFpsWrap),
-                'Slides are still images: 10–15 fps looks identical to 30 and exports faster.',
-              ),
-              row(
-                'Quality',
-                h('div', { class: 'stack' }, e.quality, e.customKbpsWrap),
-                'An upper bound; still slides compress far below it.',
-              ),
-              row('Video codec', e.videoCodec),
-              row(
-                'Key frame every',
-                h('span', { class: 'inline' }, e.keyInt, ' s'),
-                'Smaller values seek faster and make bigger files.',
-              ),
-            ),
-            section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
-          ),
-          h(
-            'div',
-            { class: 'col' },
-            section('This computer', e.sysLine, e.modes),
-            e.compression,
-            section('Order', row('Phrases', e.order)),
-            section('Plan', e.planBox, e.resources, e.warnings, e.blockers),
-          ),
+          { class: 'col' },
+          section('This computer', e.sysLine, e.modes),
+          e.compression,
+          section('Order', row('Phrases', e.order)),
+          section('Plan', e.planBox, e.resources, e.warnings, e.blockers),
         ),
-        e.fallback,
-        e.prog,
-        e.result,
-        h('div', { class: 'actions' }, e.btnCancel, h('div', { class: 'spacer' }), e.btnClose, e.btnExport),
+      ),
+      e.fallback,
+    );
+
+    this.els = e;
+    this.box = h(
+      'div',
+      { class: 'box wide' },
+      h('h3', null, 'Export video'),
+      e.settings,
+      e.panel,
+      h(
+        'div',
+        { class: 'actions' },
+        e.btnBack,
+        e.btnCancel,
+        h('div', { class: 'spacer' }),
+        e.btnClose,
+        e.btnExport,
       ),
     );
+    this.overlay = h('div', { class: 'modal export', id: 'exportModal' }, this.box);
     this.overlay.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape' && !this.running) this.close();
     });
     parent.appendChild(this.overlay);
+  }
+
+  /** The settings, or the running / finished export. */
+  private setView(view: 'settings' | 'progress'): void {
+    this.view = view;
+    const e = this.els;
+    e.settings.hidden = view !== 'settings';
+    e.panel.hidden = view !== 'progress';
+    e.btnExport.hidden = view !== 'settings';
+    e.btnBack.hidden = view !== 'progress' || this.running !== null;
+    this.box.classList.toggle('narrow', view === 'progress');
+    if (view === 'settings') this.refresh();
+  }
+
+  get currentView(): 'settings' | 'progress' {
+    return this.view;
   }
 
   get isOpen(): boolean {
@@ -660,9 +815,11 @@ export class ExportDialog {
     if (this.request.fileName === 'lecture' || !this.request.fileName)
       this.request.fileName = sanitizeFileName(this.deps.suggestedName());
     this.els.fileName.value = this.request.fileName;
-    this.els.prog.classList.remove('on');
-    this.els.result.classList.remove('on');
-    replaceChildren(this.els.result);
+    if (!this.running) {
+      this.els.result.hidden = true;
+      replaceChildren(this.els.result);
+      this.setView('settings');
+    }
     this.overlay.classList.add('on');
     this.refresh();
     void this.deps.refreshServer().then((caps) => {
@@ -981,6 +1138,7 @@ export class ExportDialog {
       browser,
     };
     const lines = estimateResources(resourceInput);
+    this.resourceLines = lines;
     this.renderResources(lines);
     replaceChildren(
       e.warnings,
@@ -1006,14 +1164,219 @@ export class ExportDialog {
     }
   }
 
-  private setProgress(p: ExportProgress): void {
+  /** A progress record for the panel when there is no runner behind it (cancel, failure, real time). */
+  private simpleProgress(
+    stage: ExportProgress['stage'],
+    percent: number | null,
+    message: string,
+  ): ExportProgress {
+    const last = this.lastProgress;
+    return {
+      stage,
+      percent,
+      message,
+      detail: '',
+      encode: null,
+      job: null,
+      elapsedSec: last?.elapsedSec ?? 0,
+      remainingSec: stage === 'done' ? 0 : null,
+      basis: null,
+      overall: stage === 'done' && percent === 100 ? 1 : (last?.overall ?? 0),
+      steps: (last?.steps ?? []).map((s) =>
+        stage === 'done' && percent === 100 ? { ...s, state: 'done' } : s,
+      ),
+      metrics: last?.metrics ?? {
+        encodeFps: null,
+        encodeSpeed: null,
+        bytesWritten: 0,
+        writeRate: null,
+        heapBytes: null,
+        ffmpeg: null,
+      },
+    };
+  }
+
+  /** Draws one progress record: the hero figure, the bar, the steps and the live facts. */
+  private renderProgress(p: ExportProgress, outcome: 'running' | 'done' | 'stopped' = 'running'): void {
     const e = this.els;
-    e.prog.classList.add('on');
-    e.progLabel.textContent = p.message;
-    e.progPct.textContent = p.percent === null ? '' : `${p.percent}%`;
-    e.bar.style.width = `${p.percent ?? 0}%`;
-    e.bar.classList.toggle('indeterminate', p.percent === null);
-    e.progDetail.textContent = p.detail;
+    this.lastProgress = p;
+    const done = outcome === 'done';
+    e.heroEta.textContent = done
+      ? 'Done'
+      : outcome === 'stopped'
+        ? '—'
+        : p.remainingSec === null
+          ? 'Estimating…'
+          : formatEta(p.remainingSec);
+    e.heroEta.classList.toggle('small', !done && p.remainingSec === null);
+    e.heroBasis.textContent = outcome === 'running' ? basisText(p) : '';
+    e.kElapsed.textContent = formatElapsed(p.elapsedSec);
+    e.kOverall.textContent = `${Math.round((done ? 1 : p.overall) * 100)} %`;
+    e.kWritten.textContent = formatBytes(p.metrics.bytesWritten);
+    const indeterminate = outcome === 'running' && p.overall === 0 && p.stage !== 'encoding';
+    e.bigBar.classList.toggle('indeterminate', indeterminate);
+    e.bigBar.style.width = `${(done ? 1 : p.overall) * 100}%`;
+    replaceChildren(
+      e.steps,
+      ...p.steps.map((s) => {
+        const state = done ? 'done' : s.state;
+        const mark =
+          state === 'done'
+            ? icon('check', 16)
+            : state === 'active' && outcome === 'running'
+              ? h('span', { class: 'spinner' })
+              : h('span', { class: 'dot' });
+        const right =
+          state === 'active' && s.fraction !== null && outcome === 'running'
+            ? `${Math.round(s.fraction * 100)} %`
+            : state === 'pending'
+              ? 'waiting'
+              : '';
+        const time = done && s.state !== 'done' ? '' : stepTimeLeft({ ...s, state });
+        return h(
+          'li',
+          { class: state, dataset: { step: s.id } },
+          h('span', { class: 'mark' }, mark),
+          h('span', { class: 'name' }, s.label),
+          h('span', { class: 'right' }, [right, time].filter((x) => x).join(' · ')),
+          h('span', { class: 'detail' }, s.detail),
+        );
+      }),
+    );
+    e.status.textContent = p.message;
+    e.status.classList.toggle('error', p.message.startsWith('Export failed'));
+    this.renderFacts(p, outcome);
+  }
+
+  /** The live figures under the meters: the encoder, ffmpeg, and the disk. */
+  private renderFacts(p: ExportProgress, outcome: 'running' | 'done' | 'stopped'): void {
+    const e = this.els;
+    const m = p.metrics;
+    const b = this.plan?.browser;
+    const encoder = b
+      ? `${VIDEO_CODEC_INFO[b.videoCodec].label.split(' / ')[0] ?? b.videoCodec} on the ${b.hardware ? 'GPU' : 'CPU'}`
+      : 'encoder';
+    const encodeStep = p.steps.find((s) => s.id === 'encode');
+    const encodeParts = [
+      m.encodeFps !== null ? `${Math.round(m.encodeFps)} fps` : null,
+      m.encodeSpeed !== null ? `${m.encodeSpeed.toFixed(1)}× real time` : null,
+      m.heapBytes !== null ? `${formatBytes(m.heapBytes)} heap` : null,
+    ].filter((x) => x !== null);
+    replaceChildren(
+      e.factBrowser,
+      h('b', null, 'Browser: '),
+      encodeStep?.state === 'active' && outcome === 'running'
+        ? `encoding ${encoder}${encodeParts.length ? `, ${encodeParts.join(' · ')}` : ''}`
+        : encodeStep?.state === 'done'
+          ? `encoded ${encoder}${encodeStep.elapsedSec !== null ? ` in ${formatElapsed(encodeStep.elapsedSec)}` : ''}${m.heapBytes !== null ? ` · ${formatBytes(m.heapBytes)} heap` : ''}`
+          : `${encoder}, starting…`,
+    );
+    const f = m.ffmpeg;
+    const processStep = p.steps.find((s) => s.id === 'process');
+    const ffmpegParts = f
+      ? [
+          f.fps !== null && f.fps > 0 ? `${Math.round(f.fps)} fps` : null,
+          f.speed !== null ? `${f.speed.toFixed(1)}× real time` : null,
+          f.cpuPercent !== null ? `${Math.round(f.cpuPercent)} % of one core` : null,
+          f.rssBytes !== null ? `${formatBytes(f.rssBytes)} memory` : null,
+          f.outputBytes !== null && f.outputBytes >= FFMPEG_BYTES_SHOWN_FROM
+            ? `${formatBytes(f.outputBytes)} written`
+            : null,
+        ].filter((x) => x !== null)
+      : [];
+    replaceChildren(
+      e.factFfmpeg,
+      h('b', null, 'ffmpeg: '),
+      !processStep
+        ? 'not needed for this export'
+        : processStep.state === 'pending'
+          ? 'waits for the upload'
+          : processStep.state === 'done'
+            ? `finished${processStep.elapsedSec !== null ? ` in ${formatElapsed(processStep.elapsedSec)}` : ''}`
+            : ffmpegParts.length
+              ? ffmpegParts.join(' · ')
+              : 'starting…',
+    );
+    e.factFfmpeg.hidden = !processStep;
+    replaceChildren(
+      e.factDisk,
+      h('b', null, this.request.destination.kind === 'server' ? 'Sent to the server: ' : 'Written: '),
+      `${formatBytes(m.bytesWritten)}${m.writeRate !== null && outcome === 'running' && encodeStep?.state === 'active' ? ` · ${formatBytes(m.writeRate)}/s` : ''}`,
+    );
+  }
+
+  /** The CPU and memory meters from the last load sample. */
+  private renderLoad(): void {
+    const e = this.els;
+    const load = this.load;
+    if (!load) {
+      e.cpuText.textContent = '…';
+      e.memText.textContent = '…';
+      e.cpuBar.style.width = '0%';
+      e.memBar.style.width = '0%';
+      e.loadNote.textContent = this.deps.serverCaps()
+        ? this.loadFailed
+          ? 'The server did not answer the load check.'
+          : ''
+        : 'Live CPU and memory figures need the local server (npm start).';
+      return;
+    }
+    const cpu = load.cpu.percent;
+    e.cpuText.textContent = cpu === null ? 'measuring…' : `${Math.round(cpu)} % of ${load.cpu.cores} cores`;
+    e.cpuBar.style.width = `${cpu ?? 0}%`;
+    const total = load.memory.totalBytes;
+    const available = load.memory.availableBytes;
+    const used = available === null ? null : Math.max(0, total - available);
+    const share = used === null ? 0 : used / Math.max(1, total);
+    e.memText.textContent =
+      used === null ? `${formatGb(total)} total` : `${formatGb(used)} of ${formatGb(total)}`;
+    e.memBar.style.width = `${share * 100}%`;
+    e.memMeter.classList.toggle('warn', share > 0.85 && share <= 0.95);
+    e.memMeter.classList.toggle('hot', share > 0.95);
+    e.loadNote.textContent = '';
+  }
+
+  private startLoadPolling(): void {
+    this.stopLoadPolling();
+    this.load = null;
+    this.loadFailed = false;
+    this.renderLoad();
+    if (!this.deps.serverCaps()) return;
+    let busy = false;
+    const tick = () => {
+      if (busy) return;
+      busy = true;
+      this.deps.api
+        .systemLoad()
+        .then((load) => {
+          this.load = load;
+          this.loadFailed = false;
+        })
+        .catch(() => {
+          this.loadFailed = true;
+        })
+        .finally(() => {
+          busy = false;
+          this.renderLoad();
+        });
+    };
+    tick();
+    this.loadTimer = window.setInterval(tick, 1000);
+  }
+
+  private stopLoadPolling(): void {
+    if (this.loadTimer !== null) window.clearInterval(this.loadTimer);
+    this.loadTimer = null;
+  }
+
+  /** What the plan expected each stage to take, for the time left before anything is measured. */
+  private estimates(): ExportEstimates {
+    const find = (...stages: string[]) =>
+      this.resourceLines.find((l) => stages.includes(l.stage))?.seconds ?? null;
+    return {
+      encodeSec: find('Browser encodes'),
+      processSec: find('Server re-encodes', 'Server packages'),
+    };
   }
 
   private async start(): Promise<void> {
@@ -1023,19 +1386,21 @@ export class ExportDialog {
     this.running = controller;
     this.deps.onBeforeExport();
     this.deps.onExportingChange(true);
-    this.els.btnExport.disabled = true;
-    this.els.btnClose.disabled = true;
-    this.els.btnCancel.hidden = false;
-    this.els.result.classList.remove('on');
-    replaceChildren(this.els.result);
-    this.setProgress({
-      stage: 'preparing',
-      percent: 0,
-      message: 'Preparing…',
-      detail: '',
-      encode: null,
-      job: null,
-    });
+    const e = this.els;
+    e.btnExport.disabled = true;
+    e.btnClose.disabled = true;
+    e.btnCancel.hidden = false;
+    e.result.hidden = true;
+    replaceChildren(e.result);
+    this.lastProgress = null;
+    const ext = CONTAINER_INFO[plan.processing?.container ?? plan.browser.container].extension;
+    const name = sanitizeFileName(this.request.fileName);
+    e.panelTitle.textContent = `Exporting ${name}${ext ? `.${ext}` : ''}`;
+    const b = plan.browser;
+    e.panelSub.textContent = `${this.request.destination.kind === 'server' ? `to ${this.request.destination.directory}` : 'to a file in this browser'} · ${b.width}×${b.height} @ ${b.fps} fps · ${CONTAINER_INFO[plan.processing?.container ?? b.container].label}`;
+    this.setView('progress');
+    this.renderProgress(this.simpleProgress('preparing', null, 'Preparing…'));
+    this.startLoadPolling();
     try {
       const result = await runExport({
         request: this.request,
@@ -1044,7 +1409,8 @@ export class ExportDialog {
         slides: this.deps.slides(),
         api: this.deps.serverCaps() ? this.deps.api : null,
         signal: controller.signal,
-        onProgress: (p) => this.setProgress(p),
+        estimates: this.estimates(),
+        onProgress: (p) => this.renderProgress(p),
       });
       this.showResult(result);
     } catch (error) {
@@ -1052,30 +1418,21 @@ export class ExportDialog {
         error instanceof ExportCancelledError ||
         (error instanceof DOMException && error.name === 'AbortError')
       ) {
-        this.setProgress({
-          stage: 'done',
-          percent: null,
-          message: 'Export cancelled.',
-          detail: '',
-          encode: null,
-          job: null,
-        });
+        this.renderProgress(this.simpleProgress('done', null, 'Export cancelled.'), 'stopped');
       } else {
         console.error(error);
-        this.setProgress({
-          stage: 'done',
-          percent: null,
-          message: `Export failed: ${(error as Error).message}`,
-          detail: '',
-          encode: null,
-          job: null,
-        });
+        this.renderProgress(
+          this.simpleProgress('done', null, `Export failed: ${(error as Error).message}`),
+          'stopped',
+        );
       }
     } finally {
       this.running = null;
+      this.stopLoadPolling();
       this.deps.onExportingChange(false);
-      this.els.btnCancel.hidden = true;
-      this.els.btnClose.disabled = false;
+      e.btnCancel.hidden = true;
+      e.btnClose.disabled = false;
+      e.btnBack.hidden = false;
       this.refresh();
     }
   }
@@ -1086,8 +1443,9 @@ export class ExportDialog {
 
   private showResult(result: ExportResult): void {
     const e = this.els;
-    e.result.classList.add('on');
-    this.setProgress({ stage: 'done', percent: 100, message: 'Done', detail: '', encode: null, job: null });
+    e.result.hidden = false;
+    this.renderProgress(this.simpleProgress('done', 100, 'Done'), 'done');
+    const took = this.lastProgress ? ` · took ${formatElapsed(this.lastProgress.elapsedSec)}` : '';
     if (result.kind === 'server') {
       const out = result.job.outputs[0];
       this.lastJobId = result.job.id;
@@ -1100,6 +1458,7 @@ export class ExportDialog {
           'Saved ',
           h('b', null, out?.path ?? result.job.fileName),
           out ? ` (${formatBytes(out.bytes)})` : '',
+          took,
         ),
         h(
           'div',
@@ -1129,7 +1488,7 @@ export class ExportDialog {
     } else if (result.kind === 'file') {
       replaceChildren(
         e.result,
-        h('div', null, 'Saved ', h('b', null, result.name), ` (${formatBytes(result.bytes)})`),
+        h('div', null, 'Saved ', h('b', null, result.name), ` (${formatBytes(result.bytes)})`, took),
       );
     } else {
       const size = formatBytes(result.blob.size);
@@ -1146,6 +1505,7 @@ export class ExportDialog {
             `Download ${result.name}`,
           ),
           ` (${size})`,
+          took,
         ),
       );
     }
@@ -1157,8 +1517,17 @@ export class ExportDialog {
     this.running = controller;
     this.deps.onBeforeExport();
     this.deps.onExportingChange(true);
-    this.els.btnClose.disabled = true;
-    this.els.btnCancel.hidden = false;
+    const e = this.els;
+    e.btnClose.disabled = true;
+    e.btnCancel.hidden = false;
+    e.result.hidden = true;
+    replaceChildren(e.result);
+    this.lastProgress = null;
+    e.panelTitle.textContent = `Recording ${sanitizeFileName(this.request.fileName)}.webm in real time`;
+    e.panelSub.textContent = 'This browser has no WebCodecs, so the lecture plays once while it is recorded.';
+    this.setView('progress');
+    this.startLoadPolling();
+    const startedAt = performance.now();
     try {
       const b = this.plan.browser;
       const blob = await recordRealtime({
@@ -1170,13 +1539,16 @@ export class ExportDialog {
         videoBitrateKbps: b.videoBitrateKbps,
         signal: controller.signal,
         onProgress: (f, now, total) =>
-          this.setProgress({
-            stage: 'encoding',
-            percent: Math.round(f * 100),
-            message: `Recording in real time… ${formatDuration(now)} / ${formatDuration(total)}`,
-            detail: '',
-            encode: null,
-            job: null,
+          this.renderProgress({
+            ...this.simpleProgress(
+              'encoding',
+              Math.round(f * 100),
+              `Recording in real time… ${formatDuration(now)} / ${formatDuration(total)}`,
+            ),
+            elapsedSec: (performance.now() - startedAt) / 1000,
+            remainingSec: Math.max(0, total - now),
+            basis: 'measured',
+            overall: f,
           }),
       });
       this.showResult({
@@ -1186,23 +1558,29 @@ export class ExportDialog {
         encoder: null,
       });
     } catch (error) {
-      this.setProgress({
-        stage: 'done',
-        percent: null,
-        message:
+      this.renderProgress(
+        this.simpleProgress(
+          'done',
+          null,
           error instanceof ExportCancelledError
             ? 'Export cancelled.'
             : `Export failed: ${(error as Error).message}`,
-        detail: '',
-        encode: null,
-        job: null,
-      });
+        ),
+        'stopped',
+      );
     } finally {
       this.running = null;
+      this.stopLoadPolling();
       this.deps.onExportingChange(false);
-      this.els.btnCancel.hidden = true;
-      this.els.btnClose.disabled = false;
+      e.btnCancel.hidden = true;
+      e.btnClose.disabled = false;
+      e.btnBack.hidden = false;
     }
+  }
+
+  /** The last progress record drawn, for the end-to-end tests. */
+  get progress(): ExportProgress | null {
+    return this.lastProgress;
   }
 
   get currentRequest(): ExportRequest {

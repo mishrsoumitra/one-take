@@ -911,16 +911,20 @@ button.x .ico {
 .export .sec.disabled {
   opacity: 0.6;
 }
+/* a row is a label column and a control column; every control fills the control column, so the
+   dropdowns, fields and checkboxes of a section line up on the same left edge and the same width */
 .export .row {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 128px minmax(0, 1fr);
   gap: var(--spacing-10px);
   align-items: start;
   margin: 7px 0;
 }
+/* the label's text sits on the middle line of a 32 px control beside it */
 .export .row > label {
   color: var(--muted);
-  padding-top: 6px;
+  padding-top: 7px;
+  line-height: 18px;
   font-size: var(--font-size-13px, 13px);
 }
 .export .ctl {
@@ -929,8 +933,11 @@ button.x .ico {
   gap: var(--spacing-4px);
   min-width: 0;
 }
-.export .ctl select,
-.export .ctl input[type='text'] {
+.export .ctl > select,
+.export .ctl > input[type='text'],
+.export .stack > select,
+.export .stack > input[type='text'] {
+  width: 100%;
   max-width: 100%;
 }
 .export .stack {
@@ -938,11 +945,62 @@ button.x .ico {
   flex-direction: column;
   gap: var(--spacing-6px);
 }
-.export .inline {
-  display: inline-flex;
+/* a field with its unit after it: the field takes the width, the unit stays beside it */
+.export .unit {
+  display: flex;
   align-items: center;
-  gap: var(--spacing-6px);
-  flex-wrap: wrap;
+  gap: var(--spacing-8px);
+  min-width: 0;
+}
+.export .unit > input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.export .unit > input[type='range'] {
+  width: auto;
+}
+.export .unit .suffix {
+  color: var(--muted);
+  font-size: var(--font-size-13px, 13px);
+  white-space: nowrap;
+  flex: none;
+}
+.export .unit.slider .suffix {
+  color: var(--text);
+  font-weight: var(--font-weight-semibold);
+  min-width: 2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* a checkbox or radio with its text: the text wraps under itself, never under the box */
+.export .check {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: var(--spacing-8px);
+  align-items: start;
+  padding-top: 7px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.export .check > input {
+  margin-top: 1px;
+}
+/* a note under a choice (the ffmpeg version next to "a folder on this computer") */
+.export .check .hint {
+  display: block;
+}
+.export .stack.checks {
+  gap: var(--spacing-4px);
+}
+.export .stack.checks .check {
+  padding-top: 0;
+}
+.export .stack.checks .check:first-child {
+  padding-top: 7px;
+}
+.export .stack .check {
+  padding-top: 0;
 }
 .export .sub {
   margin-top: var(--spacing-6px);
@@ -952,9 +1010,8 @@ button.x .ico {
 .export .folderrow {
   display: flex;
   align-items: center;
-  gap: var(--spacing-10px);
-  flex-wrap: wrap;
-  margin: 6px 0 2px;
+  gap: var(--spacing-8px);
+  min-width: 0;
 }
 .export .folderrow code.path,
 .picker code.path {
@@ -969,7 +1026,12 @@ button.x .ico {
 }
 .export .folderrow code.path {
   flex: 1;
-  min-width: 160px;
+  min-width: 0;
+  height: var(--spacing-32px);
+  line-height: 18px;
+}
+.export .folderrow button {
+  flex: none;
 }
 .export .plan {
   font-size: var(--font-size-13px, 13px);
@@ -1014,27 +1076,180 @@ button.x .ico {
   border-radius: var(--corner-radius-8px);
   margin-top: var(--spacing-6px);
 }
-#prog {
-  display: none;
-  margin-top: var(--spacing-12px);
+/* the exporting view: one hero figure (the time left), the overall bar, the steps, the live meters */
+.modal .box.wide.narrow {
+  width: 720px;
 }
-#prog.on {
-  display: block;
+.export .exporting .head {
+  margin-bottom: var(--spacing-14px);
 }
-#progText {
-  margin-top: var(--spacing-6px);
+.export .exporting .head .title {
+  font-size: var(--font-size-16px);
+  font-weight: var(--font-weight-semibold);
+}
+.export .exporting .head .hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export .hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--spacing-16px);
+  align-items: end;
+  margin-bottom: var(--spacing-10px);
+}
+.export .hero .overline {
+  margin-bottom: 2px;
+}
+.export .hero-figure {
+  font-size: 44px;
+  line-height: 1.1;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.5px;
+}
+.export .hero-figure.small {
+  font-size: var(--font-size-24px, 24px);
+  line-height: 48px;
   color: var(--muted);
-  font-size: var(--font-size-12px);
+}
+.export .kpis {
   display: flex;
-  justify-content: space-between;
+  gap: var(--spacing-20px);
+  text-align: right;
+}
+.export .kpi b {
+  display: block;
+  font-size: var(--font-size-18px);
+  font-weight: var(--font-weight-semibold);
   font-variant-numeric: tabular-nums;
 }
-#result {
-  display: none;
-  margin-top: var(--spacing-12px);
+.export .kpi span {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
 }
-#result.on {
-  display: block;
+.export .progress.big {
+  height: 10px;
+  margin-bottom: var(--spacing-14px);
+}
+.export ol.steps {
+  list-style: none;
+  margin: 0 0 var(--spacing-8px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6px);
+}
+.export .steps li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 2px var(--spacing-10px);
+  align-items: center;
+  padding: var(--spacing-8px) var(--spacing-12px);
+  border-radius: var(--corner-radius-8px);
+  background: var(--panel2);
+  border: 1px solid transparent;
+}
+.export .steps li.active {
+  border-color: var(--accent-line);
+}
+.export .steps li.pending {
+  color: var(--muted);
+}
+.export .steps li .mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+.export .steps li.done .mark {
+  color: var(--ok-text);
+}
+.export .steps li .mark .spinner {
+  width: 14px;
+  height: 14px;
+}
+.export .steps li .mark .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-emphasis-primary-disabled);
+}
+.export .steps li .name {
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-13px, 13px);
+}
+.export .steps li .right {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.export .steps li .detail {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  min-height: 1em;
+}
+.export .steps li .detail:empty {
+  display: none;
+}
+.export .exporting .status {
+  color: var(--muted);
+  font-size: var(--font-size-13px, 13px);
+  margin-bottom: var(--spacing-12px);
+  min-height: 1.4em;
+}
+.export .exporting .status.error {
+  color: var(--rec-text);
+}
+.export .meters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-8px) var(--spacing-20px);
+}
+.export .meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4px);
+}
+.export .meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-8px);
+  font-size: var(--font-size-12px);
+  color: var(--muted);
+}
+.export .meter-head .val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.export .meter .progress > i {
+  transition: width 0.4s ease-out;
+}
+/* the memory fill carries severity: brand, then amber, then red, on the same track */
+.export .meter.warn .progress > i {
+  background: var(--warn);
+}
+.export .meter.hot .progress > i {
+  background: var(--rec);
+}
+.export .facts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: var(--spacing-10px);
+  font-size: var(--font-size-12px);
+  color: var(--muted);
+}
+.export .facts b {
+  color: var(--text);
+  font-weight: var(--font-weight-semibold);
+}
+#result {
+  margin-top: var(--spacing-12px);
 }
 #result b {
   word-break: break-all;

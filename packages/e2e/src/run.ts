@@ -716,7 +716,31 @@ check(
   resourceLines.length >= 3 && resourceLines[0] === 'Browser encodes',
   'plan shows which stage runs on what',
 );
+// every control in a section starts at the same left edge and fills the control column
+const controlEdges = await ev<{ lefts: number[]; widths: number[] }>(
+  `(() => { const cs = [...document.querySelectorAll('#exportModal .col:first-child .row .ctl > select, #exportModal .col:first-child .row .ctl > input[type=text]')].map((c) => c.getBoundingClientRect()).filter((r) => r.width > 0); return { lefts: cs.map((r) => Math.round(r.left)), widths: cs.map((r) => Math.round(r.width)) }; })()`,
+);
+check(
+  controlEdges.lefts.length >= 5 &&
+    new Set(controlEdges.lefts).size === 1 &&
+    new Set(controlEdges.widths).size === 1,
+  `dropdowns and fields line up (${controlEdges.lefts.length} controls at x=${controlEdges.lefts[0] ?? '?'}, ${controlEdges.widths[0] ?? '?'} px wide)`,
+);
 await page.screenshot('export-dialog.png');
+// Browse… opens the folder picker on top of the export dialog, not behind it
+await ev('document.getElementById("btnBrowse").click()');
+await sleep(400);
+const pickerOnTop = await ev<boolean>(
+  `(() => { const p = document.querySelector('.modal.picker'); if (!p || !p.classList.contains('on')) return false; const r = p.querySelector('.box').getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + 20); return top !== null && p.contains(top); })()`,
+);
+check(pickerOnTop, 'Browse… opens the folder picker in front of the export dialog');
+await page.screenshot('export-browse.png');
+await ev('document.querySelector(".modal.picker .actions button:not(.ghost):not(.primary)").click()');
+await sleep(200);
+check(
+  !(await ev<boolean>('document.querySelector(".modal.picker").classList.contains("on")')),
+  'Cancel closes the picker',
+);
 // switching to "smallest file" turns the server GPU encoder off and picks a slow preset
 await ev('document.querySelector("#perfModes input[value=quality]").click()');
 await sleep(100);
@@ -748,6 +772,80 @@ const winnerIsHardware = /_(videotoolbox|nvenc|qsv|vaapi|amf)$/.test(systemNow.f
 check(
   fastReq.compression.hardware === winnerIsHardware && fastReq.compression.preset === 'veryfast',
   `fastest mode picks the measured winner for compression (${systemNow.ffmpeg?.fastestEncoder ?? '?'}, hardware=${winnerIsHardware}) and veryfast`,
+);
+
+// 8b. an export started from the dialog itself: the settings give way to the exporting view with a
+// time left, the steps and the live meters, then the result, and "Back to settings" returns
+page.step('exporting from the dialog');
+await ev(
+  `(() => { const d = __onetake.exportDialog; const q = d.currentRequest; q.fileName = 'from-dialog'; q.destination = { kind: 'server', directory: ${JSON.stringify(exportsDir)}, overwrite: true }; q.container = 'mp4'; q.resolution = { preset: '360p' }; q.fps = 5; q.compression.enabled = false; d.refresh(); })()`,
+);
+await ev('document.getElementById("btnStartExport").click()');
+await sleep(150);
+check(
+  (await ev<boolean>('document.getElementById("exportProgress").hidden === false')) &&
+    (await ev<boolean>('document.querySelector("#exportModal .settings").hidden === true')),
+  'the export dialog switches to the exporting view',
+);
+const etaTrace: { stage: string; remainingSec: number | null; basis: string | null; overall: number }[] = [];
+for (let i = 0; i < 600; i++) {
+  const p = await ev<{
+    stage: string;
+    remainingSec: number | null;
+    basis: string | null;
+    overall: number;
+  } | null>(
+    '(() => { const p = __onetake.exportDialog.progress; return p ? { stage: p.stage, remainingSec: p.remainingSec, basis: p.basis, overall: p.overall } : null; })()',
+  );
+  if (p) etaTrace.push(p);
+  if (await ev<boolean>('document.getElementById("btnCancelExport").hidden')) break;
+  await sleep(100);
+}
+const dialogExportSec = etaTrace.length * 0.1;
+const highest = Math.max(...etaTrace.map((p) => p.remainingSec ?? 0));
+console.log(
+  `dialog export: ${etaTrace.length} updates, time left first ${etaTrace.find((p) => p.remainingSec !== null)?.remainingSec?.toFixed(1) ?? 'none'} s, highest ${highest.toFixed(1)} s, bases ${[...new Set(etaTrace.map((p) => p.basis))].join(', ')}`,
+);
+check(
+  etaTrace.some((p) => p.remainingSec !== null),
+  'the exporting view shows a time left',
+);
+check(
+  highest <= Math.max(30, dialogExportSec * 3),
+  `the time left never claimed more than three times the real time (${highest.toFixed(0)} s against ${dialogExportSec.toFixed(0)} s)`,
+);
+const steps = await ev<string[]>(
+  '[...document.querySelectorAll("#exportSteps li")].map((li) => li.dataset.step + ":" + li.className)',
+);
+check(
+  steps.length >= 2 && steps.every((s) => s.endsWith(':done')),
+  `every step is shown done after the export (${steps.join(', ')})`,
+);
+check(
+  (await ev<string>('document.getElementById("etaFigure").textContent')) === 'Done' &&
+    (await ev<string>('document.getElementById("kOverall").textContent')) === '100 %',
+  'the hero figure reads Done at 100 %',
+);
+const resultText = await ev<string>('document.getElementById("result").textContent ?? ""');
+check(
+  resultText.includes('Saved') && resultText.includes('from-dialog.mp4'),
+  'the result names the saved file',
+);
+const liveFacts = await ev<string>(
+  '[...document.querySelectorAll("#cpuText, #memText, #factBrowser")].map((e) => e.textContent).join(" | ")',
+);
+console.log('live meters:', liveFacts);
+check(
+  /\d+ % of \d+ cores/.test(liveFacts) && /GB of .*GB/.test(liveFacts),
+  'the live meters show CPU and memory',
+);
+await page.screenshot('export-done.png');
+await ev('document.getElementById("btnBackToSettings").click()');
+await sleep(100);
+check(
+  (await ev<boolean>('document.querySelector("#exportModal .settings").hidden === false')) &&
+    (await ev<boolean>('document.getElementById("exportProgress").hidden === true')),
+  '"Back to settings" returns to the settings',
 );
 
 // 9. closing the slides: the × after the deck name asks first while phrases exist, Escape and

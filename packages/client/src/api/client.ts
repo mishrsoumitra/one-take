@@ -5,6 +5,7 @@ import {
   type ExportJob,
   type JobEvent,
   type ServerCapabilities,
+  type SystemLoad,
 } from '@one-take/shared';
 
 export class ApiRequestError extends Error {
@@ -36,6 +37,11 @@ export class ApiClient {
 
   capabilities(): Promise<ServerCapabilities> {
     return this.json<ServerCapabilities>('GET', '/api/capabilities', undefined, AbortSignal.timeout(4000));
+  }
+
+  /** How busy the computer running the server is right now; polled once a second during an export. */
+  systemLoad(): Promise<SystemLoad> {
+    return this.json<SystemLoad>('GET', '/api/system/load', undefined, AbortSignal.timeout(1500));
   }
 
   listDirectory(path?: string, files = false): Promise<DirectoryListing> {

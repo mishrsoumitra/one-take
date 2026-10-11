@@ -10,6 +10,7 @@ import { PptxConverter, presentationSupport } from './services/convert.js';
 import { detectFfmpeg, detectFfprobe } from './services/ffmpeg.js';
 import { shortcutDirectories } from './services/filesystem.js';
 import { JobManager } from './services/jobs.js';
+import { LoadMonitor } from './services/load.js';
 import {
   benchmarkEncoders,
   detectSystem,
@@ -54,13 +55,19 @@ async function main(): Promise<void> {
     system,
   };
 
-  const jobs = new JobManager({ ffmpeg, system, log: (m) => app.log.info(m) });
+  const load = new LoadMonitor();
+  const jobs = new JobManager({
+    ffmpeg,
+    system,
+    log: (m) => app.log.info(m),
+    processLoad: (pid) => load.process(pid),
+  });
   const converter = new PptxConverter({
     fontDirectories: config.fontDirectories,
     memoryLimitMb: config.rendererMemoryMb ?? undefined,
     log: (m) => app.log.info(m),
   });
-  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities });
+  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities, load });
 
   const shutdown = async (signal: string) => {
     app.log.info(`${signal} received, shutting down`);

@@ -188,6 +188,18 @@ export const MakeDirectorySchema = z.object({ path: z.string().min(1) });
 
 export type JobState = 'uploading' | 'processing' | 'done' | 'failed' | 'cancelled';
 
+/** One process as the operating system sees it, sampled while it runs. */
+export interface ProcessLoad {
+  pid: number;
+  /**
+   * CPU use as a percentage of one core, so 800 means eight cores busy. On macOS and Linux this is
+   * what `ps` reports; null on platforms where it cannot be read.
+   */
+  cpuPercent: number | null;
+  /** Resident memory; null when unknown. */
+  rssBytes: number | null;
+}
+
 export interface JobProgress {
   stage: 'upload' | 'process' | 'finalize' | 'done';
   /** 0..100, or null when unknown. */
@@ -195,6 +207,34 @@ export interface JobProgress {
   message: string;
   /** Processing speed relative to real time, when ffmpeg reports it. */
   speed: number | null;
+  /** Seconds of output ffmpeg has produced so far; null outside the ffmpeg stage. */
+  outTimeSec: number | null;
+  /** Frames per second ffmpeg is managing right now, as it reports them. */
+  fps: number | null;
+  /** Bytes ffmpeg has written so far, as it reports them. */
+  outputBytes: number | null;
+  /** The ffmpeg process, sampled about once a second while it runs; null otherwise. */
+  process: ProcessLoad | null;
+}
+
+/**
+ * How busy the computer running the server is right now (`GET /api/system/load`). The browser polls
+ * this during an export, so the user sees what the export costs while it runs.
+ */
+export interface SystemLoad {
+  at: string;
+  cpu: {
+    /** Whole-machine CPU use, 0..100, averaged since the previous sample; null on the very first one. */
+    percent: number | null;
+    cores: number;
+  };
+  memory: {
+    totalBytes: number;
+    /** What the OS could hand out right now (free plus reclaimable cache); null when unknown. */
+    availableBytes: number | null;
+  };
+  /** The One Take server process itself. */
+  server: ProcessLoad;
 }
 
 export interface JobOutput {

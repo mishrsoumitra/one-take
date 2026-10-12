@@ -19,6 +19,7 @@ export default defineConfig({
         manualChunks(id: string) {
           if (id.includes('/pdfjs-dist/')) return 'pdfjs';
           if (id.includes('/mediabunny/')) return 'mediabunny';
+          if (id.includes('/onnxruntime-web/')) return 'ort';
           return undefined;
         },
       },

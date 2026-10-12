@@ -38,11 +38,11 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 
 ## What you get
 
-- **Pauses cut automatically.** A voice detector listens in 10 ms blocks. A phrase starts when you speak and ends when you've been quiet for a moment. The gaps in between never make it into the video.
+- **Pauses cut automatically.** A neural voice model ([Silero VAD](https://github.com/snakers4/silero-vad), running in the browser) listens for a human voice, 32 ms at a time. A phrase starts when you speak and ends when you've been quiet for a moment; typing, breathing, a chair or a fan never keep one open. The gaps in between never make it into the video.
 - **Two ways to drive the mic.** *Auto* listens all the time and decides for you. *Press to speak* records only while you hold `Space` or the big button on the stage, so the app is never listening when you have not asked it to; the dead air at either end of a press is still trimmed. Switch at any time, even mid-recording.
 - **PDF, PowerPoint or images.** Drop a PDF, a `.pptx` / `.ppsx` / `.pptm` deck or a set of images. PowerPoint files are turned into PDF on the local server in plain JavaScript; no Office, Keynote or LibreOffice needed.
 - **Slides follow your navigation.** Change slides with the arrow keys, a presenter clicker, or a click on a thumbnail. If you change slides mid-sentence, the sentence stays intact across both slides.
-- **Fix it afterwards.** The editor plays the lecture with a scrub bar and works clip by clip (a clip is one phrase on one slide): re-record a clip and the new voice takes its place, cut a stretch of audio out of one, split it, move it to another slide, delete it, or record a new clip and drop it in anywhere. Undo steps back through every change.
+- **Fix it afterwards.** The editor plays the lecture with a scrub bar and works clip by clip (a clip is one phrase on one slide): re-record a clip and the new voice takes its place, cut a stretch of audio out of one, split it, move it to another slide, delete it, or record a new clip and drop it in anywhere. **Remove pauses** runs the voice model over the whole recording and cuts every stretch where nobody is speaking. Undo steps back through every change.
 - **Any container.** MP4, fragmented MP4, QuickTime MOV, Matroska MKV, WebM, HLS (`index.m3u8` plus segments) and MPEG-DASH (`manifest.mpd` plus segments).
 - **Any quality.** Resolution presets from 360p to 4K or a custom size, frame rate from 1 to 120 fps, four quality levels or an exact bitrate, H.264 / H.265 / VP9 / AV1 video, AAC or Opus audio, and key-frame spacing.
 - **Compression on the server.** ffmpeg re-encodes with a CRF quality target, x264 / x265 speed presets, the `stillimage` tune for slides, a different output frame rate, scaling, a bitrate cap, and hardware encoders when your machine has them.
@@ -122,7 +122,7 @@ Next to **Start mic** is the mode switch, **Auto | Press to speak**:
 
 The choice is remembered in this browser. Switching while a phrase is being spoken ends that phrase first.
 
-The **Mic level** meter shows your voice against a white line, the *speech line*. Your voice should go clearly past it, and room noise should stay under it. If not, move the **Speech line** slider until it does. The line also rises by itself when the room gets noisy, so a fan or an air conditioner won't trigger a phrase.
+The **Mic level** meter shows your voice against a white line, the *speech line*. Sound under the line never counts as speech, so a faint voice from the next room can't start a phrase. Above the line, the voice model decides what is a voice and what is noise, so a fan, an air conditioner or your keyboard won't trigger a phrase either. Your own voice should go clearly past the line; if it doesn't, move the **Speech line** slider until it does. The note under the meter shows how sure the model is (*voice 92%*). The model loads in the background when the app opens; if this browser can't run it, the app says so when the mic starts and listens for level alone, with the line rising by itself above the room's noise.
 
 ### 3. Talk, pause, talk again
 
@@ -157,6 +157,7 @@ Click **Edit** to open the editor. It shows the lecture as a player with a scrub
 - **Add a clip.** **Add clip after** records a new clip after the selected one; **Add a clip** under the list lets you pick any slide and any position (at the start, or after any clip). Pick the slide, record, listen, use.
 - **Move a clip to another slide.** The **Slide** list next to the clip's name changes which slide it shows; the audio stays the same.
 - **Delete a clip** with the **Delete** button or the `Delete` key.
+- **Remove pauses.** The voice model listens through every clip and cuts out the stretches where nobody is speaking: a long silence at the end of a clip, or a pause inside one (the clip is split there, just as the live detector would have done). Pauses shorter than *Phrase ends after* stay, and so do the pre-roll and tail. It is one change, so one Undo brings everything back. Use it on a recording made before the voice model was there, or after a session in a room loud enough to keep a phrase open.
 - **Undo** (`Cmd/Ctrl+Z`) steps back through everything you did since opening the editor.
 
 Every change is saved the moment it is made, so there is no Save button: **Done** (or `Esc`) just closes the editor. The main microphone is turned off while the editor is open, because the editor records its own takes.
@@ -458,11 +459,16 @@ The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encod
 
 ## What counts as speech
 
-The detector (`packages/client/src/core/vad.ts`) listens in 10 ms blocks and compares the level with the speech line.
+Two things listen to the microphone, in 10 ms blocks:
+
+- The **voice model**: [Silero VAD](https://github.com/snakers4/silero-vad), a small neural network (2.3 MB, MIT, in `packages/client/src/audio/silero/`) trained to tell a human voice from everything else. It runs in the browser through [ONNX Runtime](https://onnxruntime.ai)'s WebAssembly build (`packages/client/src/core/silero.ts` drives it, `audio/speech-model.ts` loads it), on 32 ms frames of 16 kHz audio (`core/speech.ts` low-passes and resamples the microphone for it), and gives each frame a score from 0 to 1. Both files are served by the app itself; nothing is fetched from anywhere else.
+- The **level** of each block, compared with the speech line.
+
+The detector (`packages/client/src/core/vad.ts`) calls a block _heard_ when the model's score says voice (0.5 to start a phrase, 0.35 to keep one going) and, until the phrase has started, the level is over the speech line. So a loud sound that is not a voice (typing, a breath, a chair, a fan, a door) never starts a phrase and never keeps one going, and a faint voice under the line never starts one either. The score lags the block by a frame or so; the pre-roll covers that, so the first syllable is never clipped.
 
 | Setting                                  | Default  | What it does                                                                                   |
 | ---------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| Speech line (threshold)                  | −45 dBFS | Sound above this counts as speech. The effective line is this or the noise floor plus 6 dB, whichever is higher. |
+| Speech line (threshold)                  | −45 dBFS | Sound under this never counts as speech, however voice-like. Without the voice model the effective line is this or the noise floor plus 6 dB, whichever is higher. |
 | Phrase ends after                        | 0.7 s    | Silence this long ends the phrase. Shorter pauses stay in the recording.                       |
 | Pause between phrases                    | 0.15 s   | Silence inserted between phrases in the video. Plus 0.25 s on a slide change.                  |
 | Pre-roll (fixed)                         | 200 ms   | Audio from before the trigger that is kept, so the first syllable is never clipped.            |
@@ -471,8 +477,8 @@ The detector (`packages/client/src/core/vad.ts`) listens in 10 ms blocks and com
 
 How it decides:
 
-- The noise floor follows the quiet parts of the room: it drops quickly and rises slowly, and is clamped between −90 and −30 dBFS.
-- A phrase starts after 30 ms (three blocks) above the line.
+- A phrase starts after 30 ms (three blocks) heard.
+- Without the voice model (it loads in the background when the app opens; a browser that cannot run WebAssembly, or a failed load, leaves it out and the app says so when the mic starts) the level alone decides: a block is heard when it is over the line, and the line rises above the noise floor, which follows the quiet parts of the room (it drops quickly and rises slowly, and is clamped between −90 and −30 dBFS).
 - Changing slides mid-phrase splits it. The part spoken so far is stored on the old slide and the rest continues on the new slide, joined without a gap. A continuation is kept however short it is, as long as something was said on the new slide; a slide skipped past mid-sentence, or a change that lands right at the end of a sentence, stores nothing.
 - Muting, stopping the mic, previewing, exporting, switching modes and (in Press to speak) letting go of the key end the current phrase.
 - Opening the microphone takes a moment. A stop that arrives while it is still opening wins (the stream is released the moment it arrives), a second start joins the one in progress instead of racing it, and a held `R` or `M` key does not toggle on auto-repeat.
@@ -482,6 +488,8 @@ The detector has a gate. The recorder (`packages/client/src/core/recorder.ts`) o
 The microphone is opened in mono with echo cancellation, noise suppression and automatic gain control turned on. Capture runs in an AudioWorklet, with a ScriptProcessor fallback for browsers that lack it.
 
 A headset or USB microphone gives the cleanest cut. Mute (`M`) when you need to talk to someone in the room.
+
+**Remove pauses** in the editor applies the same rules to clips that are already recorded (`packages/client/src/core/silence.ts`): every clip is scored by the voice model from start to end, the stretches with a voice are padded with the pre-roll and the tail, a pause longer than _Phrase ends after_ splits the clip, a stretch of voice shorter than the minimum phrase is dropped, and a clip with no voice at all is removed. Silence of up to 0.3 s at either end of a clip is left alone, since that is what the live detector keeps on purpose. A clip that continued a split sentence stays joined to it unless the cut reached the seam.
 
 ## Saving your work and resuming
 
@@ -740,8 +748,8 @@ one-take/
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
-    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback (seekable), take recording for the editor
-    │       ├── core/             VoiceActivityDetector, Recorder (auto / press to speak), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback (seekable), take recording for the editor, speech-model.ts (loads ONNX Runtime and the Silero model), silero/ (the model file, MIT)
+    │       ├── core/             VoiceActivityDetector, speech.ts (scoring the mic and clips: downsampler, frames), silero.ts (the model's protocol), silence.ts (removing pauses after the fact), Recorder (auto / press to speak), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb)
     │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
@@ -755,10 +763,10 @@ one-take/
             ├── stress.ts         talks through the app for minutes or hours, checking phrases, timelines, heap, resume and export
             ├── harness.ts        shared: server and Chrome start-up, a page over the DevTools Protocol, real key and mouse input
             ├── cdp.ts            minimal Chrome DevTools Protocol client on Node's WebSocket
-            └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs that imitate speech with pauses
+            └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs of speech (macOS text-to-speech) with pauses, typing and clicks
 ```
 
-Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
+Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `onnxruntime-web` (runs the voice model; only its WebAssembly build is bundled), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
 
 ## Development
 
@@ -796,7 +804,7 @@ npm test
 
 - `shared`: the planner (every branch of what-runs-where), key-frame alignment, ladders, size and frame estimates for a three-hour lecture, even-size rounding, file name sanitising, formatting.
 - `server`: the ffmpeg argument builder and capability parsing, the job manager (unique names, short uploads, cancel during upload and during ffmpeg, replace rules, faststart remux, HLS and DASH packaging), and the HTTP app (loopback checks, validation, the SPA fallback, a full export through the API). Tests that need ffmpeg run only when it is installed.
-- `client`: the voice detector, the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses), the timeline builder, the editor's edit functions (cutting and keeping a stretch, splitting, replacing and inserting clips, which clip is under a time, waveform peaks) and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
+- `client`: the voice detector (with the model's scores and without them), the voice model itself (`test/speech.test.ts` runs Silero through ONNX Runtime's Node build on a spoken fixture, on noise, on keyboard clicks and on silence, and checks the downsampler), the pause remover (`test/silence.test.ts`), the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses), the timeline builder, the editor's edit functions (cutting and keeping a stretch, splitting, replacing and inserting clips, which clip is under a time, waveform peaks) and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
 
 ### End-to-end run
 
@@ -846,9 +854,13 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 ## Troubleshooting
 
-**Nothing is recorded when I talk.** Watch the **Mic level** meter. Your voice must cross the white line. Lower the **Speech line** slider until it does, or move closer to the microphone. Check that the right microphone is selected and that the page is not muted (`M`).
+**Nothing is recorded when I talk.** Watch the **Mic level** meter. Your voice must cross the white line. Lower the **Speech line** slider until it does, or move closer to the microphone. Check that the right microphone is selected and that the page is not muted (`M`). The note under the meter shows the voice model's score; if it stays low while you talk, the microphone is picking you up too faintly or too distorted for the model to hear a voice.
 
-**The recording starts on its own.** Room noise is crossing the line. Raise the **Speech line** slider, or wait a few seconds: the noise floor adapts and the line rises with it.
+**The recording starts on its own.** Something crosses the line and the voice model hears a voice in it: a TV, a radio, people talking nearby. Raise the **Speech line** slider so that only your own voice goes past it, or switch to Press to speak.
+
+**A long silence was kept inside a phrase.** That happens with a recording made before the voice model was there, or when the model could not load and the level alone decided. Click **Edit**, then **Remove pauses**: every stretch without a voice is cut out, and Undo brings it back if you disagree.
+
+**The app says the voice model could not be loaded.** The model needs WebAssembly, which every current browser has; the usual cause is an extension or a policy blocking it, or a network error on the two files (`ort-wasm-simd-threaded-*.wasm`, `silero_vad-*.onnx`) in the browser console. Until it loads, speech is detected by level alone: keep the speech line clearly above the room noise and expect a loud room to keep phrases open.
 
 **Phrases are cut off at the end.** Raise **Phrase ends after**. The default 0.7 s treats a longer pause as the end of a phrase.
 
@@ -874,7 +886,7 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 ## Privacy
 
-Audio never leaves your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no network request goes anywhere but `localhost`. There is no analytics, no account, and no cloud.
+Audio never leaves your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no network request goes anywhere but `localhost`. The voice model runs in the browser, from files the app serves itself. There is no analytics, no account, and no cloud.
 
 ## License
 

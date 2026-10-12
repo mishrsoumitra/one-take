@@ -1,17 +1,25 @@
 /**
- * Energy-based voice activity detection over fixed-size blocks (10 ms by default).
+ * Voice activity detection over fixed-size blocks (10 ms by default).
  *
- * A phrase starts after three loud blocks and keeps `prerollMs` of audio from before that moment. It ends
- * after `hangoverMs` of quiet, of which only `tailMs` is kept. Bursts shorter than `minSpeechMs` are
- * dropped unless they continue a phrase that was split by a slide change.
+ * Each block arrives with the voice model's latest score (see `speech.ts`): how likely it is that a
+ * voice is speaking right now. A block is "heard" when the score says voice (0.5 to start a phrase,
+ * 0.35 to keep one going) and, for the first blocks of a phrase, its level is above the speech line,
+ * so a faint voice from the next room does not start a phrase. Without a score (the model is still
+ * loading, or could not load) the level alone decides, and the speech line rises above the room's
+ * noise floor to make up for it.
+ *
+ * A phrase starts after three heard blocks and keeps `prerollMs` of audio from before that moment. It
+ * ends after `hangoverMs` of unheard blocks, of which only `tailMs` is kept. Bursts shorter than
+ * `minSpeechMs` are dropped unless they continue a phrase that was split by a slide change.
  *
  * The detector does not know how it is being driven: `gate` is opened and closed by the recorder,
  * which in press-to-speak mode only opens it while the talk key is held.
  */
 import { rmsDb } from './pcm.js';
+import { SPEECH_KEEP, SPEECH_START } from './speech.js';
 
 export interface VadSettings {
-  /** dBFS; sound above this counts as speech (raised automatically when the room is noisy). */
+  /** dBFS; the speech line. Sound under it never counts as speech (raised above the noise floor when there is no voice model). */
   threshold: number;
   hangoverMs: number;
   prerollMs: number;
@@ -35,6 +43,8 @@ export class VoiceActivityDetector {
   noise = -60;
   level = -90;
   threshold = -45;
+  /** The voice model's latest score for the meter; null while the level alone decides. */
+  voice: number | null = null;
   private loudRun = 0;
   private quietRun = 0;
   private pre: Float32Array[] = [];
@@ -73,6 +83,7 @@ export class VoiceActivityDetector {
   reset(): void {
     this.noise = -60;
     this.level = -90;
+    this.voice = null;
     this.loudRun = 0;
     this.quietRun = 0;
     this.pre = [];
@@ -82,14 +93,24 @@ export class VoiceActivityDetector {
     this._speaking = false;
   }
 
-  process(block: Float32Array): void {
+  /**
+   * Takes the next block. `speech` is the voice model's latest score, or null to decide by level
+   * alone (no model, or it failed).
+   */
+  process(block: Float32Array, speech: number | null = null): void {
     const db = rmsDb(block);
     this.level = db;
+    this.voice = speech;
     // Fast to follow drops, slow to rise: the floor tracks the quiet parts of the room.
     this.noise += db < this.noise ? (db - this.noise) * 0.2 : (db - this.noise) * 0.002;
     this.noise = Math.max(-90, Math.min(-30, this.noise));
-    this.threshold = Math.max(this.settings.threshold, this.noise + 6);
+    // With a voice model the line is the user's setting alone: the model, not the floor, tells a
+    // noisy room from a voice. Without one the line has to stay above the noise.
+    this.threshold =
+      speech === null ? Math.max(this.settings.threshold, this.noise + 6) : this.settings.threshold;
     const loud = db > this.threshold;
+    const heard =
+      speech === null ? loud : this._speaking ? speech >= SPEECH_KEEP : speech >= SPEECH_START && loud;
 
     if (!this.gate) {
       // Nothing heard while the gate is closed is kept, not even as pre-roll: what was said while
@@ -100,7 +121,7 @@ export class VoiceActivityDetector {
     }
     if (!this._speaking) {
       this.pushPre(block);
-      if (loud) {
+      if (heard) {
         if (++this.loudRun >= 3) this.start();
       } else {
         this.loudRun = 0;
@@ -108,7 +129,7 @@ export class VoiceActivityDetector {
       return;
     }
     this.cur.push(block);
-    if (loud) {
+    if (heard) {
       this.quietRun = 0;
       this.curLoud++;
     } else if (++this.quietRun * this.blockMs >= this.settings.hangoverMs) {

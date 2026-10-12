@@ -25,6 +25,8 @@ import {
 } from '../core/edit.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { type CaptureMode } from '../core/recorder.js';
+import { speechRanges, trimSilences, type Range as SpeechRange } from '../core/silence.js';
+import { scoreClip, type SpeechModel } from '../core/speech.js';
 import {
   buildTimeline,
   segmentDuration,
@@ -48,6 +50,8 @@ export interface EditorDeps {
   mic: MicCapture;
   micDeviceId: () => string | undefined;
   nextId: () => string;
+  /** The voice model, once it is loaded; it cuts takes and finds the pauses in recorded clips. */
+  speech: () => SpeechModel | null;
   /** The clips changed; the new list is the lecture from now on. */
   onChange: (segments: Segment[]) => void;
   onClose: () => void;
@@ -87,6 +91,7 @@ export class Editor {
     clipList: HTMLElement;
     clipsInfo: HTMLElement;
     btnAdd: HTMLButtonElement;
+    btnTrim: HTMLButtonElement;
     clip: HTMLElement;
     clipTitle: HTMLElement;
     slideSelect: HTMLSelectElement;
@@ -138,6 +143,8 @@ export class Editor {
   private takeRaf = 0;
   private clipRows: HTMLElement[] = [];
   private previouslyFocused: Element | null = null;
+  /** The voice model is going through the clips looking for pauses. */
+  private scanning = false;
 
   constructor(
     parent: HTMLElement,
@@ -147,7 +154,7 @@ export class Editor {
       onTick: (index, now) => this.onTick(index, now),
       onEnd: () => this.onEnd(),
     });
-    this.take = new TakeRecorder(deps.mic, BLOCK_MS);
+    this.take = new TakeRecorder(deps.mic, BLOCK_MS, () => deps.speech());
 
     /* ------------------------------------------------------------ player */
     const slideImg = h('img', { class: 'slide', alt: '' });
@@ -324,12 +331,22 @@ export class Editor {
       icon('plus'),
       label('Add a clip'),
     );
+    const btnTrim = h(
+      'button',
+      {
+        id: 'edTrim',
+        title:
+          'Listen through every clip with the voice model and cut out the stretches where nobody is speaking',
+      },
+      icon('hearing'),
+      label('Remove pauses'),
+    );
     const clips = h(
       'div',
       { class: 'clips' },
       h('h4', null, 'Clips ', clipsInfo),
       clipList,
-      h('div', { class: 'actions inline' }, btnAdd),
+      h('div', { class: 'actions inline' }, btnAdd, btnTrim),
     );
 
     /* ------------------------------------------------------------ frame */
@@ -389,6 +406,7 @@ export class Editor {
       clipList,
       clipsInfo,
       btnAdd,
+      btnTrim,
       clip,
       clipTitle,
       slideSelect,
@@ -468,6 +486,7 @@ export class Editor {
     e.btnPrev.onclick = () => this.select(this.selected - 1, true);
     e.btnNext.onclick = () => this.select(this.selected + 1, true);
     e.btnAdd.onclick = () => this.openTake({ kind: 'insert', at: this.list.length });
+    e.btnTrim.onclick = () => void this.removePauses();
     e.btnAddAfter.onclick = () => this.openTake({ kind: 'insert', at: this.selected + 1 });
     e.btnRerecord.onclick = () => this.openTake({ kind: 'replace', index: this.selected });
     e.btnDelete.onclick = () => this.deleteSelected();
@@ -688,6 +707,7 @@ export class Editor {
       ? `${this.list.length} clip${this.list.length === 1 ? '' : 's'} · ${fmtTime(this.tl.total)}`
       : 'No clips';
     this.e.btnUndo.disabled = this.history.length === 0;
+    this.e.btnTrim.disabled = this.list.length === 0 || this.scanning;
     this.updateSelection();
     this.updatePlayhead();
   }
@@ -886,6 +906,61 @@ export class Editor {
       replaceAt(this.list, this.selected, 1, parts),
       `Split clip ${n} into clips ${n} and ${n + 1}`,
     );
+  }
+
+  /**
+   * Every clip goes through the voice model; the stretches without a voice, apart from pauses shorter
+   * than the hangover and the pre-roll and tail at the ends, are cut out, splitting a clip where a
+   * long pause sat inside it. One change on the undo stack, however many clips it touched.
+   */
+  private async removePauses(): Promise<void> {
+    const model = this.deps.speech();
+    if (!model) {
+      this.deps.toast.show('The voice model is not loaded, so pauses cannot be found in this browser.');
+      return;
+    }
+    if (this.scanning || this.list.length === 0) return;
+    this.pause();
+    this.closeTake();
+    this.scanning = true;
+    this.e.btnTrim.disabled = true;
+    const list = this.list;
+    const total = totalDuration(list);
+    const settings = this.deps.settings();
+    try {
+      const ranges = new Map<string, SpeechRange[]>();
+      let done = 0;
+      for (const seg of list) {
+        const show = (sec: number) => {
+          const pct = total > 0 ? Math.min(100, Math.round(((done + sec) / total) * 100)) : 100;
+          this.e.info.textContent = `Listening for pauses… ${pct}%`;
+        };
+        show(0);
+        const probs = await scoreClip(model, seg.pcm, seg.sampleRate, show);
+        done += segmentDuration(seg);
+        ranges.set(seg.id, speechRanges(probs, segmentDuration(seg), settings));
+      }
+      if (this.list !== list) {
+        this.deps.toast.show('The clips changed while pauses were being found; try again.');
+        return;
+      }
+      const result = trimSilences(list, ranges, this.deps.nextId);
+      if (result.changed === 0) {
+        this.deps.toast.show('No pauses to remove: every clip is speech from start to end.');
+        return;
+      }
+      this.position = 0;
+      this.commit(
+        result.segments,
+        `Removed ${fmtTime(result.removedSec)} of silence from ${result.changed} clip${result.changed === 1 ? '' : 's'}`,
+      );
+    } catch (error) {
+      console.warn('Remove pauses failed', error);
+      this.deps.toast.show('The voice model failed while listening; nothing was changed.');
+    } finally {
+      this.scanning = false;
+      this.rebuild();
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1275,6 +1350,7 @@ export class Editor {
       threshold: this.take.threshold ?? settings.threshold,
       noise: this.take.noise,
       settingThreshold: settings.threshold,
+      voice: this.take.voice,
     });
   }
 }

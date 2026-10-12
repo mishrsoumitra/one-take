@@ -15,10 +15,22 @@ export const SPEECH_RATE = 16000;
 /** Samples per frame at {@link SPEECH_RATE}: 32 ms. */
 export const SPEECH_FRAME = 512;
 export const SPEECH_FRAME_SEC = SPEECH_FRAME / SPEECH_RATE;
-/** A phrase may start once the score reaches this. */
+/**
+ * The second listen's rules (`hindsight.ts`, `silence.ts`): a stretch of voice begins at a frame scored
+ * this high and goes on while the score stays over {@link SPEECH_KEEP}; the gap between the two is
+ * hysteresis.
+ */
 export const SPEECH_START = 0.5;
-/** A phrase keeps going while the score stays above this; the gap down to {@link SPEECH_START} is hysteresis. */
 export const SPEECH_KEEP = 0.35;
+/**
+ * The live detector's rules (`vad.ts`): a phrase opens at this score and stays open while the score
+ * keeps over {@link LIVE_KEEP}. Both are set low on purpose. The live detector hears each frame once
+ * and its job is only to notice that something which could be a voice is going on, so a soft, low or
+ * breathy stretch is never cut as it is spoken; the second listen decides the cuts with the whole
+ * phrase in front of it.
+ */
+export const LIVE_START = 0.35;
+export const LIVE_KEEP = 0.15;
 
 /** One stream of audio through the detector, which remembers the stream between frames. */
 export interface SpeechStream {

@@ -1,15 +1,22 @@
 /**
- * Finding and removing the pauses inside clips that are already recorded.
+ * Finding and removing the pauses in a phrase or a clip, with the second listen's scores.
  *
- * The live detector should have cut them, but a recording made before the voice detector was there,
- * or in a room loud enough to fool a level-only detector, can carry minutes of silence inside a clip.
- * This takes the voice detector's score for every frame of a clip, finds the stretches with a voice in
- * them (padded with the same pre-roll and tail the live detector keeps) and rebuilds the clip from
- * those stretches alone, as several clips when a pause longer than the hangover sat between them.
+ * Every phrase the live detector finishes comes through `cutPhrase` before it is stored: the live
+ * detector only decides that something which could be a voice is going on, so what it hands over
+ * still holds the pauses longer than the hangover, the dead air at either end, and now and then a
+ * sound that was never a voice at all. The second listen (`hindsight.ts`) scores the whole of it,
+ * `speechRanges` turns the scores into the stretches with a voice (padded with the same pre-roll and
+ * tail as always), and `cutRanges` says what to keep.
  *
- * Pure functions: the scores come from `scoreClip` in `speech.ts`, the editor does the commit.
+ * The editor's **Remove pauses** applies the same rules to clips that are already recorded, through
+ * `trimSilences`: every clip is scored from start to end and rebuilt from the stretches with a voice
+ * alone, as several clips when a pause longer than the hangover sat between them.
+ *
+ * Pure functions apart from the scoring; the editor and the recorder do the commit.
  */
 import { type IdFactory } from './edit.js';
+import { listenAgain } from './hindsight.js';
+import { type PhraseVerdict } from './recorder.js';
 import { SPEECH_FRAME_SEC, SPEECH_KEEP, SPEECH_START } from './speech.js';
 import { segmentDuration, type Segment } from './timeline.js';
 import { type VadSettings } from './vad.js';
@@ -21,6 +28,13 @@ export interface Range {
 }
 
 export type SilenceSettings = Pick<VadSettings, 'hangoverMs' | 'prerollMs' | 'tailMs' | 'minSpeechMs'>;
+
+/** What to keep of a clip, in seconds, and whether its ends were touched. */
+export interface Cut {
+  keep: Range[];
+  startCut: boolean;
+  endCut: boolean;
+}
 
 /**
  * Silence at either end of a clip up to this long is left alone: it is the pre-roll and tail the live
@@ -119,7 +133,7 @@ export function trimSilences(
       out.push(base);
       continue;
     }
-    const keep = snapEdges(found, total);
+    const { keep } = cutRanges(found, total);
     const first = keep[0];
     if (keep.length === 1 && first?.from === 0 && first.to >= total) {
       out.push(base);
@@ -148,14 +162,56 @@ export function trimSilences(
   return { segments: out, removedSec, changed };
 }
 
-/** Ranges clamped to the clip, with a sliver of silence at either end left in place. */
-function snapEdges(ranges: readonly Range[], totalSec: number): Range[] {
-  const out = ranges
+/**
+ * What to keep of a clip from the stretches with a voice in it: the ranges clamped to the clip, with
+ * a sliver of silence at either end left in place, and whether either end was cut.
+ */
+export function cutRanges(ranges: readonly Range[], totalSec: number): Cut {
+  const keep = ranges
     .map((r) => ({ from: Math.max(0, r.from), to: Math.min(totalSec, r.to) }))
     .filter((r) => r.to > r.from);
-  const first = out[0];
-  const last = out[out.length - 1];
+  const first = keep[0];
+  const last = keep[keep.length - 1];
   if (first && first.from < EDGE_SLACK_SEC) first.from = 0;
   if (last && totalSec - last.to < EDGE_SLACK_SEC) last.to = totalSec;
-  return out;
+  return { keep, startCut: !first || first.from > 0, endCut: !last || last.to < totalSec };
+}
+
+/**
+ * The second listen over a phrase the live detector has just finished: the blocks are scored as one
+ * clip and the verdict says which blocks to keep. Block boundaries are where the cuts fall, so the
+ * blocks themselves are handed on untouched.
+ */
+export async function cutPhrase(
+  blocks: readonly Float32Array[],
+  sampleRate: number,
+  settings: SilenceSettings,
+): Promise<PhraseVerdict> {
+  const samples = new Float32Array(blocks.reduce((n, b) => n + b.length, 0));
+  let at = 0;
+  for (const b of blocks) {
+    samples.set(b, at);
+    at += b.length;
+  }
+  const totalSec = samples.length / sampleRate;
+  const probs = await listenAgain(samples, sampleRate);
+  const cut = cutRanges(speechRanges(probs, totalSec, settings), totalSec);
+  // seconds to block indices: a block is kept when the range covers its middle
+  const middles: number[] = [];
+  let t = 0;
+  for (const b of blocks) {
+    middles.push(t + b.length / sampleRate / 2);
+    t += b.length / sampleRate;
+  }
+  const firstFrom = (sec: number): number => {
+    let k = 0;
+    while (k < middles.length && (middles[k] ?? 0) < sec) k++;
+    return k;
+  };
+  const keep = cut.keep
+    .map((r) => ({ from: firstFrom(r.from), to: firstFrom(r.to) }))
+    .filter((r) => r.to > r.from);
+  const first = keep[0];
+  const last = keep[keep.length - 1];
+  return { keep, startCut: !first || first.from > 0, endCut: !last || last.to < blocks.length };
 }

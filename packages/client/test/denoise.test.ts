@@ -9,8 +9,9 @@ import { describe, expect, it } from 'vitest';
 
 import { expint, FLOOR_DB, frameSizeFor, NoiseFilter } from '../src/core/denoise.js';
 import { resampleLinear, type Samples } from '../src/core/pcm.js';
+import { Recorder } from '../src/core/recorder.js';
+import { cutPhrase } from '../src/core/silence.js';
 import { MicScorer, scoreClip, SPEECH_FRAME, SPEECH_KEEP, SPEECH_START } from '../src/core/speech.js';
-import { VoiceActivityDetector, type PhraseResult } from '../src/core/vad.js';
 import { VoiceDetector, VoiceStream } from '../src/core/voice.js';
 
 import {
@@ -243,30 +244,36 @@ describe('NoiseFilter as a stream', () => {
   });
 });
 
-/** The live path: 48 kHz blocks through the filter, the scorer and the phrase detector, like the microphone. */
-function record(signal16: Samples, threshold = -45): { at: number; sec: number }[] {
+/** The live path: 48 kHz blocks through the filter, the scorer, the recorder and the second listen, like the microphone. */
+async function record(signal16: Samples, threshold = -45): Promise<{ at: number; sec: number }[]> {
   const mic = resampleLinear(signal16, RATE, 48000);
   const noise = new NoiseFilter(48000);
   const scorer = new MicScorer(new VoiceDetector());
+  const settings = { threshold, hangoverMs: 700, prerollMs: 200, tailMs: 150, minSpeechMs: 200 };
   const phrases: { at: number; sec: number }[] = [];
-  let startAt = 0;
-  let t = 0;
-  const vad = new VoiceActivityDetector(
+  const when = new Map<Float32Array, number>();
+  let n = 0;
+  const rec = new Recorder(
     10,
-    { threshold, hangoverMs: 700, prerollMs: 200, tailMs: 150, minSpeechMs: 200 },
+    settings,
+    { mode: 'auto', slide: 0, review: (blocks) => cutPhrase(blocks, 48000, settings) },
     {
-      onSpeechStart: () => (startAt = t),
-      onSpeechEnd: (p: PhraseResult | null) => {
-        if (p) phrases.push({ at: startAt / 1000, sec: (p.blocks.length * 10) / 1000 });
+      onPhrase: (p) => {
+        phrases.push({ at: (when.get(p.blocks[0]!) ?? 0) / 1000, sec: (p.blocks.length * 10) / 1000 });
+        return `p${++n}`;
       },
+      onSpeakingChange: () => undefined,
     },
   );
+  let t = 0;
   for (let at = 0; at + 480 <= mic.length; at += 480, t += 10) {
     const block = noise.process(mic.subarray(at, at + 480));
+    when.set(block, t);
     scorer.push(block, 48000);
-    vad.process(block, scorer.prob);
+    rec.process(block, scorer.prob);
   }
-  vad.end();
+  rec.end();
+  await rec.settled();
   return phrases;
 }
 
@@ -274,29 +281,30 @@ describe('the live detector behind the noise filter', () => {
   const womanSec = woman.length / RATE;
   const manSec = man.length / RATE;
 
-  it('records the two speakers over a fan and nothing of the typing between them', () => {
+  it('records the two speakers over a fan and nothing of the typing between them', async () => {
     const sequence = concat(silence(1), woman, silence(1.5), clicks(2), silence(1), man, silence(1));
-    const phrases = record(withNoise(sequence, fan(sequence.length / RATE, 1), 10));
+    const phrases = await record(withNoise(sequence, fan(sequence.length / RATE, 1), 10));
     expect(phrases).toHaveLength(2);
     const [first, second] = phrases as [(typeof phrases)[0], (typeof phrases)[0]];
-    expect(first.at).toBeGreaterThan(0.9);
-    expect(first.at).toBeLessThan(1.4);
+    // the phrase begins with the pre-roll, up to 0.2 s before the first word
+    expect(first.at).toBeGreaterThan(0.7);
+    expect(first.at).toBeLessThan(1.2);
     expect(first.sec).toBeGreaterThan(womanSec - 0.3);
     expect(first.sec).toBeLessThan(womanSec + 0.6);
-    expect(second.at).toBeGreaterThan(1 + womanSec + 4.5 - 0.2);
-    expect(second.at).toBeLessThan(1 + womanSec + 4.5 + 0.4);
+    expect(second.at).toBeGreaterThan(1 + womanSec + 4.5 - 0.4);
+    expect(second.at).toBeLessThan(1 + womanSec + 4.5 + 0.2);
     expect(second.sec).toBeGreaterThan(manSec - 0.3);
     expect(second.sec).toBeLessThan(manSec + 0.6);
   });
 
-  it('records nothing of a fan, a humming fan or hiss alone', () => {
+  it('records nothing of a fan, a humming fan or hiss alone', async () => {
     for (const signal of [
       fan(8, 0.1),
       fan(8, 0.1, { hum: true }),
       white(8, 0.03),
       concat(fan(3, 0.001), fan(5, 0.05)),
     ]) {
-      expect(record(signal)).toHaveLength(0);
+      expect(await record(signal)).toHaveLength(0);
     }
   });
 });

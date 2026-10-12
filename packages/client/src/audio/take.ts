@@ -1,9 +1,11 @@
 /**
  * One take for the editor: open the microphone, run the same recorder as the main recording (auto
- * or press to speak), and hand back the phrases, pauses already cut, when the user presses Stop.
+ * or press to speak, each phrase through the second listen), and hand back the phrases, pauses
+ * already cut, when the user presses Stop.
  */
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
+import { cutPhrase } from '../core/silence.js';
 import { MicScorer, type VoiceScorer } from '../core/speech.js';
 import { type VadSettings } from '../core/vad.js';
 
@@ -87,7 +89,11 @@ export class TakeRecorder {
     const recorder = new Recorder(
       this.blockMs,
       options.settings,
-      { mode: options.mode, slide: 0 },
+      {
+        mode: options.mode,
+        slide: 0,
+        review: (blocks) => cutPhrase(blocks, this.sampleRate, options.settings),
+      },
       {
         onPhrase: (phrase) => {
           const pcm = floatBlocksToInt16(phrase.blocks);
@@ -119,12 +125,16 @@ export class TakeRecorder {
     return this.recorder?.hold(down) ?? false;
   }
 
-  /** Ends the phrase being spoken, closes the microphone and returns everything heard. */
-  stop(): Take {
+  /**
+   * Ends the phrase being spoken, closes the microphone, waits for the last phrases to come through
+   * the second listen and returns everything heard.
+   */
+  async stop(): Promise<Take> {
     const recorder = this.recorder;
     this.recorder = null;
     recorder?.end();
     this.mic.stop();
+    await recorder?.settled();
     const take = { phrases: this.phrases, sampleRate: this.sampleRate };
     this.phrases = [];
     this.doneMs = 0;

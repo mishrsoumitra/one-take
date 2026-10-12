@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { VoiceActivityDetector, type PhraseResult, type VadSettings } from '../src/core/vad.js';
+import { LIVE_KEEP, LIVE_START } from '../src/core/speech.js';
+import { LIVE_HOLD_MS, VoiceActivityDetector, type PhraseResult, type VadSettings } from '../src/core/vad.js';
 
 const settings: VadSettings = {
   threshold: -45,
@@ -10,6 +11,8 @@ const settings: VadSettings = {
   minSpeechMs: 200,
 };
 const BLOCK = 480; // 10 ms at 48 kHz
+/** Quiet long enough to end a phrase: the live hold plus a little. */
+const HOLD = LIVE_HOLD_MS + 100;
 
 function loud(): Float32Array {
   const b = new Float32Array(BLOCK);
@@ -52,14 +55,29 @@ describe('VoiceActivityDetector with a voice score', () => {
     h.feed(quiet, 500, 0.02);
     h.feed(loud, 1000, 0.9);
     expect(h.vad.speaking).toBe(true);
-    h.feed(loud, 1000, 0.1);
+    h.feed(loud, HOLD, 0.1);
     expect(h.vad.speaking).toBe(false);
     expect(h.phrases).toHaveLength(1);
     const p = h.phrases[0]!;
     expect(p).not.toBeNull();
-    // 1000 ms of voice plus the pre-roll and the 150 ms tail: none of the noisy second
+    // 1000 ms of voice plus the pre-roll and the 150 ms tail: none of the noisy seconds
     expect(p.blocks.length).toBeLessThanOrEqual(100 + 23 + 15);
     expect(p.loudMs).toBeGreaterThanOrEqual(990);
+  });
+
+  it('opens at the live start score and stays open at the live keep score', () => {
+    const h = harness();
+    h.feed(loud, 1000, LIVE_START - 0.01);
+    expect(h.vad.speaking).toBe(false);
+    h.feed(loud, 30, LIVE_START);
+    expect(h.vad.speaking).toBe(true);
+    // a soft stretch the live detector must not cut: scored well under the second listen's keep score
+    h.feed(loud, 3000, LIVE_KEEP);
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, HOLD, LIVE_KEEP - 0.01);
+    expect(h.vad.speaking).toBe(false);
+    expect(h.phrases).toHaveLength(1);
+    expect(h.phrases[0]!.loudMs).toBeGreaterThanOrEqual(3000);
   });
 
   it('needs the level over the line to start, but not to go on', () => {
@@ -72,12 +90,14 @@ describe('VoiceActivityDetector with a voice score', () => {
     expect(h.vad.speaking).toBe(true);
   });
 
-  it('keeps a phrase through a dip below the start score', () => {
+  it('holds a phrase open for two seconds of nothing, not just the hangover', () => {
     const h = harness();
     h.feed(loud, 500, 0.9);
     h.feed(loud, 500, 0.4);
     expect(h.vad.speaking).toBe(true);
-    h.feed(loud, 1000, 0.2);
+    h.feed(loud, 1500, 0.1); // longer than the hangover, shorter than the hold
+    expect(h.vad.speaking).toBe(true);
+    h.feed(loud, LIVE_HOLD_MS, 0.1);
     expect(h.vad.speaking).toBe(false);
   });
 
@@ -87,7 +107,7 @@ describe('VoiceActivityDetector with a voice score', () => {
     h.feed(quiet, 400, 0.02);
     expect(h.vad.speaking).toBe(true);
     h.feed(loud, 500, 0.9);
-    h.feed(quiet, 1000, 0.02);
+    h.feed(quiet, HOLD, 0.02);
     expect(h.phrases).toHaveLength(1);
   });
 
@@ -98,7 +118,7 @@ describe('VoiceActivityDetector with a voice score', () => {
     h.feed(loud, 2000, null); // the model failed: the loud blocks keep the phrase going by level
     expect(h.vad.speaking).toBe(true);
     expect(h.vad.voice).toBeNull();
-    h.feed(quiet, 1000, null);
+    h.feed(quiet, HOLD, null);
     expect(h.vad.speaking).toBe(false);
   });
 });
@@ -111,12 +131,13 @@ describe('VoiceActivityDetector', () => {
     h.feed(loud, 1000);
     expect(h.vad.speaking).toBe(true);
     expect(h.starts()).toBe(1);
-    h.feed(quiet, 1000);
+    h.feed(quiet, HOLD);
     expect(h.vad.speaking).toBe(false);
     expect(h.phrases).toHaveLength(1);
     const p = h.phrases[0]!;
     expect(p).not.toBeNull();
-    // 200 ms pre-roll (+3 blocks slack) + 1000 ms speech + 150 ms tail, in 10 ms blocks
+    // 200 ms pre-roll (+3 blocks slack) + 1000 ms speech + 150 ms tail, in 10 ms blocks: the rest of
+    // the two-second hold is not kept
     expect(p.blocks.length).toBeGreaterThanOrEqual(100 + 20 + 15);
     expect(p.blocks.length).toBeLessThanOrEqual(100 + 23 + 15);
     expect(p.loudMs).toBeGreaterThanOrEqual(990);
@@ -127,20 +148,20 @@ describe('VoiceActivityDetector', () => {
     const h = harness();
     h.feed(quiet, 500);
     h.feed(loud, 100);
-    h.feed(quiet, 1000);
+    h.feed(quiet, HOLD);
     expect(h.phrases).toEqual([null]);
   });
 
-  it('survives pauses shorter than the hangover', () => {
+  it('holds through a pause longer than the hangover; the second listen cuts it later', () => {
     const h = harness();
     h.feed(quiet, 300);
     h.feed(loud, 500);
-    h.feed(quiet, 400);
+    h.feed(quiet, 1200);
     expect(h.vad.speaking).toBe(true);
     h.feed(loud, 500);
-    h.feed(quiet, 1000);
+    h.feed(quiet, HOLD);
     expect(h.phrases).toHaveLength(1);
-    expect(h.phrases[0]!.blocks.length).toBeGreaterThan(140);
+    expect(h.phrases[0]!.blocks.length).toBeGreaterThan(220);
   });
 
   it('splits a phrase on a slide change and keeps the continuation', () => {
@@ -152,7 +173,7 @@ describe('VoiceActivityDetector', () => {
     expect(first!.length).toBeGreaterThan(60);
     expect(h.vad.speaking).toBe(true);
     h.feed(loud, 100); // shorter than minSpeech, but it continues a phrase
-    h.feed(quiet, 1000);
+    h.feed(quiet, HOLD);
     expect(h.phrases).toHaveLength(1);
     expect(h.phrases[0]!.continuation).toBe(true);
   });
@@ -167,7 +188,7 @@ describe('VoiceActivityDetector', () => {
     expect(h.vad.split()).toBeNull(); // a sliver of quiet is not a phrase either
     expect(h.vad.speaking).toBe(true);
     h.feed(loud, 300);
-    h.feed(quiet, 1000);
+    h.feed(quiet, HOLD);
     expect(h.phrases).toHaveLength(1);
     expect(h.phrases[0]!.continuation).toBe(true);
     expect(h.phrases[0]!.loudMs).toBeGreaterThanOrEqual(290);

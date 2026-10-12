@@ -6,8 +6,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { resampleLinear, type Samples } from '../src/core/pcm.js';
+import { Recorder } from '../src/core/recorder.js';
+import { cutPhrase } from '../src/core/silence.js';
 import { MicScorer, scoreClip, SPEECH_FRAME, SPEECH_KEEP, SPEECH_START } from '../src/core/speech.js';
-import { VoiceActivityDetector, type PhraseResult } from '../src/core/vad.js';
 import { VoiceDetector } from '../src/core/voice.js';
 
 import {
@@ -155,30 +156,38 @@ describe('VoiceDetector on the sounds of a room', () => {
   });
 });
 
-/** The live path: 48 kHz blocks through the scorer and the phrase detector, like the microphone. */
-function record(signal16: Samples, threshold = -45): { at: number; sec: number; loudSec: number }[] {
+/**
+ * The live path: 48 kHz blocks through the scorer, the recorder and the second listen, like the
+ * microphone. Each phrase is reported with where it sits in the input (from the first block kept).
+ */
+async function record(signal16: Samples, threshold = -45): Promise<{ at: number; sec: number }[]> {
   const mic = resampleLinear(signal16, RATE, 48000);
   const scorer = new MicScorer(new VoiceDetector());
-  const phrases: { at: number; sec: number; loudSec: number }[] = [];
-  let startAt = 0;
-  let t = 0;
-  const vad = new VoiceActivityDetector(
+  const settings = { threshold, hangoverMs: 700, prerollMs: 200, tailMs: 150, minSpeechMs: 200 };
+  const phrases: { at: number; sec: number }[] = [];
+  const when = new Map<Float32Array, number>();
+  let n = 0;
+  const rec = new Recorder(
     10,
-    { threshold, hangoverMs: 700, prerollMs: 200, tailMs: 150, minSpeechMs: 200 },
+    settings,
+    { mode: 'auto', slide: 0, review: (blocks) => cutPhrase(blocks, 48000, settings) },
     {
-      onSpeechStart: () => (startAt = t),
-      onSpeechEnd: (p: PhraseResult | null) => {
-        if (p)
-          phrases.push({ at: startAt / 1000, sec: (p.blocks.length * 10) / 1000, loudSec: p.loudMs / 1000 });
+      onPhrase: (p) => {
+        phrases.push({ at: (when.get(p.blocks[0]!) ?? 0) / 1000, sec: (p.blocks.length * 10) / 1000 });
+        return `p${++n}`;
       },
+      onSpeakingChange: () => undefined,
     },
   );
+  let t = 0;
   for (let at = 0; at + 480 <= mic.length; at += 480, t += 10) {
     const block = mic.subarray(at, at + 480);
+    when.set(block, t);
     scorer.push(block, 48000);
-    vad.process(block, scorer.prob);
+    rec.process(block, scorer.prob);
   }
-  vad.end();
+  rec.end();
+  await rec.settled();
   return phrases;
 }
 
@@ -188,22 +197,23 @@ describe('the live detector with the voice detector', () => {
   /** Quiet room, the woman, a fan, typing, the man, quiet. */
   const sequence = concat(silence(1), woman, silence(1.5), clicks(2), silence(1), man, silence(1));
 
-  it('records the two speakers and nothing of the typing between them', () => {
-    const phrases = record(sequence);
+  it('records the two speakers and nothing of the typing between them', async () => {
+    const phrases = await record(sequence);
     expect(phrases).toHaveLength(2);
     const [first, second] = phrases as [(typeof phrases)[0], (typeof phrases)[0]];
-    expect(first.at).toBeGreaterThan(0.9);
-    expect(first.at).toBeLessThan(1.3);
+    // the phrase begins with the pre-roll, up to 0.2 s before the first word
+    expect(first.at).toBeGreaterThan(0.7);
+    expect(first.at).toBeLessThan(1.1);
     expect(first.sec).toBeGreaterThan(womanSec);
     expect(first.sec).toBeLessThan(womanSec + 0.5);
-    expect(second.at).toBeGreaterThan(1 + womanSec + 4.5 - 0.1);
-    expect(second.at).toBeLessThan(1 + womanSec + 4.5 + 0.3);
+    expect(second.at).toBeGreaterThan(1 + womanSec + 4.5 - 0.3);
+    expect(second.at).toBeLessThan(1 + womanSec + 4.5 + 0.1);
     expect(second.sec).toBeGreaterThan(manSec - 0.3);
     expect(second.sec).toBeLessThan(manSec + 0.5);
   });
 
-  it('does the same with a fan running ten decibels under the voice', () => {
-    const phrases = record(withNoise(sequence, fan(sequence.length / RATE, 1, { hum: true }), 10));
+  it('does the same with a fan running ten decibels under the voice', async () => {
+    const phrases = await record(withNoise(sequence, fan(sequence.length / RATE, 1, { hum: true }), 10));
     expect(phrases.length).toBeGreaterThanOrEqual(2);
     expect(phrases.length).toBeLessThanOrEqual(4);
     const total = phrases.reduce((a, p) => a + p.sec, 0);
@@ -212,14 +222,14 @@ describe('the live detector with the voice detector', () => {
     // nothing is a phrase during the typing
     for (const p of phrases) {
       const end = p.at + p.sec;
-      expect(end < 1 + womanSec + 1.5 + 0.4 || p.at > 1 + womanSec + 3.5 - 0.3).toBe(true);
+      expect(end < 1 + womanSec + 1.5 + 0.4 || p.at > 1 + womanSec + 3.5 - 0.5).toBe(true);
     }
   });
 
-  it('records nothing from a fan, a humming fan, typing or a hum switching on', () => {
-    expect(record(fan(10, 0.056))).toEqual([]);
-    expect(record(fan(10, 0.056, { hum: true }))).toEqual([]);
-    expect(record(mix(clicks(6), fan(6, 0.005)))).toEqual([]);
-    expect(record(concat(fan(3, 0.001), fan(6, 0.05, { hum: true })))).toEqual([]);
+  it('records nothing from a fan, a humming fan, typing or a hum switching on', async () => {
+    expect(await record(fan(10, 0.056))).toEqual([]);
+    expect(await record(fan(10, 0.056, { hum: true }))).toEqual([]);
+    expect(await record(mix(clicks(6), fan(6, 0.005)))).toEqual([]);
+    expect(await record(concat(fan(3, 0.001), fan(6, 0.05, { hum: true })))).toEqual([]);
   });
 });

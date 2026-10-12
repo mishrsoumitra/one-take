@@ -159,6 +159,7 @@ await at(16.5, () => Promise.resolve());
   check(scored > 400, `the voice detector scored the microphone as it was heard (${scored} frames)`);
 }
 await ev('__onetake.stopMic()');
+await ev('__onetake.settled()'); // the last phrases go through the second listen before they are stored
 const segs = await ev<{ slide: number; sec: number; joined: boolean }[]>(
   '__onetake.state.segments.map(s=>({slide:s.slide, sec:+(s.pcm.length/s.sampleRate).toFixed(2), joined:s.joined}))',
 );
@@ -276,6 +277,7 @@ await at1(5.1, () => page.press('ArrowLeft'));
 await at1(6.1, () => page.key(' ', 'keyUp'));
 await at1(6.3, async () => {
   check(!(await ev<boolean>('__onetake.state.held')), 'Space up: the key is released');
+  await ev('__onetake.settled()');
   const held = await ev<{ slide: number; joined: boolean; sec: number }[]>(
     `__onetake.state.segments.slice(${before}).map(s=>({slide:s.slide, joined:s.joined, sec:+(s.pcm.length/s.sampleRate).toFixed(2)}))`,
   );
@@ -294,6 +296,7 @@ await at1(8.6, async () => check(await ev<boolean>('__onetake.state.held'), 'the
 await at1(11.6, () => page.mouseUp('#btnHold'));
 await at1(11.8, async () => {
   check(!(await ev<boolean>('__onetake.state.held')), 'mouse up releases');
+  await ev('__onetake.settled()');
   check((await ev<number>('__onetake.state.segments.length')) === before + 3, 'the mouse press was recorded');
 });
 await page.screenshot('press-to-speak.png');

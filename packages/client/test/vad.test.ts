@@ -35,7 +35,7 @@ function harness() {
   return { vad, phrases, feed, starts: () => starts };
 }
 
-describe('VoiceActivityDetector with the voice model', () => {
+describe('VoiceActivityDetector with a voice score', () => {
   it('does not start a phrase on loud sound the model does not hear as a voice', () => {
     const h = harness();
     h.feed(loud, 3000, 0.05);

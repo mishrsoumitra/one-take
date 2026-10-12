@@ -1,12 +1,12 @@
 /**
  * Voice activity detection over fixed-size blocks (10 ms by default).
  *
- * Each block arrives with the voice model's latest score (see `speech.ts`): how likely it is that a
- * voice is speaking right now. A block is "heard" when the score says voice (0.5 to start a phrase,
- * 0.35 to keep one going) and, for the first blocks of a phrase, its level is above the speech line,
- * so a faint voice from the next room does not start a phrase. Without a score (the model is still
- * loading, or could not load) the level alone decides, and the speech line rises above the room's
- * noise floor to make up for it.
+ * Each block arrives with the voice detector's latest score (see `speech.ts` and `voice.ts`): how
+ * much what is heard right now sounds like someone speaking. A block is "heard" when the score says
+ * voice (0.5 to start a phrase, 0.35 to keep one going) and, for the first blocks of a phrase, its
+ * level is above the speech line, so a faint voice from the next room does not start a phrase. Without
+ * a score (null: the tests drive the detector by level alone) the level alone decides, and the speech
+ * line rises above the room's noise floor to make up for it.
  *
  * A phrase starts after three heard blocks and keeps `prerollMs` of audio from before that moment. It
  * ends after `hangoverMs` of unheard blocks, of which only `tailMs` is kept. Bursts shorter than
@@ -19,7 +19,7 @@ import { rmsDb } from './pcm.js';
 import { SPEECH_KEEP, SPEECH_START } from './speech.js';
 
 export interface VadSettings {
-  /** dBFS; the speech line. Sound under it never counts as speech (raised above the noise floor when there is no voice model). */
+  /** dBFS; the speech line. Sound under it never counts as speech (raised above the noise floor when there is no score). */
   threshold: number;
   hangoverMs: number;
   prerollMs: number;
@@ -43,7 +43,7 @@ export class VoiceActivityDetector {
   noise = -60;
   level = -90;
   threshold = -45;
-  /** The voice model's latest score for the meter; null while the level alone decides. */
+  /** The voice detector's latest score for the meter; null while the level alone decides. */
   voice: number | null = null;
   private loudRun = 0;
   private quietRun = 0;
@@ -94,8 +94,8 @@ export class VoiceActivityDetector {
   }
 
   /**
-   * Takes the next block. `speech` is the voice model's latest score, or null to decide by level
-   * alone (no model, or it failed).
+   * Takes the next block. `speech` is the voice detector's latest score, or null to decide by level
+   * alone.
    */
   process(block: Float32Array, speech: number | null = null): void {
     const db = rmsDb(block);
@@ -104,8 +104,8 @@ export class VoiceActivityDetector {
     // Fast to follow drops, slow to rise: the floor tracks the quiet parts of the room.
     this.noise += db < this.noise ? (db - this.noise) * 0.2 : (db - this.noise) * 0.002;
     this.noise = Math.max(-90, Math.min(-30, this.noise));
-    // With a voice model the line is the user's setting alone: the model, not the floor, tells a
-    // noisy room from a voice. Without one the line has to stay above the noise.
+    // With a score the line is the user's setting alone: the detector, not the floor, tells a noisy
+    // room from a voice. Without one the line has to stay above the noise.
     this.threshold =
       speech === null ? Math.max(this.settings.threshold, this.noise + 6) : this.settings.threshold;
     const loud = db > this.threshold;

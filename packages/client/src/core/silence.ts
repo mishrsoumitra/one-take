@@ -1,9 +1,9 @@
 /**
  * Finding and removing the pauses inside clips that are already recorded.
  *
- * The live detector should have cut them, but a recording made before the voice model was there, or
- * in a room loud enough to fool a level-only detector, can carry minutes of silence inside a clip.
- * This takes the voice model's score for every frame of a clip, finds the stretches with a voice in
+ * The live detector should have cut them, but a recording made before the voice detector was there,
+ * or in a room loud enough to fool a level-only detector, can carry minutes of silence inside a clip.
+ * This takes the voice detector's score for every frame of a clip, finds the stretches with a voice in
  * them (padded with the same pre-roll and tail the live detector keeps) and rebuilds the clip from
  * those stretches alone, as several clips when a pause longer than the hangover sat between them.
  *

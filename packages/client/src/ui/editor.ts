@@ -26,7 +26,7 @@ import {
 import { fmtSec, fmtTime } from '../core/format.js';
 import { type CaptureMode } from '../core/recorder.js';
 import { speechRanges, trimSilences, type Range as SpeechRange } from '../core/silence.js';
-import { scoreClip, type SpeechModel } from '../core/speech.js';
+import { scoreClip, type VoiceScorer } from '../core/speech.js';
 import {
   buildTimeline,
   segmentDuration,
@@ -50,8 +50,8 @@ export interface EditorDeps {
   mic: MicCapture;
   micDeviceId: () => string | undefined;
   nextId: () => string;
-  /** The voice model, once it is loaded; it cuts takes and finds the pauses in recorded clips. */
-  speech: () => SpeechModel | null;
+  /** The voice detector; it cuts takes and finds the pauses in recorded clips. */
+  speech: () => VoiceScorer;
   /** The clips changed; the new list is the lecture from now on. */
   onChange: (segments: Segment[]) => void;
   onClose: () => void;
@@ -143,7 +143,7 @@ export class Editor {
   private takeRaf = 0;
   private clipRows: HTMLElement[] = [];
   private previouslyFocused: Element | null = null;
-  /** The voice model is going through the clips looking for pauses. */
+  /** The voice detector is going through the clips looking for pauses. */
   private scanning = false;
 
   constructor(
@@ -336,7 +336,7 @@ export class Editor {
       {
         id: 'edTrim',
         title:
-          'Listen through every clip with the voice model and cut out the stretches where nobody is speaking',
+          'Listen through every clip with the voice detector and cut out the stretches where nobody is speaking',
       },
       icon('hearing'),
       label('Remove pauses'),
@@ -909,17 +909,13 @@ export class Editor {
   }
 
   /**
-   * Every clip goes through the voice model; the stretches without a voice, apart from pauses shorter
+   * Every clip goes through the voice detector; the stretches without a voice, apart from pauses shorter
    * than the hangover and the pre-roll and tail at the ends, are cut out, splitting a clip where a
    * long pause sat inside it. One change on the undo stack, however many clips it touched.
    */
   private async removePauses(): Promise<void> {
-    const model = this.deps.speech();
-    if (!model) {
-      this.deps.toast.show('The voice model is not loaded, so pauses cannot be found in this browser.');
-      return;
-    }
     if (this.scanning || this.list.length === 0) return;
+    const detector = this.deps.speech();
     this.pause();
     this.closeTake();
     this.scanning = true;
@@ -936,7 +932,7 @@ export class Editor {
           this.e.info.textContent = `Listening for pauses… ${pct}%`;
         };
         show(0);
-        const probs = await scoreClip(model, seg.pcm, seg.sampleRate, show);
+        const probs = await scoreClip(detector, seg.pcm, seg.sampleRate, show);
         done += segmentDuration(seg);
         ranges.set(seg.id, speechRanges(probs, segmentDuration(seg), settings));
       }
@@ -956,7 +952,7 @@ export class Editor {
       );
     } catch (error) {
       console.warn('Remove pauses failed', error);
-      this.deps.toast.show('The voice model failed while listening; nothing was changed.');
+      this.deps.toast.show('Listening for pauses failed; nothing was changed.');
     } finally {
       this.scanning = false;
       this.rebuild();

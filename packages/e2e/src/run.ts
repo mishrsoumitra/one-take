@@ -140,7 +140,6 @@ check(
 );
 page.step('recording in auto mode');
 check(await page.startMic(), 'mic started');
-check((await ev<string>('__onetake.speech()')) === 'ready', 'the voice model is loaded in the browser');
 const t0 = Date.now();
 const at = async (sec: number, fn: () => Promise<unknown>) => {
   const d = t0 + sec * 1000 - Date.now();
@@ -154,7 +153,7 @@ await at(16.5, () => Promise.resolve());
 {
   const scored = await ev<number>('__onetake.scorer()?.frames ?? 0');
   // 16.5 s of microphone in 32 ms frames, less a little for the mic opening
-  check(scored > 400, `the voice model scored the microphone as it was heard (${scored} frames)`);
+  check(scored > 400, `the voice detector scored the microphone as it was heard (${scored} frames)`);
 }
 await ev('__onetake.stopMic()');
 const segs = await ev<{ slide: number; sec: number; joined: boolean }[]>(

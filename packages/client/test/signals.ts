@@ -58,9 +58,10 @@ export function db(x: Float32Array): number {
 export class Noise {
   constructor(private seed: number) {}
 
-  /** Uniform in [-1, 1). */
+  /** Uniform in [-1, 1). The multiply is done in 32 bits: in floating point it loses digits and the
+   * sequence can fall into a short cycle (seed 9 repeated every 220 samples, a 73 Hz buzz). */
   next(): number {
-    this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff;
+    this.seed = (Math.imul(this.seed, 1103515245) + 12345) & 0x7fffffff;
     return (this.seed / 0x7fffffff) * 2 - 1;
   }
 

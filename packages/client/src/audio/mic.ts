@@ -1,8 +1,17 @@
+import { NoiseFilter } from '../core/denoise.js';
+
+// eslint-disable-next-line import-x/default -- Vite's `?worker&url` import is the bundled worklet's URL
 import processorUrl from './capture-processor.ts?worker&url';
 import { acquireAudio, releaseAudio } from './context.js';
 
+// `import type`, never a plain import: anything else would bundle the worklet into the page, where
+// AudioWorkletProcessor does not exist
+import type { CaptureMessage } from './capture-processor.js';
+
 export interface MicStartOptions {
   deviceId?: string;
+  /** Run the noise filter (`core/denoise.ts`) over the microphone before anything hears it. */
+  noiseFilter: boolean;
   /** Block length handed to the detector, in milliseconds. */
   blockMs: number;
   onBlock: (block: Float32Array) => void;
@@ -14,7 +23,9 @@ export interface MicInfo {
 }
 
 /**
- * Microphone capture through an AudioWorklet, with a ScriptProcessor fallback for old browsers.
+ * Microphone capture through an AudioWorklet, with a ScriptProcessor fallback for old browsers. The
+ * browser's own processing (echo cancellation, its noise suppression, automatic gain) is asked for,
+ * and the app's noise filter runs after it, on the audio thread, when it is on.
  *
  * Opening the microphone takes a moment. A `stop()` that arrives while a `start()` is still waiting
  * for the browser wins: the stream that then arrives is released at once and `start()` returns null,
@@ -27,6 +38,9 @@ export class MicCapture {
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- kept only as a fallback
   private node: AudioWorkletNode | ScriptProcessorNode | null = null;
   private workletReady = false;
+  /** The noise filter of the ScriptProcessor fallback; the worklet runs its own. */
+  private fallbackFilter: NoiseFilter | null = null;
+  private noiseFilter = true;
   /** Bumped by every start and stop; a start whose number is stale was overtaken and gives up. */
   private generation = 0;
 
@@ -47,9 +61,26 @@ export class MicCapture {
     return this.stream !== null;
   }
 
+  /** Whether the noise filter is on; takes effect at once, mid-stream too. */
+  get filtering(): boolean {
+    return this.noiseFilter;
+  }
+
+  /** Turns the noise filter on or off, without reopening the microphone. */
+  setNoiseFilter(on: boolean): void {
+    this.noiseFilter = on;
+    if (this.node && 'port' in this.node) {
+      this.node.port.postMessage((on ? 'filter-on' : 'filter-off') satisfies CaptureMessage);
+    } else if (this.node && this.context) {
+      if (on) this.fallbackFilter ??= new NoiseFilter(this.context.sampleRate);
+      else this.fallbackFilter = null;
+    }
+  }
+
   /** Opens the microphone; null when a stop (or another start) overtook this one while it was opening. */
   async start(options: MicStartOptions): Promise<MicInfo | null> {
     if (this.stream) this.stop();
+    this.noiseFilter = options.noiseFilter;
     const gen = ++this.generation;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -93,7 +124,7 @@ export class MicCapture {
           numberOfOutputs: 0,
           channelCount: 1,
           channelCountMode: 'explicit',
-          processorOptions: { size },
+          processorOptions: { size, filter: this.noiseFilter },
         });
         node.port.onmessage = (e: MessageEvent<Float32Array>) => options.onBlock(e.data);
         this.source.connect(node);
@@ -106,10 +137,12 @@ export class MicCapture {
     if (!worklet) {
       /* eslint-disable @typescript-eslint/no-deprecated -- ScriptProcessor is the only fallback where AudioWorklet is missing */
       const node = ctx.createScriptProcessor(1024, 1, 1);
+      this.fallbackFilter = this.noiseFilter ? new NoiseFilter(ctx.sampleRate) : null;
       let acc = new Float32Array(size);
       let n = 0;
       node.onaudioprocess = (ev) => {
-        const data = ev.inputBuffer.getChannelData(0);
+        const raw = ev.inputBuffer.getChannelData(0);
+        const data = this.fallbackFilter ? this.fallbackFilter.process(raw) : raw;
         for (const sample of data) {
           acc[n++] = sample;
           if (n === size) {
@@ -133,7 +166,7 @@ export class MicCapture {
       if ('port' in this.node) {
         // tells the processor to let go: a worklet node that keeps returning true would otherwise
         // run on the audio thread for the life of the context, one more after every restart
-        this.node.port.postMessage('stop');
+        this.node.port.postMessage('stop' satisfies CaptureMessage);
         this.node.port.onmessage = null;
       }
       try {
@@ -143,6 +176,7 @@ export class MicCapture {
       }
       this.node = null;
     }
+    this.fallbackFilter = null;
     if (this.source) {
       try {
         this.source.disconnect();

@@ -178,6 +178,42 @@ check(
 );
 await page.screenshot('recording.png');
 
+// 4a. the microphone picker and the noise filter switch, in the bottom bar, remembered in the browser
+check(
+  await ev<boolean>(
+    'document.querySelector("#controls #micSel") !== null && document.querySelector("#top #micSel") === null',
+  ),
+  'the microphone picker is in the bottom bar, not the top bar',
+);
+{
+  const mics = await ev<string[]>(
+    '[...document.getElementById("micSel").options].filter(o => o.value && !o.disabled).map(o => o.textContent)',
+  );
+  check(
+    mics.length >= 1,
+    `the picker names the microphones once the mic has been allowed (${mics.join(', ')})`,
+  );
+}
+check(
+  await ev<boolean>(
+    'document.getElementById("noiseFilter").checked && __onetake.prefs().noiseFilter === true',
+  ),
+  'the noise filter is on by default',
+);
+await page.mouseDown('#noiseFilter');
+await page.mouseUp('#noiseFilter');
+check(
+  await ev<boolean>(
+    '!document.getElementById("noiseFilter").checked && __onetake.prefs().noiseFilter === false',
+  ),
+  'a click on the switch turns the noise filter off and remembers it',
+);
+check(
+  await ev<boolean>('document.activeElement !== document.getElementById("noiseFilter")'),
+  'the switch gives the keyboard back to the app after a click',
+);
+await ev('__onetake.setNoiseFilter(true)');
+
 // 4b. press to speak: the mic is on but hears nothing until Space is held. The WAV played once and is
 // now silent, so the mic is restarted (which rewinds the file) with the key work timed to its speech.
 await ev('document.getElementById("modeHold").click()');
@@ -258,6 +294,13 @@ await at1(11.8, async () => {
   check((await ev<number>('__onetake.state.segments.length')) === before + 3, 'the mouse press was recorded');
 });
 await page.screenshot('press-to-speak.png');
+check(await ev<boolean>('__onetake.mic.filtering === true'), 'the microphone ran through the noise filter');
+await ev('__onetake.setNoiseFilter(false)');
+check(
+  await ev<boolean>('__onetake.mic.filtering === false && __onetake.state.armed'),
+  'the switch takes effect without reopening the mic',
+);
+await ev('__onetake.setNoiseFilter(true)');
 await ev('__onetake.stopMic()');
 check(await ev<boolean>('document.getElementById("btnHold").hidden'), 'the stage button leaves with the mic');
 await ev('document.getElementById("modeAuto").click()');
@@ -577,6 +620,10 @@ check(
   'session restored with phrases and slides',
 );
 check((await ev<string>('__onetake.state.mode')) === 'auto', 'the recording mode survived the reload');
+check(
+  await ev<boolean>('document.getElementById("noiseFilter").checked === true'),
+  'the noise filter switch survived the reload',
+);
 await page.screenshot('restored.png');
 
 // 7. preview walks through slides and stops; delete/undo round-trips

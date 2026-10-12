@@ -49,6 +49,8 @@ export interface EditorDeps {
   mode: () => CaptureMode;
   mic: MicCapture;
   micDeviceId: () => string | undefined;
+  /** Whether the noise filter is on, the same switch as under the level meter. */
+  noiseFilter: () => boolean;
   nextId: () => string;
   /** The voice detector; it cuts takes and finds the pauses in recorded clips. */
   speech: () => VoiceScorer;
@@ -1203,6 +1205,7 @@ export class Editor {
         settings: this.deps.settings(),
         mode: this.deps.mode(),
         deviceId: this.deps.micDeviceId(),
+        noiseFilter: this.deps.noiseFilter(),
       });
     } catch (error) {
       e.btnRecord.disabled = false;

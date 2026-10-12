@@ -105,11 +105,6 @@
 #btnClose:hover:not(:disabled) {
   color: var(--text-emphasis-error-default);
 }
-#micSel {
-  max-width: 150px;
-  font-size: var(--font-size-12px);
-  padding: 0 var(--spacing-6px);
-}
 /* the recording mode: a two-option segmented control (two NSButtons sharing one tinted track).
    The chosen option is raised on the panel colour, the other one sits flat on the track. */
 .segmented {
@@ -636,6 +631,20 @@ button.x .ico {
   min-width: 52px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+/* the microphone picker and the noise filter switch, after the sliders */
+#micSettings {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-14px);
+}
+#controls #micSettings label {
+  cursor: pointer;
+}
+#micSel {
+  max-width: 200px;
+  font-size: var(--font-size-12px);
+  padding: 0 var(--spacing-6px);
 }
 #keys {
   margin-left: auto;
@@ -1931,9 +1940,6 @@ button.x .ico {
   #top .deck {
     display: none;
   }
-  #micSel {
-    max-width: 120px;
-  }
 }
 @media (max-width: 1550px) {
   /* Edit becomes a pen icon; its title still says what it does */
@@ -1967,9 +1973,6 @@ button.x .ico {
   }
 }
 @media (max-width: 1370px) {
-  #micSel {
-    max-width: 100px;
-  }
   /* "Export video" becomes "Export", "Hold Space to speak" becomes "Hold Space" */
   #btnExport .long,
   #statusText .long {
@@ -1991,6 +1994,9 @@ button.x .ico {
   #keys {
     display: none;
   }
+  #micSel {
+    max-width: 150px;
+  }
   #top {
     padding-left: var(--spacing-10px);
     padding-right: var(--spacing-10px);
@@ -2003,6 +2009,12 @@ button.x .ico {
     width: var(--spacing-32px);
     min-width: var(--spacing-32px);
     padding: var(--spacing-4px);
+  }
+}
+@media (max-width: 1100px) {
+  /* the picker's own text says what it is */
+  #micSettings .pick .label {
+    display: none;
   }
 }
 @media (max-width: 900px) {

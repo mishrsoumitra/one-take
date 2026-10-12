@@ -15,7 +15,10 @@ export interface LayoutRefs {
   stepSlides: HTMLElement;
   stepMic: HTMLElement;
   stepExport: HTMLElement;
+  /** Which microphone to open; in the bottom bar, after the sliders. */
   micSelect: HTMLSelectElement;
+  /** Run the noise filter over the microphone; next to the picker. */
+  noiseFilter: HTMLInputElement;
   btnArm: HTMLButtonElement;
   /** Auto / press to speak, as a two-button segmented control. */
   modeSwitch: HTMLElement;
@@ -137,11 +140,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   const stepMic = stepBadge('stepMic', 2, 'Start the mic and talk');
   const stepExport = stepBadge('stepExport', 3, 'Preview, edit and export');
 
-  const micSelect = h(
-    'select',
-    { id: 'micSel', title: 'Which microphone to use' },
-    h('option', { value: '' }, 'Default microphone'),
-  );
   const btnArm = h(
     'button',
     { id: 'btnArm', class: 'primary', disabled: true, title: 'Load your slides first' },
@@ -230,7 +228,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       stepMic,
       btnArm,
       modeSwitch,
-      micSelect,
       btnMute,
       statusPill,
       h(
@@ -370,6 +367,32 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     h('span', { class: 'dot' }),
     serverText,
   );
+  const micSelect = h(
+    'select',
+    { id: 'micSel', title: 'Which microphone to use' },
+    h('option', { value: '' }, 'Default microphone'),
+  );
+  const noiseFilter = h('input', { type: 'checkbox', id: 'noiseFilter', checked: true });
+  const micSettings = h(
+    'span',
+    { id: 'micSettings' },
+    h(
+      'label',
+      { class: 'pick', title: 'Which microphone to use. The choice is remembered.' },
+      h('span', { class: 'label' }, 'Microphone'),
+      micSelect,
+    ),
+    h(
+      'label',
+      {
+        class: 'check',
+        title:
+          "Takes the room's steady noise (a fan, an air conditioner, a hum, hiss) out from under your voice before anything is recorded, on top of what Chrome already filters. Untick it if your voice comes out thin.",
+      },
+      noiseFilter,
+      h('span', { class: 'label' }, 'Noise filter'),
+    ),
+  );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
   const gap = h('input', { type: 'range', id: 'gap', min: 0, max: 1000, step: 50, value: '150' });
@@ -415,6 +438,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
         hang,
         hangV,
       ),
+      micSettings,
       h(
         'span',
         { class: 'hint keys', id: 'keys' },
@@ -452,6 +476,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stepMic,
     stepExport,
     micSelect,
+    noiseFilter,
     btnArm,
     modeSwitch,
     btnModeAuto,

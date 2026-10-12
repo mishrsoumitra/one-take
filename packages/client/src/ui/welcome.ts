@@ -130,7 +130,11 @@ export class Welcome {
             h('b', null, 'Check your level. '),
             'In the meter at the bottom, your voice should cross the white line and room noise should stay below it. Drag ',
             em('Speech line'),
-            ' if it does not.',
+            ' if it does not. Next to the meter, ',
+            em('Microphone'),
+            ' picks the mic and ',
+            em('Noise filter'),
+            ' takes a fan or an air conditioner out from under your voice.',
           ),
           h(
             'p',

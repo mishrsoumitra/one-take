@@ -7,6 +7,7 @@
  *   npm run e2e            (builds first)
  *   tsx packages/e2e/src/run.ts --out /tmp/one-take-e2e
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -44,7 +45,9 @@ await startServer(PORT, exportsDir);
 const caps = (await (await fetch(`http://127.0.0.1:${PORT}/api/capabilities`)).json()) as {
   ffmpeg: { version: string } | null;
   presentations: { extensions: string[]; renderer: string };
+  transcription: { engine: string; model: string; modelReady: boolean; note: string } | null;
 };
+console.log(`transcription: ${caps.transcription ? caps.transcription.note : 'no whisper on this machine'}`);
 check(caps.ffmpeg !== null, `server found ffmpeg ${caps.ffmpeg?.version ?? ''}`);
 check(
   caps.presentations.extensions.includes('pptx'),
@@ -594,6 +597,140 @@ check(mem.kind === 'blob', 'browser export produced a file in memory');
   check(video(p)?.codec_name === 'h264' && video(p)?.width === 640, 'browser mp4 is h264 640x360');
 }
 
+// h. the enhancements: faster, fillers cut (there are none in the lecture, so nothing may be cut), the
+// volume evened out; and, when the server has whisper, a transcript with subtitles drawn in and saved
+// next to the video
+page.step('exporting with the enhancements');
+const plain = await exportServer({
+  fileName: 'plain',
+  container: 'mp4',
+  resolution: { preset: '480p' },
+  fps: 10,
+});
+const faster = await exportServer({
+  fileName: 'faster',
+  container: 'mp4',
+  resolution: { preset: '480p' },
+  fps: 10,
+  enhance: {
+    speed: 1.5,
+    evenLoudness: true,
+    fillers: { remove: true, sensitivity: 'medium' },
+    captions: { enabled: false, language: 'auto', burnIn: false, sidecar: true, transcript: true },
+  },
+});
+check(faster.job.state === 'done', `faster export done${faster.job.error ? ` (${faster.job.error})` : ''}`);
+{
+  const plainSec = Number(probe(plain.job.outputs[0]?.path ?? '').format.duration);
+  const fastSec = Number(probe(faster.job.outputs[0]?.path ?? '').format.duration);
+  // the pauses between phrases keep their length; the speech is a third shorter
+  const gaps = (tl.items - 1) * 0.15;
+  const expected = (plainSec - 0.25 - gaps) / 1.5 + gaps + 0.25;
+  check(
+    Math.abs(fastSec - expected) < 0.35,
+    `1.5× makes the video ${fastSec.toFixed(2)} s instead of ${plainSec.toFixed(2)} s (expected about ${expected.toFixed(2)} s): pauses kept, speech faster, no filler cut from a lecture without any`,
+  );
+  const v = video(probe(faster.job.outputs[0]?.path ?? ''));
+  check(
+    v?.codec_name === 'h264' && audio(probe(faster.job.outputs[0]?.path ?? ''))?.codec_name === 'aac',
+    'the faster export is still h264 + aac',
+  );
+}
+const transcribed = caps.transcription !== null;
+if (transcribed) {
+  const captioned = await exportServer({
+    fileName: 'captioned',
+    container: 'mp4',
+    resolution: { preset: '480p' },
+    fps: 10,
+    enhance: {
+      speed: 1,
+      evenLoudness: false,
+      fillers: { remove: false, sensitivity: 'medium' },
+      captions: { enabled: true, language: 'en', burnIn: true, sidecar: true, transcript: true },
+    },
+  });
+  check(
+    captioned.job.state === 'done',
+    `captioned export done${captioned.job.error ? ` (${captioned.job.error})` : ''}`,
+  );
+  const out = captioned.job.outputs[0]?.path ?? '';
+  const dir = path.dirname(out);
+  const names = fs.readdirSync(dir);
+  check(
+    ['captioned.srt', 'captioned.vtt', 'captioned.txt'].every((n) => names.includes(n)),
+    'the subtitles and the transcript were saved next to the video',
+  );
+  const srt = fs.readFileSync(path.join(dir, 'captioned.srt'), 'utf8');
+  const txt = fs.readFileSync(path.join(dir, 'captioned.txt'), 'utf8');
+  console.log('transcript:', txt.replace(/\s+/g, ' ').slice(0, 160));
+  check(/^1\n\d\d:\d\d:\d\d,\d{3} --> /.test(srt), 'the .srt starts with a numbered cue');
+  check(/sky|blue|light|scatter/i.test(txt), "the transcript has the lecture's words in it");
+  check(
+    fs.readFileSync(path.join(dir, 'captioned.vtt'), 'utf8').startsWith('WEBVTT'),
+    'the .vtt starts with its header',
+  );
+  const words = (captioned as unknown as { captions: { words: unknown[]; cues: unknown[] } | null }).captions;
+  check(
+    (words?.words.length ?? 0) > 5 && (words?.cues.length ?? 0) >= 1,
+    `the export carried ${words?.words.length ?? 0} words in ${words?.cues.length ?? 0} cues`,
+  );
+  // the subtitles are in the picture: inside the first cue, the bottom of a frame is darker than the
+  // same frame without them
+  const firstCue = /(\d\d):(\d\d):(\d\d),(\d{3}) --> (\d\d):(\d\d):(\d\d),(\d{3})/.exec(srt);
+  const cueSec = (m: RegExpExecArray, k: number) =>
+    Number(m[k]) * 3600 + Number(m[k + 1]) * 60 + Number(m[k + 2]) + Number(m[k + 3]) / 1000;
+  const probeAt = firstCue ? (cueSec(firstCue, 1) + cueSec(firstCue, 5)) / 2 : 0.5;
+  const bottomBrightness = (file: string): number => {
+    const raw = execFileSync(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-ss',
+        probeAt.toFixed(3),
+        '-i',
+        file,
+        '-frames:v',
+        '1',
+        '-f',
+        'rawvideo',
+        '-pix_fmt',
+        'gray',
+        '-',
+      ],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    const w = 854;
+    const h = 480;
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.round(h * 0.82); y < Math.round(h * 0.94); y++) {
+      for (let x = Math.round(w * 0.2); x < Math.round(w * 0.8); x++) {
+        sum += raw[y * w + x] ?? 0;
+        n++;
+      }
+    }
+    return sum / Math.max(1, n);
+  };
+  const withText = bottomBrightness(out);
+  const without = bottomBrightness(plain.job.outputs[0]?.path ?? '');
+  check(
+    withText < without - 20,
+    `the subtitles are drawn into the picture (at ${probeAt.toFixed(2)} s the bottom band is ${withText.toFixed(0)} against ${without.toFixed(0)} without)`,
+  );
+  const record = (
+    (await (await fetch(`http://127.0.0.1:${PORT}/api/library`)).json()) as {
+      fileName: string;
+      sidecars: string[];
+    }[]
+  ).find((r) => r.fileName === 'captioned.mp4');
+  check((record?.sidecars.length ?? 0) === 3, 'the library remembers the subtitle files with the video');
+} else {
+  console.log('no whisper on this machine: the transcript export is not checked');
+}
+
 check(
   !fs.readdirSync(exportsDir).some((f) => f.includes('.uploading') || f.includes('.processing')),
   'no temporary files left behind',
@@ -624,7 +761,10 @@ check(
   expectedNames.every((n) => library.some((r) => r.fileName === n && r.exists)),
   `the library lists the server exports (${library.length} records)`,
 );
-check(library[0]?.fileName === 'lecture (2).mp4', 'the library is newest first');
+check(
+  library[0]?.fileName === (caps.transcription ? 'captioned.mp4' : 'faster.mp4'),
+  `the library is newest first (${library[0]?.fileName ?? 'nothing'})`,
+);
 check(
   library.find((r) => r.fileName === 'adaptive')?.encoder === 'libx264' &&
     library.find((r) => r.fileName === 'lecture.mp4')?.encoder === null,
@@ -986,6 +1126,31 @@ check(
 await ev(
   '(() => { const d = __onetake.exportDialog; d.currentRequest.compression.enabled = false; d.refresh(); })()',
 );
+
+// 8a. the Enhance section: speed changes the planned length, the filler switch scans and reports, the
+// transcript switch knows whether the server can transcribe
+const planned = () => ev<string>('document.querySelector("#exportModal .summary b").textContent');
+const asRecorded = await planned();
+await ev(
+  '(() => { const s = document.getElementById("speedSel"); s.value = "2"; s.dispatchEvent(new Event("change")); })()',
+);
+await sleep(100);
+const atDouble = await planned();
+check(atDouble !== asRecorded, `2× shortens the planned length (${asRecorded} → ${atDouble})`);
+await ev(
+  '(() => { const s = document.getElementById("speedSel"); s.value = "1"; s.dispatchEvent(new Event("change")); })()',
+);
+await ev('document.getElementById("fillersOn").click()');
+check(
+  await page.waitFor('/Found|No filler/.test(document.getElementById("fillersStatus").textContent)', 100),
+  `the filler scan reports (${await ev<string>('document.getElementById("fillersStatus").textContent')})`,
+);
+await ev('document.getElementById("fillersOn").click()');
+check(
+  (await ev<boolean>('document.getElementById("captionsOn").disabled')) === !caps.transcription,
+  `the transcript switch is ${caps.transcription ? 'on offer' : 'greyed out'} as the server ${caps.transcription ? 'has' : 'has no'} whisper`,
+);
+await page.screenshot('export-enhance.png');
 
 // 8b. an export started from the dialog itself: the settings give way to the exporting view with a
 // time left, the steps and the live meters, then the result, and "Back to settings" returns

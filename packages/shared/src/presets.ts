@@ -69,6 +69,44 @@ export const LADDER_RUNGS: readonly { height: number; videoBitrateKbps: number; 
   ];
 
 export const MAX_DIMENSION = 7680;
+
+/** Playback speeds offered for the export; the voice keeps its pitch, the video follows. */
+export const SPEED_OPTIONS = [1, 1.1, 1.25, 1.5, 1.75, 2] as const;
+export const SPEED_MIN = 0.5;
+export const SPEED_MAX = 3;
+
+/** How eagerly filler words are cut: the score a stretch of voice needs before it counts. */
+export const FILLER_SENSITIVITIES = ['low', 'medium', 'high'] as const;
+export type FillerSensitivityId = (typeof FILLER_SENSITIVITIES)[number];
+export const FILLER_SENSITIVITY_LABELS: Record<FillerSensitivityId, string> = {
+  low: 'Only the obvious ones',
+  medium: 'Balanced',
+  high: 'Catch more (check the list)',
+};
+
+/** Languages offered for the transcript; `auto` lets the recogniser decide. */
+export const CAPTION_LANGUAGES = [
+  ['auto', 'Detect automatically'],
+  ['en', 'English'],
+  ['hi', 'Hindi'],
+  ['es', 'Spanish'],
+  ['fr', 'French'],
+  ['de', 'German'],
+  ['pt', 'Portuguese'],
+  ['it', 'Italian'],
+  ['ja', 'Japanese'],
+  ['ko', 'Korean'],
+  ['zh', 'Chinese'],
+  ['ar', 'Arabic'],
+  ['ru', 'Russian'],
+  ['bn', 'Bengali'],
+  ['ta', 'Tamil'],
+  ['te', 'Telugu'],
+  ['mr', 'Marathi'],
+  ['nl', 'Dutch'],
+  ['tr', 'Turkish'],
+  ['pl', 'Polish'],
+] as const;
 export const MIN_DIMENSION = 16;
 
 /** Video bitrate for a size, frame rate and quality level, scaled from the 1080p30 table. */

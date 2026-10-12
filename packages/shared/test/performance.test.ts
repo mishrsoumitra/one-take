@@ -63,6 +63,7 @@ const server = (encoders: string[]): ServerCapabilities => ({
   shortcuts: [],
   presentations: { extensions: ['pptx'], renderer: 'test' },
   system: system(encoders),
+  transcription: null,
 });
 
 const on: PerformanceSettings = { mode: 'fastest', hardware: true };

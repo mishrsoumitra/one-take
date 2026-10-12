@@ -19,6 +19,7 @@ import {
   formatSystemReport,
   withoutBrokenEncoders,
 } from './services/system.js';
+import { detectTranscription, TranscriptionManager } from './services/transcribe.js';
 
 const MIN_NODE_MAJOR = 22;
 
@@ -43,6 +44,11 @@ async function main(): Promise<void> {
     verify: config.selfTest,
   });
   const ffmpeg = ffmpegFound ? withoutBrokenEncoders(ffmpegFound, system) : null;
+  const transcriptionInfo = await detectTranscription({
+    whisperPath: config.whisperPath,
+    whisperModel: config.whisperModel,
+    dataDir: config.dataDir,
+  });
 
   const capabilities: ServerCapabilities = {
     name: 'one-take-server',
@@ -55,9 +61,15 @@ async function main(): Promise<void> {
     shortcuts,
     presentations: presentationSupport,
     system,
+    transcription: transcriptionInfo,
   };
 
   const load = new LoadMonitor();
+  const transcription = new TranscriptionManager({
+    info: transcriptionInfo,
+    dataDir: config.dataDir,
+    log: (m) => app.log.info(m),
+  });
   const library = new ExportLibrary(path.join(config.dataDir, 'exports.json'), {
     log: (m) => app.log.info(m),
   });
@@ -73,11 +85,19 @@ async function main(): Promise<void> {
     memoryLimitMb: config.rendererMemoryMb ?? undefined,
     log: (m) => app.log.info(m),
   });
-  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities, load, library });
+  const app = buildApp({
+    config,
+    jobs,
+    converter,
+    capabilities: () => capabilities,
+    load,
+    library,
+    transcription,
+  });
 
   const shutdown = async (signal: string) => {
     app.log.info(`${signal} received, shutting down`);
-    await Promise.all([jobs.dispose(), converter.dispose()]);
+    await Promise.all([jobs.dispose(), converter.dispose(), transcription.dispose()]);
     await app.close();
     process.exit(0);
   };
@@ -89,6 +109,9 @@ async function main(): Promise<void> {
     console.info(`One Take ${SERVER_VERSION}: system check`);
     for (const line of formatSystemReport(system, ffmpeg)) console.info(`  ${line}`);
     console.info(`  Renderer ${(converter.memoryLimit / 1024).toFixed(1)} GB heap for PowerPoint conversion`);
+    console.info(
+      `  Speech   ${transcriptionInfo ? transcriptionInfo.note : 'no whisper found: transcripts and subtitles are off (brew install openai-whisper, or whisper-cpp)'}`,
+    );
     console.info('');
   }
 

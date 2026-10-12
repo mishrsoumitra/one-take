@@ -51,6 +51,7 @@ const serverWithFfmpeg: ServerCapabilities = {
   shortcuts: [],
   presentations: { extensions: ['pptx', 'ppsx', 'pptm'], renderer: 'pptxtojson + pdfkit' },
   system: null,
+  transcription: null,
 };
 const serverNoFfmpeg: ServerCapabilities = { ...serverWithFfmpeg, ffmpeg: null, ffprobePath: null };
 

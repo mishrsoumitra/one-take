@@ -18,10 +18,13 @@ import { PERFORMANCE_MODES } from './performance.js';
 import { type PresentationSupport } from './presentations.js';
 import {
   COMPRESSION_PRESETS,
+  FILLER_SENSITIVITIES,
   MAX_DIMENSION,
   MIN_DIMENSION,
   QUALITY_LEVELS,
   RESOLUTION_PRESETS,
+  SPEED_MAX,
+  SPEED_MIN,
 } from './presets.js';
 import { type SystemProfile } from './system.js';
 
@@ -73,6 +76,35 @@ export const StreamingSchema = z.object({
 });
 export type Streaming = z.infer<typeof StreamingSchema>;
 
+/**
+ * What is done to the recording on the way out: played faster, fillers cut, the volume evened out, a
+ * transcript made and subtitles added. All of it happens in the browser, except the transcription,
+ * which the server does with whisper when it has it.
+ */
+export const EnhanceSchema = z.object({
+  /** Playback speed; 1 leaves the pace alone. Pitch is kept. */
+  speed: z.number().min(SPEED_MIN).max(SPEED_MAX),
+  /** Bring every phrase to the same level, with a safety margin against clipping. */
+  evenLoudness: z.boolean(),
+  fillers: z.object({
+    remove: z.boolean(),
+    sensitivity: z.enum(FILLER_SENSITIVITIES),
+  }),
+  captions: z.object({
+    /** Transcribe the speech on the server. Everything below needs this. */
+    enabled: z.boolean(),
+    /** A language code for the recogniser, or `auto`. */
+    language: z.string().min(2).max(8),
+    /** Draw the subtitles into the picture. */
+    burnIn: z.boolean(),
+    /** Save `.srt` and `.vtt` files next to the video. */
+    sidecar: z.boolean(),
+    /** Save the transcript as a `.txt` file next to the video. */
+    transcript: z.boolean(),
+  }),
+});
+export type Enhance = z.infer<typeof EnhanceSchema>;
+
 export const DestinationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('server'), directory: z.string().min(1), overwrite: z.boolean() }),
   z.object({ kind: z.literal('browser') }),
@@ -102,6 +134,7 @@ export const ExportRequestSchema = z.object({
    * for speed versus file size; see performance.ts.
    */
   performance: z.object({ mode: z.enum(PERFORMANCE_MODES), hardware: z.boolean() }),
+  enhance: EnhanceSchema,
 });
 export type ExportRequest = z.infer<typeof ExportRequestSchema>;
 
@@ -163,14 +196,74 @@ export const UploadSpecSchema = z.object({
 });
 export type UploadSpec = z.infer<typeof UploadSpecSchema>;
 
+/** A small text file written next to the video when it is done: subtitles or the transcript. */
+export const SIDECAR_EXTENSIONS = ['srt', 'vtt', 'txt'] as const;
+export type SidecarExtension = (typeof SIDECAR_EXTENSIONS)[number];
+export const SidecarSchema = z.object({
+  extension: z.enum(SIDECAR_EXTENSIONS),
+  content: z.string().max(4_000_000),
+});
+export type Sidecar = z.infer<typeof SidecarSchema>;
+
 export const CreateExportJobSchema = z.object({
   fileName: z.string().min(1).max(200),
   directory: z.string().min(1),
   overwrite: z.boolean(),
   upload: UploadSpecSchema,
   processing: ProcessingSpecSchema.nullable(),
+  /** Written next to the result (inside the folder for HLS and DASH) once it is done. */
+  sidecars: z.array(SidecarSchema).max(SIDECAR_EXTENSIONS.length).optional(),
 });
 export type CreateExportJobRequest = z.infer<typeof CreateExportJobSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Transcription                                                       */
+/* ------------------------------------------------------------------ */
+
+/** One word as the recogniser heard it, in seconds into the audio that was sent. */
+export interface TranscriptWord {
+  text: string;
+  start: number;
+  end: number;
+}
+
+export type TranscriptionState = 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface TranscriptionJob {
+  id: string;
+  state: TranscriptionState;
+  /** 0..1 of the audio transcribed so far; null before the recogniser reports. */
+  progress: number | null;
+  message: string;
+  /** Seconds of audio that were sent. */
+  durationSec: number;
+  /** The words, once done. */
+  words: TranscriptWord[] | null;
+  /** The language the recogniser settled on (a code such as `en`), once done. */
+  language: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TranscriptionEvent {
+  type: 'job';
+  job: TranscriptionJob;
+}
+
+/** Which speech recogniser the server found, from `/api/capabilities`. */
+export interface TranscriptionInfo {
+  /** `whisper-cpp` is whisper.cpp's `whisper-cli`; `openai-whisper` is the Python `whisper` command. */
+  engine: 'whisper-cpp' | 'openai-whisper';
+  path: string;
+  version: string | null;
+  /** A model name (`base.en`) for openai-whisper, a file for whisper.cpp. */
+  model: string;
+  /** Whether the model is already on disk; openai-whisper downloads it on first use. */
+  modelReady: boolean;
+  /** One line for the dialog. */
+  note: string;
+}
 
 export const FinishExportJobSchema = z.object({ totalBytes: z.int().min(0) });
 export type FinishExportJobRequest = z.infer<typeof FinishExportJobSchema>;
@@ -261,6 +354,8 @@ export interface ExportJob {
   processing: ProcessingSpec | null;
   /** The ffmpeg command that was run, for transparency and bug reports. */
   command: string | null;
+  /** Subtitle and transcript files written next to the result, once it is done. */
+  sidecars: string[];
 }
 
 export type JobEvent = { type: 'job'; job: ExportJob } | { type: 'log'; line: string };
@@ -296,6 +391,8 @@ export interface ExportRecord {
   encoder: string | null;
   /** The ffmpeg command that ran, when one did. */
   command: string | null;
+  /** Subtitle and transcript files written next to the video, as paths. */
+  sidecars: string[];
 }
 
 export interface FfmpegInfo {
@@ -319,6 +416,8 @@ export interface ServerCapabilities {
   presentations: PresentationSupport;
   /** CPU, memory, GPU and working hardware encoders of the machine the server runs on. */
   system: SystemProfile | null;
+  /** The speech recogniser for transcripts and subtitles, when one is installed. */
+  transcription: TranscriptionInfo | null;
 }
 
 export interface DirectoryEntry {

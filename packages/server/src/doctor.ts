@@ -178,6 +178,7 @@ async function main(): Promise<number> {
     shortcuts: [],
     presentations: presentationSupport,
     system,
+    transcription: null,
   };
   const gpuBrowser: BrowserCapabilities = {
     videoCodecs: ['avc', 'hevc', 'vp9', 'av1'],

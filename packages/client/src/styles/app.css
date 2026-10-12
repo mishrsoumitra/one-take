@@ -1016,6 +1016,67 @@ button.x .ico {
   padding-top: var(--spacing-6px);
   border-top: 1px dashed var(--line);
 }
+/* the filler list: one row per hit, a tick to cut it, when it is, what it is, a ▶ to hear it */
+.export .fillers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--corner-radius-8px);
+  padding: var(--spacing-4px);
+}
+.export .filler {
+  display: grid;
+  grid-template-columns: 16px 44px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: var(--spacing-8px);
+  padding: 3px 6px;
+  border-radius: var(--corner-radius-4px);
+  font-size: var(--font-size-12px);
+  cursor: pointer;
+}
+.export .filler:hover {
+  background: var(--panel2);
+}
+.export .filler .when {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.export .filler .what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export .filler button {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+.export .filler button.on {
+  color: var(--accent-text);
+}
+/* the transcript in the result */
+.export .captions-result {
+  margin-top: var(--spacing-6px);
+}
+.export pre.transcript {
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--corner-radius-8px);
+  padding: var(--spacing-8px);
+  margin: var(--spacing-6px) 0 0;
+  font-size: var(--font-size-12px);
+  line-height: 1.5;
+  font-family: inherit;
+}
 /* the hardware switch: a checkbox with its line of findings under it, above the modes */
 .export .hw {
   margin: var(--spacing-8px) 0 var(--spacing-10px);

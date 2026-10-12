@@ -7,6 +7,8 @@ import {
   type JobEvent,
   type ServerCapabilities,
   type SystemLoad,
+  type TranscriptionEvent,
+  type TranscriptionJob,
 } from '@one-take/shared';
 
 export class ApiRequestError extends Error {
@@ -111,6 +113,47 @@ export class ApiClient {
     return `${this.base}/api/library/${id}/file`;
   }
 
+  /** Sends 16 kHz mono WAV to the server's recogniser; answers with the running job. */
+  async transcribe(
+    wav: Uint8Array,
+    language: string,
+    durationSec: number,
+    signal?: AbortSignal,
+  ): Promise<TranscriptionJob> {
+    const params = new URLSearchParams({ language, duration: String(durationSec) });
+    const res = await fetch(`${this.base}/api/transcribe?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: wav as BodyInit,
+      signal: signal ?? null,
+    });
+    return (await this.parse(res)) as TranscriptionJob;
+  }
+
+  getTranscription(id: string): Promise<TranscriptionJob> {
+    return this.json<TranscriptionJob>('GET', `/api/transcribe/${id}`);
+  }
+
+  cancelTranscription(id: string): Promise<TranscriptionJob> {
+    return this.json<TranscriptionJob>('DELETE', `/api/transcribe/${id}`);
+  }
+
+  /** Follows a transcription until it is done, over server-sent events with polling as the fallback. */
+  watchTranscription(
+    id: string,
+    onEvent: (event: TranscriptionEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<TranscriptionJob> {
+    return this.watch<TranscriptionJob, TranscriptionEvent>(
+      `/api/transcribe/${id}/events`,
+      () => this.getTranscription(id),
+      (event) => event.job,
+      (job) => ({ type: 'job', job }),
+      onEvent,
+      signal,
+    );
+  }
+
   /** Sends a PowerPoint file to the server's renderer and gets the PDF back, with any notes it made. */
   async convertToPdf(
     file: File,
@@ -148,11 +191,30 @@ export class ApiClient {
    * event stream drops. Resolves with the final job; rejects only on abort.
    */
   watchExport(id: string, onEvent: (event: JobEvent) => void, signal?: AbortSignal): Promise<ExportJob> {
+    return this.watch<ExportJob, JobEvent>(
+      `/api/exports/${id}/events`,
+      () => this.getExport(id),
+      (event) => (event.type === 'job' ? event.job : null),
+      (job) => ({ type: 'job', job }),
+      onEvent,
+      signal,
+    );
+  }
+
+  /** The event-stream-then-poll loop behind `watchExport` and `watchTranscription`. */
+  private watch<J extends { state: string }, E>(
+    eventsPath: string,
+    get: () => Promise<J>,
+    jobOf: (event: E) => J | null,
+    eventOf: (job: J) => E,
+    onEvent: (event: E) => void,
+    signal?: AbortSignal,
+  ): Promise<J> {
     return new Promise((resolve, reject) => {
       let settled = false;
       let source: EventSource | null = null;
       let pollTimer = 0;
-      const finish = (job: ExportJob) => {
+      const finish = (job: J) => {
         if (settled) return;
         settled = true;
         cleanup();
@@ -174,9 +236,9 @@ export class ApiClient {
 
       const poll = () => {
         if (settled) return;
-        this.getExport(id)
+        get()
           .then((job) => {
-            onEvent({ type: 'job', job });
+            onEvent(eventOf(job));
             if (TERMINAL.has(job.state)) finish(job);
             else pollTimer = window.setTimeout(poll, 1000);
           })
@@ -186,11 +248,12 @@ export class ApiClient {
       };
 
       try {
-        source = new EventSource(`${this.base}/api/exports/${id}/events`);
+        source = new EventSource(`${this.base}${eventsPath}`);
         source.onmessage = (e: MessageEvent<string>) => {
-          const event = JSON.parse(e.data) as JobEvent;
+          const event = JSON.parse(e.data) as E;
           onEvent(event);
-          if (event.type === 'job' && TERMINAL.has(event.job.state)) finish(event.job);
+          const job = jobOf(event);
+          if (job && TERMINAL.has(job.state)) finish(job);
         };
         source.onerror = () => {
           if (settled) return;

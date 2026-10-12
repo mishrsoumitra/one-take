@@ -26,6 +26,10 @@ export interface ServerConfig {
   benchmark: boolean;
   /** Heap for the PowerPoint renderer in MB; null picks half the machine's memory. */
   rendererMemoryMb: number | null;
+  /** A whisper program for transcripts (`whisper-cli` or `whisper`); null searches the PATH. */
+  whisperPath: string | null;
+  /** The model: a name for openai-whisper (`base.en`), a ggml file for whisper.cpp. */
+  whisperModel: string | null;
 }
 
 export const SERVER_VERSION = '1.0.0';
@@ -57,6 +61,8 @@ export function loadConfig(
       'no-self-test': { type: 'boolean' },
       'no-benchmark': { type: 'boolean' },
       'renderer-memory': { type: 'string' },
+      whisper: { type: 'string' },
+      'whisper-model': { type: 'string' },
     },
     strict: true,
   });
@@ -95,5 +101,7 @@ export function loadConfig(
     selfTest: !(values['no-self-test'] ?? env.ONE_TAKE_SELF_TEST === '0'),
     benchmark: !(values['no-benchmark'] ?? env.ONE_TAKE_BENCHMARK === '0'),
     rendererMemoryMb,
+    whisperPath: values.whisper ?? env.ONE_TAKE_WHISPER ?? null,
+    whisperModel: values['whisper-model'] ?? env.ONE_TAKE_WHISPER_MODEL ?? null,
   };
 }

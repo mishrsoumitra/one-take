@@ -19,6 +19,7 @@ import {
   type JobOutput,
   type JobProgress,
   type ProcessLoad,
+  type Sidecar,
   type SystemProfile,
 } from '@one-take/shared';
 
@@ -50,6 +51,8 @@ interface InternalJob {
   writeChain: Promise<void>;
   /** The ffmpeg video encoder the job used, once its command has been built. */
   encoder: string | null;
+  /** Subtitle and transcript files to write next to the result. */
+  sidecars: Sidecar[];
 }
 
 export interface JobManagerOptions {
@@ -183,6 +186,7 @@ export class JobManager {
       upload: request.upload,
       processing: request.processing,
       command: null,
+      sidecars: [],
     };
     this.jobs.set(id, {
       job,
@@ -194,6 +198,7 @@ export class JobManager {
       listeners: new Set(),
       writeChain: Promise.resolve(),
       encoder: null,
+      sidecars: request.sidecars ?? [],
     });
     this.trim();
     this.log(`job ${id} created → ${finalPath}`);
@@ -392,6 +397,7 @@ export class JobManager {
         await removeQuietly(internal.uploadPath);
       }
       job.outputs = await this.describeOutput(internal.finalPath);
+      job.sidecars = await this.writeSidecars(internal);
       job.state = 'done';
       job.progress = progressOf({ stage: 'done', percent: 100, message: 'Saved' });
       job.updatedAt = new Date().toISOString();
@@ -415,6 +421,27 @@ export class JobManager {
     await removeQuietly(internal.tempOutputPath);
     this.emit(internal);
     this.log(`job ${job.id} failed: ${message}`);
+  }
+
+  /** Writes the subtitles and the transcript next to the result (inside the folder for HLS and DASH). */
+  private async writeSidecars(internal: InternalJob): Promise<string[]> {
+    const { job } = internal;
+    if (internal.sidecars.length === 0) return [];
+    const final = internal.finalPath;
+    const isDir = CONTAINER_INFO[job.processing?.container ?? job.upload.container].isDirectory;
+    const base = isDir ? path.basename(final) : path.basename(final, path.extname(final));
+    const dir = isDir ? final : path.dirname(final);
+    const written: string[] = [];
+    for (const s of internal.sidecars) {
+      const target = path.join(dir, `${base}.${s.extension}`);
+      try {
+        await fs.writeFile(target, s.content, 'utf8');
+        written.push(target);
+      } catch (error) {
+        this.log(`job ${job.id}: could not write ${target}: ${errorMessage(error)}`);
+      }
+    }
+    return written;
   }
 
   /** Writes the finished export into the library, so it is still listed after a restart. */
@@ -443,6 +470,7 @@ export class JobManager {
       audioCodec: spec?.audio.mode === 'encode' ? spec.audio.codec : job.upload.audioCodec,
       encoder: internal.encoder,
       command: job.command,
+      sidecars: job.sidecars,
     });
   }
 

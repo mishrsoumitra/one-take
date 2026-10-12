@@ -5,7 +5,13 @@
  *
  * The planner is pure so the same decisions can be unit-tested and shown in the UI before anything runs.
  */
-import { type ExportRequest, type ProcessingSpec, type ServerCapabilities, type LadderRung } from './api.js';
+import {
+  type Enhance,
+  type ExportRequest,
+  type ProcessingSpec,
+  type ServerCapabilities,
+  type LadderRung,
+} from './api.js';
 import {
   type AudioCodecId,
   type BrowserContainer,
@@ -483,6 +489,17 @@ export function defaultExportRequest(serverDirectory: string | null): ExportRequ
     streaming: { segmentSeconds: 4, hlsSegmentType: 'fmp4', ladder: false },
     order: 'recorded',
     performance: { ...DEFAULT_PERFORMANCE },
+    enhance: defaultEnhance(),
+  };
+}
+
+/** Nothing changed on the way out: normal pace, every filler kept, no transcript. */
+export function defaultEnhance(): Enhance {
+  return {
+    speed: 1,
+    evenLoudness: false,
+    fillers: { remove: false, sensitivity: 'medium' },
+    captions: { enabled: false, language: 'auto', burnIn: false, sidecar: true, transcript: true },
   };
 }
 
@@ -503,11 +520,18 @@ export function normalizeExportRequest(stored: unknown, serverDirectory: string 
   > & {
     hardware?: unknown;
   };
+  const enhance = s.enhance as Partial<Enhance> | undefined;
   return {
     ...defaults,
     ...s,
     compression: { ...defaults.compression, ...compression },
     streaming: { ...defaults.streaming, ...s.streaming },
+    enhance: {
+      ...defaults.enhance,
+      ...enhance,
+      fillers: { ...defaults.enhance.fillers, ...enhance?.fillers },
+      captions: { ...defaults.enhance.captions, ...enhance?.captions },
+    },
     performance: {
       mode:
         mode !== undefined && (PERFORMANCE_MODES as readonly string[]).includes(mode)

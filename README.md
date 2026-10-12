@@ -21,6 +21,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Output formats](#output-formats)
 - [Quality and encoding settings](#quality-and-encoding-settings)
+- [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles)
 - [How an export works](#how-an-export-works)
 - [Large exports](#large-exports)
 - [System check and performance mode](#system-check-and-performance-mode)
@@ -52,6 +53,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Built for long lectures.** Streaming writes, encoder back-pressure, free-space checks, crash-safe fragments, cancel at any stage, and no in-memory assembly. See [Large exports](#large-exports).
 - **Uses your hardware encoder.** The dedicated video encoder (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, until you untick **Use the hardware encoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders, each one self-tested) and measured encoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
 - **Your exports in one list.** Every video saved to a folder on this computer is listed under **Exports** in the top bar, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
+- **Faster, cleaner, with subtitles.** At export time the lecture can be played at 1.25×, 1.5× or 2× with the voice keeping its pitch (a time-stretch in plain code, no library), the volume evened out from phrase to phrase, and the "um"s and "uh"s cut: a filler is found by its shape in the spectrum, a held, flat, central vowel standing between two pauses, with a list to listen to each one before it goes. With whisper installed, the server transcribes the speech and the export gets subtitles drawn into the picture, `.srt` and `.vtt` files next to the video, and a `.txt` transcript. The audio never leaves the machine.
 - **Nothing lost.** Every phrase is saved to IndexedDB the moment it ends. Close the tab and come back later. The slides, the phrases and your settings are all still there.
 - **Works without the server too.** In Chrome and Edge the browser can stream the file straight to disk. Other browsers assemble it in memory and download it.
 
@@ -172,6 +174,7 @@ Click **Export video**. In the dialog you choose:
 - **File name**, **Container**, **Resolution**, **Frame rate**, **Quality**, **Video codec**, **Audio** codec and bitrate, **Key frame every**, and **Order**.
 - **Compression (server, ffmpeg)** and, for HLS and DASH, **Segment length**, **Segment type** and **Adaptive bitrate**.
 - Under **This computer**: what the machine has, the **Use the hardware encoder** switch (on by default; untick it to encode on the CPU, and the choice is remembered in this browser) and the performance mode.
+- Under **Enhance**: the playback **Speed**, **even out the volume**, **cut filler words** with a list of what was found, and **transcribe the speech and add subtitles**. See [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles).
 
 The **Plan** panel shows the two stages (what the browser encodes, what the server does afterwards), an estimate of the upload size and the final size, warnings, and any reason the export cannot run. Progress covers encoding, upload and ffmpeg, and you can cancel at any point. When it's done, **Show in folder** opens Finder or Explorer at the file.
 
@@ -298,13 +301,59 @@ HLS writes `master.m3u8` with one folder per rendition (for example `720p/index.
 
 **As recorded (slides may repeat)** keeps the order you spoke in, so if you went back to slide 3 later, slide 3 appears twice. **Grouped by slide number** sorts phrases by slide, keeping the spoken order within each slide. Phrases are joined with **Pause between phrases** (default 0.15 s), plus 0.25 s on every slide change.
 
+## Speed, filler words, transcript and subtitles
+
+The **Enhance** section of the export dialog changes what the video says, not how it is encoded. Everything in it is done in the browser on copies of the phrases before a frame is encoded (the recording itself is never changed), except the transcription, which the local server does with whisper.
+
+### Speed
+
+**Speed** plays the lecture at 1.1×, 1.25×, 1.5×, 1.75× or 2× (or any figure from 0.5× to 3× under *Custom…*). The voice keeps its pitch: the audio is time-stretched by waveform-similarity overlap-add (`packages/client/src/core/stretch.ts`, plain code), which lays 25 ms windows of the recording down at the normal spacing while taking them from the input `speed` times further apart, each one from the spot within a few milliseconds that best continues the window before it, so no pitch period is torn. The pauses between phrases keep their length; only the speech gets faster, and the slides change where the words say they should. An hour of 48 kHz speech takes a few seconds.
+
+### Volume
+
+**Even out the volume from phrase to phrase** brings every phrase's speech level (the loudest fifth of its 50 ms blocks) to −20 dBFS, never more than 18 dB up or 6 dB down and never past the point where a peak would clip. Use it when some phrases were said closer to the microphone than others.
+
+### Filler words
+
+**Cut "um", "uh", "er" and "hmm"** finds hesitations the same way the voice detector finds voices: by arithmetic alone, no model, every rule in `packages/client/src/core/fillers.ts`. A filler is not recognised as a word; it is recognised by its shape, which is much the same in every speaker and language:
+
+1. **It stands apart.** A filler is a hesitation, so there is a real pause, a quarter of a second or so, on at least one side of it and usually both. The brief silence before a "p" or a "t" is far shorter.
+2. **It is one long, steady sound.** "Uh" is a neutral vowel held for a quarter of a second or more without the mouth moving: the spectrum of each 32 ms frame (its Fourier transform, read in twenty bands spaced like the ear hears them) hardly changes over 48 ms, where a word's spectrum moves with every consonant.
+3. **The vowel is the central one** of "but" and "the": its first two formants, the peaks of the spectrum's envelope, sit near 600 and 1200 Hz, where the vowels of "see", "say" and "saw" peak elsewhere. That is the pattern of a common filler in the transform. An "um" or "hmm" ends in a nasal murmur with its energy under 500 Hz; that tail is part of the same run and goes with it.
+4. **The pitch glides, it does not sing.** A filler holds one note or drifts down smoothly; a run of syllables carries the sentence's melody.
+
+Every run of voice between 0.12 and 1.5 s gets a score from 0 to 1 that is the product of those things (and a little extra for being quieter than the rest, as hesitations are). The **sensitivity** picks the score a run needs: *Only the obvious ones* (0.55), *Balanced* (0.35, the default) or *Catch more* (0.2). On synthetic speech from macOS text-to-speech with hesitations spliced in flat and slow, the balanced setting finds half of them with one false alarm in two minutes of ordinary sentences, the strict one a third with none, and the eager one four in five with one word in forty flagged, which is why there is a list. Each line in it has a ▶ to hear the stretch with a little of what is around it, and a tick: untick a line and that stretch stays. What is cut is the run plus most of the pause on either side, so what remains sounds like one ordinary pause; the two sides are joined with an 8 ms fade.
+
+The scan runs once per phrase while the dialog is open (about a hundredth of real time) and is remembered, so changing the sensitivity is instant. The planned length under the summary falls as fillers are found.
+
+### Transcript and subtitles
+
+**Transcribe the speech and add subtitles** sends the original audio (16 kHz mono, half a second of silence between phrases) to the local server, which runs whisper on it and returns every word with its time. Three outputs can be ticked:
+
+- **subtitles drawn into the video**: cues of up to two lines of 42 characters, on screen between one and six seconds, broken at sentence ends, commas and pauses, drawn in white on a soft dark box at the bottom of each frame by the browser's encoder (so they survive any container and any server stage);
+- **subtitle files next to the video**: `lecture.srt` and `lecture.vtt` written into the same folder (inside the folder for HLS and DASH) and remembered with the export in the **Exports** list, so deleting the video deletes them too; for *Save in browser* they are offered as downloads;
+- **the transcript as a text file**: `lecture.txt`, one paragraph per stretch of speech with the time it starts at. The transcript is also shown under the result.
+
+The words are transcribed from the original recording and carried onto the final timeline afterwards: a word inside a cut filler disappears from the subtitles too, and the times follow the speed. **Language** tells the recogniser what to expect, or *Detect automatically*.
+
+**What it needs.** The server looks for whisper on the PATH at start-up, in this order: `whisper-cli` (whisper.cpp, the fastest), `whisper-cpp`, then `whisper` (the Python openai-whisper). The capabilities line in the export dialog says which it found, and the system check prints it as `Speech`. Nothing is bundled and nothing is downloaded by One Take itself:
+
+| Engine | Install | Model |
+| --- | --- | --- |
+| whisper.cpp | `brew install whisper-cpp` | a `ggml-*.bin` file in `~/.one-take/models` (or `--whisper-model /path/to/ggml-base.en.bin`); `ggml-base.en.bin` is preferred when several are there |
+| openai-whisper | `brew install openai-whisper` | `base.en` by default (`--whisper-model small` to change); whisper downloads it into `~/.cache/whisper` the first time it runs, about 140 MB, and the progress view says so |
+
+Pass `--whisper /path/to/program` to use a particular one. Transcription runs on the CPU at roughly five to twenty times real time depending on the engine and the machine (openai-whisper's `base.en` ran at six times real time on an M2 Max), so an hour of lecture takes a few minutes; the progress view shows it as its own step, *Transcribe on the server*, with the recogniser's own percentage. Everything stays on the machine: the server writes the audio to a temporary file in its data folder, runs the recogniser on it, and deletes it.
+
+This is the one place where One Take leans on a trained model, and it is yours to install or not: without whisper the switch is greyed out and everything else works as before.
+
 ## How an export works
 
 ### Stage 1: the browser encodes
 
-The browser renders the timeline with WebCodecs through [mediabunny](https://github.com/Vanilagy/mediabunny), faster than real time:
+First the phrases are prepared when the **Enhance** section asks for it: fillers cut, volume evened, pace changed (*Prepare the audio* in the progress view), and the transcript is made (*Transcribe on the server*). Then the browser renders the timeline with WebCodecs through [mediabunny](https://github.com/Vanilagy/mediabunny), faster than real time:
 
-1. Slides are drawn on a canvas at the chosen size and frame rate. Up to eight slide bitmaps are cached so going back and forth is cheap.
+1. Slides are drawn on a canvas at the chosen size and frame rate, with the subtitle of the moment on top when subtitles are drawn in. Up to eight slide bitmaps are cached so going back and forth is cheap.
 2. Audio is joined with short fades, resampled to 48 kHz, and fed to the encoder in 100 ms chunks.
 3. The muxer writes the container as positioned 4 MB chunks to wherever the file is going: the server, a file on disk, or memory.
 4. Every encoded frame and every audio chunk awaits the encoder's queue, so memory stays flat however long the lecture is.
@@ -525,7 +574,9 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--host`              | `ONE_TAKE_HOST`         | `127.0.0.1`            | Address to listen on.                                                      |
 | `--port`, `-p`        | `ONE_TAKE_PORT`         | `4317`                 | Port.                                                                      |
 | `--dir`, `-d`         | `ONE_TAKE_DIR`          | `~/Movies/One Take`    | Suggested output folder. Created on start.                                 |
-| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`).      |
+| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), its temporary files and whisper.cpp models (`models/`). |
+| `--whisper`           | `ONE_TAKE_WHISPER`      | found on `PATH`        | The whisper program for transcripts: `whisper-cli` (whisper.cpp) or `whisper` (openai-whisper).         |
+| `--whisper-model`     | `ONE_TAKE_WHISPER_MODEL` | `base.en` / first `ggml-*.bin` found | A model name for openai-whisper, a `ggml-*.bin` file for whisper.cpp.                    |
 | `--ffmpeg`            | `FFMPEG_PATH`           | found on `PATH`        | Path to the ffmpeg binary.                                                 |
 | `--ffprobe`           | `FFPROBE_PATH`          | found on `PATH`        | Path to ffprobe (reported in capabilities; used by the e2e test).          |
 | `--static`            | `ONE_TAKE_STATIC`       | `packages/client/dist` | Folder with the built client.                                              |
@@ -549,7 +600,9 @@ File names are sanitised: path separators and characters that are illegal on Win
 
 Jobs live in memory. The last 50 finished jobs stay in the job list; a server restart forgets in-flight uploads, and the client tells you to export again.
 
-Finished exports are also written to `exports.json` in the data folder (`~/.one-take` by default; `--data-dir` to change it): path, size, format, duration, codecs and the ffmpeg encoder that made each one. That file feeds the **Exports** list in the app and survives restarts; the videos themselves stay where they were saved. Deleting from the list removes the file (or the HLS/DASH folder, provided it still holds nothing but the export) and the entry; an entry whose file has gone can be dropped on its own. The file is written whole and renamed into place, and a damaged one is set aside rather than stopping the server.
+Subtitle and transcript files asked for in the export dialog are written next to the result with its name (`lecture (2).srt` for `lecture (2).mp4`; inside the folder for HLS and DASH) once it is done.
+
+Finished exports are also written to `exports.json` in the data folder (`~/.one-take` by default; `--data-dir` to change it): path, size, format, duration, codecs, the ffmpeg encoder that made each one, and its subtitle files. That file feeds the **Exports** list in the app and survives restarts; the videos themselves stay where they were saved. Deleting from the list removes the file (or the HLS/DASH folder, provided it still holds nothing but the export) and the entry; an entry whose file has gone can be dropped on its own. The file is written whole and renamed into place, and a damaged one is set aside rather than stopping the server.
 
 ### Security
 
@@ -606,7 +659,11 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | `GET`    | `/api/library/:id/file`       | The video itself, with `Range` support, for the in-app player. `409 not_a_file` for HLS and DASH folders. |
 | `POST`   | `/api/library/:id/reveal`     | Opens the file manager at the export.                                                            |
 | `POST`   | `/api/library/:id/open`       | Opens the export with the default application (the video player, or the folder).                 |
-| `DELETE` | `/api/library/:id`            | Deletes the file or export folder and forgets the record; `?files=0` only forgets it. Returns `{ record, deleted }`. |
+| `DELETE` | `/api/library/:id`            | Deletes the file or export folder (and its subtitle files) and forgets the record; `?files=0` only forgets it. Returns `{ record, deleted }`. |
+| `POST`   | `/api/transcribe?language=en&duration=5400` | 16 kHz mono WAV as `application/octet-stream`; answers `201` with a running transcription job. `language` is a code or `auto`. |
+| `GET`    | `/api/transcribe/:id`         | The job: `state`, `progress` (0..1), `message`, and when done `words` (`[{ text, start, end }]`, seconds into the audio sent) and `language`. |
+| `GET`    | `/api/transcribe/:id/events`  | Server-sent events with the job as it changes.                                                   |
+| `DELETE` | `/api/transcribe/:id`         | Cancels it.                                                                                      |
 
 ### Export job lifecycle
 
@@ -646,7 +703,7 @@ While `uploading`, the progress stage is `upload` and the percent is bytes recei
 }
 ```
 
-`processing` is `null` when the server should store the upload as is. For a re-encode, `video` is `{ "mode": "encode", "codec": "h264", "crf": 23, "preset": "medium", "tune": "stillimage", "fps": null, "height": null, "maxBitrateKbps": null, "keyFrameIntervalSec": 4, "hardware": false }` and `audio` is `{ "mode": "encode", "codec": "aac", "bitrateKbps": 96 }`. `ladder` is a list of `{ name, height, videoBitrateKbps, audioBitrateKbps }` for adaptive output.
+`sidecars` is optional: `[{ "extension": "srt" | "vtt" | "txt", "content": "…" }]`, each written next to the result when the job is done and listed in the job's `sidecars`. `processing` is `null` when the server should store the upload as is. For a re-encode, `video` is `{ "mode": "encode", "codec": "h264", "crf": 23, "preset": "medium", "tune": "stillimage", "fps": null, "height": null, "maxBitrateKbps": null, "keyFrameIntervalSec": 4, "hardware": false }` and `audio` is `{ "mode": "encode", "codec": "aac", "bitrateKbps": 96 }`. `ladder` is a list of `{ name, height, videoBitrateKbps, audioBitrateKbps }` for adaptive output.
 
 Before the job is created the server checks that the folder is writable, that ffmpeg exists when `processing` is set, and that the free space covers `estimatedBytes` (doubled when ffmpeg runs).
 
@@ -720,6 +777,8 @@ Every error is `{ "error": { "code", "message", "details"? } }`.
 | 403    | `forbidden_origin`        | A non-GET request came from a non-loopback origin.                    |
 | 404    | `job_not_found`           | Unknown job, usually because the server restarted.                    |
 | 404    | `export_not_found`        | The export is not in the library (already deleted or forgotten).      |
+| 404    | `transcription_not_found` | Unknown transcription job, usually because the server restarted.      |
+| 400    | `transcription_unavailable` | No whisper on the server, or whisper.cpp without a model.           |
 | 404    | `not_found`               | No such route.                                                        |
 | 409    | `not_uploading`           | Data or finish arrived for a job that is no longer uploading.         |
 | 409    | `no_output`               | Reveal was asked for a job that has no result yet.                    |
@@ -758,11 +817,12 @@ one-take/
     │       ├── doctor.ts         `npm run doctor` / `npm run bench`: system check and encoder race without the server
     │       ├── config.ts         flags and environment variables
     │       ├── app.ts            app factory: loopback checks, error handler, static client, routes
-    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete)
+    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete), transcribe (WAV in, words out)
     │       ├── services/
     │       │   ├── jobs.ts       JobManager: positioned writes, finish, process, cancel, cleanup
     │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs(), progress parsing, runFfmpeg()
     │       │   ├── library.ts    ExportLibrary: finished exports in exports.json, read back with what the disk says now, deleted safely
+│       │   ├── transcribe.ts detectTranscription() (whisper-cli or openai-whisper on the PATH), TranscriptionManager (runs it, parses its progress and JSON)
 │       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts, the "only our files" folder check
     │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder self-tests, benchmarkEncoders()
     │       │   ├── load.ts       LoadMonitor: live CPU and memory for /api/system/load, ffmpeg process sampling
@@ -774,10 +834,10 @@ one-take/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
     │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback (seekable), take recording for the editor
-    │       ├── core/             voice.ts (the voice detector: floor, pitch repeat, steadiness), denoise.ts (the noise filter), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: phrases from scores and levels), silence.ts (removing pauses after the fact), Recorder (auto / press to speak), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── core/             voice.ts (the voice detector: floor, pitch repeat, steadiness), denoise.ts (the noise filter), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: phrases from scores and levels), silence.ts (removing pauses after the fact), Recorder (auto / press to speak), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb)
-    │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
+    │       ├── export/           capabilities, prepare (fillers cut, volume, speed, the audio for the recogniser, word times onto the final timeline), encoder (mediabunny, subtitles drawn in), sinks (server / file / memory), runner (prepare, transcribe, encode, finish), real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
     │       ├── ui/               layout, editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
@@ -906,6 +966,12 @@ The export dialog tells you what your browser can encode. Codec availability als
 **The export runs on the CPU although this machine has a hardware encoder.** Open the export dialog and look under **This computer**: **Use the hardware encoder** must be ticked (it is, unless it was unticked once; the choice is remembered per browser), and the line under it lists the encoders found in the browser and in ffmpeg. On an Apple-silicon Mac that line may add that the CPU encoder measured faster on slides; that is information, not a decision. The *Smallest file* mode keeps ffmpeg on the software encoders by design.
 
 **Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Untick **Use the hardware encoder** or pick a smaller size.
+
+**The transcript switch is greyed out.** The server found no whisper. Install one (`brew install openai-whisper`, or `brew install whisper-cpp` plus a `ggml-*.bin` model in `~/.one-take/models`), restart the server, and reopen the dialog. The note under the switch says what was found and, for openai-whisper, that the first run downloads the model.
+
+**A filler the list found is a real word, or a real "um" was missed.** The detector works from the sound's shape, not from a vocabulary, so it will sometimes mistake a held, isolated vowel ("oh…", "so…") for a hesitation, and miss a filler that runs straight into the next word. Untick the line to keep a stretch, or pick a lower sensitivity; pick *Catch more* and go through the list to find the rest. A hesitation with a pause on both sides is the one it is surest of.
+
+**The faster export sounds choppy.** Speeds above 2× stretch what the time-stretch can hide; keep to 2× or below for speech. Pauses are not shortened by the speed, so a lecture with long pauses gains less than the figure suggests: use **Remove pauses** in the editor first.
 
 **A video is missing from Exports.** Only exports saved to a folder through the local server are listed. Files saved with **Save in browser** went wherever the browser put them. A listed video marked *not on disk* was moved or deleted outside the app; **Remove from list** drops the entry.
 

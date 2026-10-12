@@ -9,6 +9,7 @@ import { PptxConverter, presentationSupport, type ConverterService } from '../sr
 import { JobManager } from '../src/services/jobs.js';
 import { ExportLibrary } from '../src/services/library.js';
 import { LoadMonitor } from '../src/services/load.js';
+import { TranscriptionManager } from '../src/services/transcribe.js';
 
 let tmp: string;
 let staticDir: string;
@@ -42,11 +43,14 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       selfTest: false,
       benchmark: false,
       rendererMemoryMb: null,
+      whisperPath: null,
+      whisperModel: null,
     },
     jobs: new JobManager({ ffmpeg: null, library }),
     converter,
     load: new LoadMonitor(),
     library,
+    transcription: new TranscriptionManager({ info: null, dataDir: path.join(tmp, 'data') }),
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
@@ -58,6 +62,7 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       shortcuts: [],
       presentations: converter.support(),
       system: null,
+      transcription: null,
     }),
   });
 }
@@ -281,6 +286,10 @@ describe('app', () => {
           estimatedBytes: 10,
         },
         processing: null,
+        sidecars: [
+          { extension: 'srt', content: '1\n00:00:00,000 --> 00:00:01,000\nhello\n' },
+          { extension: 'txt', content: '[0:00] hello world' },
+        ],
       },
     });
     expect(create.statusCode).toBe(201);
@@ -314,14 +323,25 @@ describe('app', () => {
       await new Promise((r) => setTimeout(r, 50));
     }
     expect(await fs.readFile(path.join(tmp, 'api test.mp4'), 'utf8')).toBe('hello world');
+    // the subtitles and the transcript sit next to it, under its name
+    expect(await fs.readFile(path.join(tmp, 'api test.srt'), 'utf8')).toContain('hello');
+    expect(await fs.readFile(path.join(tmp, 'api test.txt'), 'utf8')).toBe('[0:00] hello world');
+    const done = (
+      await app.inject({ method: 'GET', url: `/api/exports/${id}`, headers: { host: 'localhost' } })
+    ).json<{ sidecars: string[] }>();
+    expect(done.sidecars.map((p) => path.basename(p))).toEqual(['api test.srt', 'api test.txt']);
     const list = await app.inject({ method: 'GET', url: '/api/exports', headers: { host: 'localhost' } });
     expect(list.json<{ id: string }[]>().map((j) => j.id)).toContain(id);
 
     // the finished export is in the library, with its file, and can be streamed, revealed and deleted
     const library = await app.inject({ method: 'GET', url: '/api/library', headers: { host: 'localhost' } });
     expect(library.statusCode).toBe(200);
-    const record = library.json<{ id: string; fileName: string; exists: boolean; bytes: number }[]>()[0];
+    const record =
+      library.json<
+        { id: string; fileName: string; exists: boolean; bytes: number; sidecars: string[] }[]
+      >()[0];
     expect(record).toMatchObject({ id, fileName: 'api test.mp4', exists: true, bytes: 11 });
+    expect(record?.sidecars.length).toBe(2);
     const whole = await app.inject({
       method: 'GET',
       url: `/api/library/${id}/file`,
@@ -360,6 +380,8 @@ describe('app', () => {
     expect(removed.statusCode).toBe(200);
     expect(removed.json()).toMatchObject({ deleted: true, record: { id } });
     await expect(fs.access(path.join(tmp, 'api test.mp4'))).rejects.toThrow();
+    await expect(fs.access(path.join(tmp, 'api test.srt'))).rejects.toThrow();
+    await expect(fs.access(path.join(tmp, 'api test.txt'))).rejects.toThrow();
     const empty = await app.inject({ method: 'GET', url: '/api/library', headers: { host: 'localhost' } });
     expect(empty.json()).toEqual([]);
     const gone = await app.inject({

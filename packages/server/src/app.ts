@@ -10,10 +10,12 @@ import { registerConvertRoutes } from './routes/convert.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
 import { registerLibraryRoutes } from './routes/library.js';
+import { registerTranscribeRoutes } from './routes/transcribe.js';
 import { type ConverterService } from './services/convert.js';
 import { type JobManager } from './services/jobs.js';
 import { type ExportLibrary } from './services/library.js';
 import { type LoadMonitor } from './services/load.js';
+import { type TranscriptionManager } from './services/transcribe.js';
 import { ApiError, errorMessage } from './util/errors.js';
 
 export interface AppDependencies {
@@ -25,6 +27,8 @@ export interface AppDependencies {
   load: LoadMonitor;
   /** The exports the server finished, remembered across restarts. */
   library: ExportLibrary;
+  /** Speech to text through the whisper the machine has, if any. */
+  transcription: TranscriptionManager;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
@@ -109,6 +113,7 @@ export function buildApp(deps: AppDependencies): FastifyInstance {
   registerFsRoutes(app);
   registerExportRoutes(app, deps);
   registerLibraryRoutes(app, deps);
+  registerTranscribeRoutes(app, deps);
   registerConvertRoutes(app, deps);
 
   if (config.staticDir) {

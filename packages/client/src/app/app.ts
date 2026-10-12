@@ -2,6 +2,7 @@
 import {
   defaultExportRequest,
   NO_HARDWARE,
+  NO_SOFTWARE,
   normalizeExportRequest,
   planExport,
   stripExtension,
@@ -41,6 +42,7 @@ import { FolderPicker } from '../ui/folder-picker.js';
 import { setButtonIcon } from '../ui/icon.js';
 import { installKeyboard } from '../ui/keyboard.js';
 import { buildLayout, type LayoutRefs } from '../ui/layout.js';
+import { Library } from '../ui/library.js';
 import { LevelMeter } from '../ui/meter.js';
 import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
@@ -64,6 +66,8 @@ export class App {
   private readonly film: Filmstrip;
   private readonly list: TimelineList;
   private readonly exportDialog: ExportDialog;
+  /** The exported videos: list, play, show in folder, delete. */
+  private readonly library: Library;
   private readonly editor: Editor;
   private readonly folderPicker: FolderPicker;
   private readonly welcome: Welcome;
@@ -91,6 +95,7 @@ export class App {
     audioCodecs: [],
     fileSystemAccess: false,
     hardware: { ...NO_HARDWARE },
+    software: { ...NO_SOFTWARE },
     benchmark: null,
     hardwareConcurrency: null,
     deviceMemoryGb: null,
@@ -149,6 +154,11 @@ export class App {
         this.exportRequest = request;
         this.saveMeta();
       },
+      hardwarePreference: () => this.prefs.hardwareEncoding,
+      onHardwarePreferenceChange: (on) => {
+        this.prefs = savePrefs({ hardwareEncoding: on });
+      },
+      onOpenLibrary: () => this.library.open(),
       onExportingChange: (exporting) => {
         this.store.state.exporting = exporting;
         this.syncPaused();
@@ -158,6 +168,12 @@ export class App {
         if (this.store.state.previewing) this.stopPreview();
         this.recorder?.end();
       },
+    });
+    this.library = new Library(document.body, {
+      api: this.api,
+      serverCaps: () => this.serverCaps,
+      confirm: this.confirm,
+      toast: this.toast,
     });
     this.editor = new Editor(document.body, {
       slides: () => this.store.state.slides,
@@ -283,6 +299,7 @@ export class App {
       r.fileInput.value = '';
     };
     r.btnHelp.onclick = () => this.openWelcome();
+    r.btnLibrary.onclick = () => this.library.open();
     r.btnTheme.onclick = () => {
       this.prefs = savePrefs({ theme: this.prefs.theme === 'dark' ? 'light' : 'dark' });
       this.applyTheme(this.prefs.theme);
@@ -407,6 +424,7 @@ export class App {
       this.folderPicker.isOpen ||
       this.welcome.isOpen ||
       this.editor.isOpen ||
+      this.library.isOpen ||
       this.confirm.isOpen
     );
   }
@@ -1244,6 +1262,8 @@ export class App {
       closeSlides: () => this.closeSlides(),
       openExport: () => this.openExport(),
       exportDialog: this.exportDialog,
+      openLibrary: () => this.library.open(),
+      library: this.library,
       openEditor: () => this.openEditor(),
       editor: this.editor,
       serverCaps: () => this.serverCaps,
@@ -1261,7 +1281,9 @@ export class App {
     overrides: Partial<ExportRequest>,
     inMemory: boolean,
   ): Promise<Record<string, unknown>> {
-    const base = this.exportRequest ?? defaultExportRequest(this.serverCaps?.defaultDirectory ?? null);
+    const stored = this.exportRequest ?? defaultExportRequest(this.serverCaps?.defaultDirectory ?? null);
+    // the hardware switch is a browser preference, applied the same way the dialog applies it on opening
+    const base = { ...stored, performance: { ...stored.performance, hardware: this.prefs.hardwareEncoding } };
     const request: ExportRequest = structuredClone(
       normalizeExportRequest({ ...base, ...overrides }, this.serverCaps?.defaultDirectory ?? null),
     );

@@ -8,7 +8,9 @@ import path from 'node:path';
 import { type Readable } from 'node:stream';
 
 import {
+  browserCodecForServerCodec,
   CONTAINER_INFO,
+  evenDimension,
   sanitizeFileName,
   type CreateExportJobRequest,
   type ExportJob,
@@ -26,6 +28,7 @@ import { Semaphore } from '../util/semaphore.js';
 import { buildFfmpegArgs, FfmpegError, formatCommand, runFfmpeg } from './ffmpeg.js';
 import {
   directorySize,
+  foreignFileIn,
   freeBytes,
   isWritableDirectory,
   normalizeDirectory,
@@ -33,6 +36,7 @@ import {
   removeQuietly,
   uniquePath,
 } from './filesystem.js';
+import { type ExportLibrary } from './library.js';
 
 interface InternalJob {
   job: ExportJob;
@@ -44,6 +48,8 @@ interface InternalJob {
   listeners: Set<(event: JobEvent) => void>;
   /** Serialises chunk writes so positions are honoured even when requests overlap. */
   writeChain: Promise<void>;
+  /** The ffmpeg video encoder the job used, once its command has been built. */
+  encoder: string | null;
 }
 
 export interface JobManagerOptions {
@@ -55,9 +61,10 @@ export interface JobManagerOptions {
   system?: SystemProfile | null;
   /** Reads a process's CPU and memory, for the ffmpeg figures in the progress; null when it cannot. */
   processLoad?: (pid: number) => Promise<ProcessLoad | null>;
+  /** Where finished exports are remembered across restarts; null keeps them in memory only. */
+  library?: ExportLibrary | null;
 }
 
-const GENERATED_EXTENSIONS = new Set(['m3u8', 'mpd', 'ts', 'm4s', 'mp4', 'tmp']);
 /** How often the ffmpeg process is sampled for CPU and memory while it runs. */
 const PROCESS_SAMPLE_MS = 1000;
 
@@ -83,6 +90,7 @@ export class JobManager {
   /** Re-encodes compete for the same cores, so only `maxEncodeJobs` run at once; the rest wait here. */
   private readonly encodeSlots: Semaphore;
   private readonly processLoad: ((pid: number) => Promise<ProcessLoad | null>) | null;
+  private readonly library: ExportLibrary | null;
 
   constructor(options: JobManagerOptions) {
     this.ffmpeg = options.ffmpeg;
@@ -90,6 +98,7 @@ export class JobManager {
     this.log = options.log ?? (() => undefined);
     this.encodeSlots = new Semaphore(Math.max(1, options.system?.maxEncodeJobs ?? 1));
     this.processLoad = options.processLoad ?? null;
+    this.library = options.library ?? null;
   }
 
   /** How many re-encodes may run at the same time. */
@@ -184,6 +193,7 @@ export class JobManager {
       abort: new AbortController(),
       listeners: new Set(),
       writeChain: Promise.resolve(),
+      encoder: null,
     });
     this.trim();
     this.log(`job ${id} created → ${finalPath}`);
@@ -306,6 +316,7 @@ export class JobManager {
           this.ffmpeg,
         );
         job.command = formatCommand(this.ffmpeg.path, plan.args);
+        internal.encoder = plan.videoEncoder;
         const reencode = spec.video.mode === 'encode';
         if (reencode && !this.encodeSlots.tryAcquire()) {
           job.progress = progressOf({
@@ -384,6 +395,7 @@ export class JobManager {
       job.state = 'done';
       job.progress = progressOf({ stage: 'done', percent: 100, message: 'Saved' });
       job.updatedAt = new Date().toISOString();
+      await this.remember(internal);
       this.emit(internal);
       this.log(`job ${job.id} done → ${internal.finalPath}`);
     } catch (error) {
@@ -405,6 +417,35 @@ export class JobManager {
     this.log(`job ${job.id} failed: ${message}`);
   }
 
+  /** Writes the finished export into the library, so it is still listed after a restart. */
+  private async remember(internal: InternalJob): Promise<void> {
+    const { job } = internal;
+    const output = job.outputs[0];
+    if (!this.library || !output) return;
+    const spec = job.processing;
+    const encode = spec?.video.mode === 'encode' ? spec.video : null;
+    const height = encode?.height ?? job.upload.height;
+    const width = evenDimension(Math.round((job.upload.width * height) / job.upload.height));
+    await this.library.add({
+      id: job.id,
+      createdAt: job.updatedAt,
+      path: output.path,
+      directory: job.directory,
+      fileName: path.basename(output.path),
+      kind: output.kind,
+      container: spec?.container ?? job.upload.container,
+      bytes: output.bytes,
+      durationSec: job.upload.durationSec,
+      width,
+      height,
+      fps: encode?.fps ?? job.upload.fps,
+      videoCodec: encode ? browserCodecForServerCodec(encode.codec) : job.upload.videoCodec,
+      audioCodec: spec?.audio.mode === 'encode' ? spec.audio.codec : job.upload.audioCodec,
+      encoder: internal.encoder,
+      command: job.command,
+    });
+  }
+
   private async describeOutput(finalPath: string): Promise<JobOutput[]> {
     const st = await fs.stat(finalPath);
     if (st.isDirectory())
@@ -416,20 +457,13 @@ export class JobManager {
   private async assertReplaceableFolder(dir: string): Promise<void> {
     const st = await fs.stat(dir);
     if (!st.isDirectory()) return;
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        await this.assertReplaceableFolder(path.join(dir, e.name));
-        continue;
-      }
-      const ext = path.extname(e.name).slice(1).toLowerCase();
-      if (!GENERATED_EXTENSIONS.has(ext)) {
-        throw new ApiError(
-          400,
-          'folder_not_empty',
-          `${dir} contains files that are not a One Take export (${e.name}); refusing to replace it.`,
-        );
-      }
+    const foreign = await foreignFileIn(dir);
+    if (foreign !== null) {
+      throw new ApiError(
+        400,
+        'folder_not_empty',
+        `${dir} contains files that are not a One Take export (${foreign}); refusing to replace it.`,
+      );
     }
   }
 

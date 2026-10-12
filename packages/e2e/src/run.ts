@@ -338,15 +338,9 @@ check(
   `browser raced its H.264 encoders (GPU ${bench?.hardwareFps ?? 'n/a'} fps, software ${bench?.softwareFps ?? 'n/a'} fps)`,
 );
 const browserHw = (browserCaps.hardware.avc ?? 0) >= 720;
-const softwareWins =
-  bench !== null &&
-  bench.softwareFps !== null &&
-  (bench.hardwareFps === null || bench.softwareFps > bench.hardwareFps * 1.15);
-const expectedAcceleration = softwareWins
-  ? 'prefer-software'
-  : browserHw
-    ? 'prefer-hardware'
-    : 'no-preference';
+// The hardware switch is on by default: the dedicated encoder whenever the browser has one, whatever
+// the start-up race said (the race is shown in the dialog as information).
+const expectedAcceleration = browserHw ? 'prefer-hardware' : 'no-preference';
 
 interface ServerResult {
   kind: 'server';
@@ -389,7 +383,7 @@ check(mp4.job.state === 'done', `mp4 export done${mp4.job.error ? ` (${mp4.job.e
 check(
   mp4.plan.browser.hardwareAcceleration === expectedAcceleration &&
     mp4.encoder?.hardwareAcceleration === expectedAcceleration,
-  `fastest mode used the measured winner (${mp4.encoder?.hardwareAcceleration ?? 'none'}, expected ${expectedAcceleration})`,
+  `the hardware switch, on by default, chose ${mp4.encoder?.hardwareAcceleration ?? 'none'} (expected ${expectedAcceleration})`,
 );
 {
   const file = mp4.job.outputs[0]?.path ?? '';
@@ -451,8 +445,8 @@ const dash = await exportServer({
     outputFps: 10,
     maxBitrateKbps: 800,
     height: 360,
-    hardware: false,
   },
+  performance: { mode: 'fastest', hardware: false },
   streaming: { segmentSeconds: 2, hlsSegmentType: 'fmp4', ladder: false },
 });
 check(dash.job.state === 'done', `dash export done${dash.job.error ? ` (${dash.job.error})` : ''}`);
@@ -526,10 +520,11 @@ const hevc = await exportServer({
     outputFps: 5,
     maxBitrateKbps: null,
     height: null,
-    hardware: false,
   },
+  performance: { mode: 'fastest', hardware: false },
 });
 check(hevc.job.state === 'done', `hevc export done${hevc.job.error ? ` (${hevc.job.error})` : ''}`);
+check((hevc.job.command ?? '').includes('libx265'), 'with the switch off the server compresses with libx265');
 {
   const p = probe(hevc.job.outputs[0]?.path ?? '');
   check(
@@ -541,14 +536,14 @@ check(hevc.job.state === 'done', `hevc export done${hevc.job.error ? ` (${hevc.j
   console.log(`sizes: mp4 ${big} bytes, compressed hevc ${small} bytes`);
 }
 
-// e2. compressed MP4 through the server's hardware encoder, as the fastest mode picks it
+// e2. compressed MP4 through the server's hardware encoder, which the switch (on by default) picks
 if (serverHw) {
   const gpu = await exportServer({
     fileName: 'gpu',
     container: 'mp4',
     resolution: { preset: '720p' },
     fps: 10,
-    performance: { mode: 'fastest' },
+    performance: { mode: 'fastest', hardware: true },
     compression: {
       enabled: true,
       codec: 'h264',
@@ -558,7 +553,6 @@ if (serverHw) {
       outputFps: null,
       maxBitrateKbps: null,
       height: null,
-      hardware: true,
     },
   });
   console.log(`gpu export: ${speed(gpu)}`);
@@ -602,6 +596,122 @@ check(
   'no temporary files left behind',
 );
 console.log('exports folder:', fs.readdirSync(exportsDir).join(', '));
+
+// 5b. the exports library: every video the server saved is listed, plays in the app, and can be
+// deleted from the app; a file deleted outside the app is marked and can be dropped from the list
+page.step('the exports library');
+interface LibraryRecord {
+  id: string;
+  fileName: string;
+  kind: string;
+  container: string;
+  exists: boolean;
+  bytes: number;
+  encoder: string | null;
+  path: string;
+}
+const libraryUrl = `http://127.0.0.1:${PORT}/api/library`;
+const library = (await (await fetch(libraryUrl)).json()) as LibraryRecord[];
+console.log(
+  'library:',
+  library.map((r) => `${r.fileName} (${r.container}${r.encoder ? `, ${r.encoder}` : ''})`).join(', '),
+);
+const expectedNames = ['lecture.mp4', 'stream', 'adaptive', 'small.mp4', 'lecture (2).mp4'];
+check(
+  expectedNames.every((n) => library.some((r) => r.fileName === n && r.exists)),
+  `the library lists the server exports (${library.length} records)`,
+);
+check(library[0]?.fileName === 'lecture (2).mp4', 'the library is newest first');
+check(
+  library.find((r) => r.fileName === 'adaptive')?.encoder === 'libx264' &&
+    library.find((r) => r.fileName === 'lecture.mp4')?.encoder === null,
+  'the library names the ffmpeg encoder where one re-encoded, and none for a stream copy',
+);
+check(!library.some((r) => r.fileName === 'browser.mp4'), 'exports saved in the browser are not listed');
+const libraryFile = path.join(OUT, 'data', 'exports.json');
+check(
+  fs.existsSync(libraryFile) &&
+    !fs.existsSync(path.join(process.env.HOME ?? '/nonexistent', '.one-take', `exports.json.${PORT}`)),
+  `the list is kept in the server's data folder (${path.relative(OUT, libraryFile)})`,
+);
+await ev('document.getElementById("btnLibrary").click()');
+await sleep(400);
+check(
+  await ev<boolean>('document.getElementById("libraryModal").classList.contains("on")'),
+  'the Exports button opens the list',
+);
+check(await page.waitFor('document.querySelectorAll("#libraryList .rec").length > 0'), 'the list fills');
+const rows = await ev<string[]>(
+  '[...document.querySelectorAll("#libraryList .rec .name")].map((e) => e.textContent)',
+);
+check(
+  rows.length === library.length && rows[0] === library[0]?.fileName,
+  `the list shows ${rows.length} exports, newest first (${rows.slice(0, 3).join(', ')}, …)`,
+);
+const summary = await ev<string>('document.getElementById("librarySummary").textContent ?? ""');
+check(/\d+ exports? · .+ on disk/.test(summary), `the summary counts them (${summary})`);
+const mp4Id = library.find((r) => r.fileName === 'lecture.mp4')?.id ?? '';
+const rowButton = (id: string, which: string) =>
+  `document.querySelector('#libraryList .rec[data-id="${id}"] .actions ${which}')`;
+await ev(`${rowButton(mp4Id, 'button')}.click()`);
+const canPlayH264 = await ev<boolean>(
+  `document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') !== ''`,
+);
+if (canPlayH264) {
+  const loaded = await page.waitFor(
+    `(() => { const v = document.querySelector('#libraryList .rec[data-id="${mp4Id}"] video'); return v !== null && v.readyState >= 1 && v.duration > 0; })()`,
+    100,
+  );
+  check(loaded, 'Play streams the file from the server into a video element');
+  const dur = await ev<number>(
+    `document.querySelector('#libraryList .rec[data-id="${mp4Id}"] video')?.duration ?? 0`,
+  );
+  check(Math.abs(dur - (tl.total + 0.25)) < 0.5, `the player knows the duration (${dur.toFixed(2)} s)`);
+} else {
+  console.log('this Chrome cannot play H.264; the in-page player is not checked');
+}
+await page.screenshot('exports.png');
+const victim = library.find((r) => r.fileName === 'lecture (2).mp4');
+const libraryConfirmOpen = () => ev<boolean>('document.getElementById("confirm").classList.contains("on")');
+if (victim) {
+  await ev(`${rowButton(victim.id, 'button.del')}.click()`);
+  await sleep(150);
+  check(await libraryConfirmOpen(), 'Delete asks first');
+  await page.screenshot('exports-delete.png');
+  await ev('document.getElementById("confirmYes").click()');
+  const removed = await page.waitFor(
+    `document.querySelector('#libraryList .rec[data-id="${victim.id}"]') === null`,
+  );
+  check(
+    removed && !fs.existsSync(victim.path),
+    'confirming deletes the file from disk and the row from the list',
+  );
+  const after = (await (await fetch(libraryUrl)).json()) as LibraryRecord[];
+  check(!after.some((r) => r.id === victim.id), 'the server forgot it too');
+}
+const outside = library.find((r) => r.fileName === 'small.mp4');
+if (outside) {
+  fs.rmSync(outside.path);
+  await ev('document.getElementById("btnLibraryRefresh").click()');
+  const marked = await page.waitFor(
+    `document.querySelector('#libraryList .rec[data-id="${outside.id}"].missing') !== null`,
+  );
+  const label = await ev<string>(`${rowButton(outside.id, 'button.del')}?.textContent ?? ''`);
+  check(
+    marked && label.includes('Remove from list'),
+    'a file deleted outside One Take is marked as not on disk',
+  );
+  await ev(`${rowButton(outside.id, 'button.del')}.click()`);
+  const dropped = await page.waitFor(
+    `document.querySelector('#libraryList .rec[data-id="${outside.id}"]') === null`,
+  );
+  check(dropped && !(await libraryConfirmOpen()), 'Remove from list drops it without asking');
+}
+await ev('document.getElementById("btnLibraryClose").click()');
+check(
+  !(await ev<boolean>('document.getElementById("libraryModal").classList.contains("on")')),
+  'Close closes the list',
+);
 
 // 6. reload and resume
 page.step('reloading and resuming');
@@ -799,24 +909,25 @@ check(
   !(await ev<boolean>('document.querySelector(".modal.picker").classList.contains("on")')),
   'Cancel closes the picker',
 );
-// switching to "smallest file" turns the server GPU encoder off and picks a slow preset
+// switching to "smallest file" picks a slow preset and leaves the hardware switch alone
 await ev('document.querySelector("#perfModes input[value=quality]").click()');
 await sleep(100);
 const qualityReq = await ev<{
-  performance: { mode: string };
-  compression: { hardware: boolean; preset: string };
+  performance: { mode: string; hardware: boolean };
+  compression: { preset: string };
 }>('JSON.parse(JSON.stringify(__onetake.exportDialog.currentRequest))');
 check(
   qualityReq.performance.mode === 'quality' &&
-    !qualityReq.compression.hardware &&
+    qualityReq.performance.hardware &&
     qualityReq.compression.preset === 'slow',
-  'quality mode switches compression to slow software presets',
+  'quality mode switches compression to a slow preset and keeps the hardware switch on',
 );
 await ev('document.querySelector("#perfModes input[value=fastest]").click()');
 await sleep(100);
-const fastReq = await ev<{ compression: { hardware: boolean; preset: string } }>(
+const fastReq = await ev<{ compression: { preset: string } }>(
   'JSON.parse(JSON.stringify(__onetake.exportDialog.currentRequest))',
 );
+check(fastReq.compression.preset === 'veryfast', 'fastest mode picks the veryfast preset');
 // By now the background encoder race has finished; the dialog re-read the profile when it opened.
 const systemNow = (await (await fetch(`http://127.0.0.1:${PORT}/api/system`)).json()) as SystemProfile;
 console.log(
@@ -826,10 +937,51 @@ check(
   systemNow.ffmpeg?.fastestEncoder !== null && systemNow.ffmpeg?.benchmark !== null,
   'server raced its H.264 encoders after start-up',
 );
-const winnerIsHardware = /_(videotoolbox|nvenc|qsv|vaapi|amf)$/.test(systemNow.ffmpeg?.fastestEncoder ?? '');
+// the hardware switch: on by default, says what it found, and turning it off moves both stages to
+// the CPU and is remembered as a browser preference
+const planText = () => ev<string>('document.querySelector("#exportModal .plan")?.textContent ?? ""');
+const hwNote = await ev<string>('document.getElementById("hwNote")?.textContent ?? ""');
+console.log('hardware note:', hwNote);
 check(
-  fastReq.compression.hardware === winnerIsHardware && fastReq.compression.preset === 'veryfast',
-  `fastest mode picks the measured winner for compression (${systemNow.ffmpeg?.fastestEncoder ?? '?'}, hardware=${winnerIsHardware}) and veryfast`,
+  (await ev<boolean>('document.getElementById("hwSwitch").checked')) &&
+    hwNote.startsWith('Found:') &&
+    (serverHw === null || hwNote.includes(serverHw)),
+  'the hardware switch is on by default and lists the encoders found',
+);
+if (serverHw && systemNow.ffmpeg?.fastestEncoder === 'libx264') {
+  check(
+    hwNote.includes('Measured on this machine'),
+    'the note reports that the CPU encoder measured faster here',
+  );
+}
+check(
+  (await planText()).includes(browserHw ? 'on the hardware encoder' : 'on the CPU'),
+  `the plan says the browser encodes ${browserHw ? 'on the hardware encoder' : 'on the CPU'}`,
+);
+await ev('document.getElementById("hwSwitch").click()');
+await sleep(100);
+const offReq = await ev<{ performance: { hardware: boolean } }>(
+  'JSON.parse(JSON.stringify(__onetake.exportDialog.currentRequest))',
+);
+check(
+  !offReq.performance.hardware &&
+    (await planText()).includes('on the CPU') &&
+    (await ev<boolean>('__onetake.prefs().hardwareEncoding === false')),
+  'unticking the switch moves the browser stage to the CPU and is remembered as a preference',
+);
+await ev(
+  '(() => { const d = __onetake.exportDialog; d.currentRequest.compression.enabled = true; d.refresh(); })()',
+);
+check((await planText()).includes('libx264'), 'with the switch off, ffmpeg compresses with libx264');
+await ev('document.getElementById("hwSwitch").click()');
+await sleep(100);
+check(
+  (await ev<boolean>('__onetake.prefs().hardwareEncoding === true')) &&
+    (serverHw === null || (await planText()).includes(serverHw)),
+  `ticking it again brings the hardware encoder back${serverHw ? ` (${serverHw} for compression)` : ''}`,
+);
+await ev(
+  '(() => { const d = __onetake.exportDialog; d.currentRequest.compression.enabled = false; d.refresh(); })()',
 );
 
 // 8b. an export started from the dialog itself: the settings give way to the exporting view with a

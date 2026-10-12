@@ -97,6 +97,9 @@ export async function startServer(port: number, exportsDir: string): Promise<Chi
       String(port),
       '--dir',
       exportsDir,
+      // the list of finished exports goes next to the test's output, never into the user's own
+      '--data-dir',
+      path.join(path.dirname(exportsDir), 'data'),
       '--log-level',
       'warn',
     ],

@@ -17,16 +17,19 @@ import {
   SERVER_VIDEO_ENCODERS,
   AUDIO_CODEC_INFO,
   isBrowserContainer,
+  serverCodecForBrowserCodec,
   type ServerVideoCodec,
   type VideoCodecId,
 } from './containers.js';
 import {
+  browserCanEncode,
   browserTuning,
   codecPreference,
   DEFAULT_PERFORMANCE,
   PERFORMANCE_MODES,
+  serverUsesHardware,
   type BrowserCapabilities,
-  type PerformanceMode,
+  type PerformanceSettings,
 } from './performance.js';
 import {
   evenDimension,
@@ -48,7 +51,10 @@ export interface BrowserEncodePlan {
   keyFrameIntervalSec: number;
   /** True when the server re-encodes afterwards, so the browser encodes at a high "mezzanine" quality. */
   mezzanine: boolean;
-  /** WebCodecs encoder preference; `prefer-hardware` only when the probe said it works at this size. */
+  /**
+   * WebCodecs encoder preference: `prefer-hardware` when the switch is on and the probe said the GPU
+   * takes this codec at this size, `prefer-software` when the user turned the switch off.
+   */
   hardwareAcceleration: 'prefer-hardware' | 'no-preference' | 'prefer-software';
   latencyMode: 'quality' | 'realtime';
   /** The GPU encoder is expected to do the work (decides the resource map and the warnings). */
@@ -111,17 +117,13 @@ function pickVideoCodec(
   requested: ExportRequest['video']['codec'],
   browser: BrowserCapabilities,
   family: 'mp4family' | 'webm',
-  mode: PerformanceMode,
+  performance: PerformanceSettings,
   height: number,
 ): VideoCodecId | null {
-  if (requested !== 'auto') {
-    return allowed.includes(requested) && browser.videoCodecs.includes(requested) ? requested : null;
-  }
-  return (
-    codecPreference(VIDEO_PREFERENCE[family], mode, browser, height).find(
-      (c) => allowed.includes(c) && browser.videoCodecs.includes(c),
-    ) ?? null
-  );
+  const usable = (c: VideoCodecId) =>
+    allowed.includes(c) && browserCanEncode(browser, c, height, performance);
+  if (requested !== 'auto') return usable(requested) ? requested : null;
+  return codecPreference(VIDEO_PREFERENCE[family], performance, browser, height).find(usable) ?? null;
 }
 
 function pickAudioCodec(
@@ -177,7 +179,7 @@ export function planExport(
   const info = CONTAINER_INFO[request.container];
   const { width, height } = resolveResolution(request.resolution);
   const fps = request.fps;
-  const mode = request.performance.mode;
+  const performance = request.performance;
   const destination = request.destination.kind;
   const ffmpeg = server?.ffmpeg ?? null;
   const serverReady = destination === 'server' && server !== null;
@@ -218,7 +220,7 @@ export function planExport(
 
   // Can the browser produce the final container's codecs directly?
   const family = request.container === 'webm' ? 'webm' : 'mp4family';
-  const directVideo = pickVideoCodec(info.video, request.video.codec, browser, family, mode, height);
+  const directVideo = pickVideoCodec(info.video, request.video.codec, browser, family, performance, height);
   const directAudio = pickAudioCodec(info.audio, request.audio.codec, browser);
   const canDirect = directVideo !== null && directAudio !== null;
 
@@ -228,6 +230,15 @@ export function planExport(
       reason = 'transcoding';
       warnings.push(
         `This browser cannot encode ${info.label} directly, so the server will transcode it with ffmpeg (slower).`,
+      );
+    } else if (
+      request.video.codec !== 'auto' &&
+      !performance.hardware &&
+      browser.videoCodecs.includes(request.video.codec) &&
+      !browser.software[request.video.codec]
+    ) {
+      blockers.push(
+        `${request.video.codec.toUpperCase()} has no software encoder in this browser. Turn the hardware encoder back on, or pick another codec.`,
       );
     } else {
       const want = request.video.codec === 'auto' ? info.video.join('/') : request.video.codec;
@@ -254,7 +265,14 @@ export function planExport(
 
   if (needsFfmpeg && destination === 'server') {
     // Mezzanine: fragmented MP4 with the best codec the browser has; ffmpeg does the rest.
-    const mezzVideo = pickVideoCodec(CONTAINER_INFO.fmp4.video, 'auto', browser, 'mp4family', mode, height);
+    const mezzVideo = pickVideoCodec(
+      CONTAINER_INFO.fmp4.video,
+      'auto',
+      browser,
+      'mp4family',
+      performance,
+      height,
+    );
     const mezzAudio = pickAudioCodec(CONTAINER_INFO.fmp4.audio, 'auto', browser);
     if (mezzVideo === null || mezzAudio === null) {
       blockers.push('This browser has no usable WebCodecs video/audio encoder.');
@@ -286,7 +304,7 @@ export function planExport(
       audioBitrateKbps: reencode ? Math.max(request.audio.bitrateKbps, 128) : request.audio.bitrateKbps,
       keyFrameIntervalSec: keyFrame,
       mezzanine: reencode,
-      ...browserTuning(mode, mezzVideo ?? 'avc', height, browser),
+      ...browserTuning(performance, mezzVideo ?? 'avc', height, browser),
     };
     processing = buildProcessing(request, server, browserPlan, warnings, blockers, reencode);
   } else {
@@ -302,7 +320,7 @@ export function planExport(
       audioBitrateKbps: request.audio.bitrateKbps,
       keyFrameIntervalSec: request.video.keyFrameIntervalSec,
       mezzanine: false,
-      ...browserTuning(mode, directVideo ?? 'avc', height, browser),
+      ...browserTuning(performance, directVideo ?? 'avc', height, browser),
     };
     if (
       destination === 'server' &&
@@ -365,23 +383,24 @@ function buildProcessing(
   if (reencode) {
     const codec: ServerVideoCodec = request.compression.enabled
       ? request.compression.codec
-      : container === 'webm'
-        ? 'vp9'
-        : 'h264';
+      : request.video.codec !== 'auto'
+        ? serverCodecForBrowserCodec(request.video.codec)
+        : container === 'webm'
+          ? 'vp9'
+          : 'h264';
     if (!SERVER_CODEC_CONTAINERS[codec].includes(container)) {
       blockers.push(`${codec.toUpperCase()} cannot be stored in ${info.label}.`);
     }
-    const encoder = pickServerVideoEncoder(server, codec, request.compression.hardware);
+    const hardware = serverUsesHardware(request.performance);
+    const encoder = pickServerVideoEncoder(server, codec, hardware);
     if (encoder === null && server?.ffmpeg) {
       blockers.push(
         `The server's ffmpeg has no ${codec.toUpperCase()} encoder (looked for ${[...SERVER_VIDEO_ENCODERS[codec].software, ...SERVER_VIDEO_ENCODERS[codec].hardware].join(', ')}).`,
       );
-    } else if (
-      encoder !== null &&
-      request.compression.hardware &&
-      !SERVER_VIDEO_ENCODERS[codec].hardware.includes(encoder)
-    ) {
-      warnings.push(`No hardware ${codec.toUpperCase()} encoder found; using ${encoder}.`);
+    } else if (encoder !== null && hardware && !SERVER_VIDEO_ENCODERS[codec].hardware.includes(encoder)) {
+      warnings.push(
+        `The server has no hardware ${codec.toUpperCase()} encoder; ffmpeg uses ${encoder} on the CPU.`,
+      );
     }
     const c = request.compression;
     video = {
@@ -396,7 +415,7 @@ function buildProcessing(
       keyFrameIntervalSec: info.isDirectory
         ? alignKeyFrameInterval(request.video.keyFrameIntervalSec, request.streaming.segmentSeconds)
         : request.video.keyFrameIntervalSec,
-      hardware: c.enabled ? c.hardware : false,
+      hardware,
     };
     const audioCodec: AudioCodecId =
       container === 'webm'
@@ -460,7 +479,6 @@ export function defaultExportRequest(serverDirectory: string | null): ExportRequ
       outputFps: null,
       maxBitrateKbps: null,
       height: null,
-      hardware: false,
     },
     streaming: { segmentSeconds: 4, hlsSegmentType: 'fmp4', ladder: false },
     order: 'recorded',
@@ -469,24 +487,33 @@ export function defaultExportRequest(serverDirectory: string | null): ExportRequ
 }
 
 /**
- * Fills in fields a stored request may lack (projects saved by an older version have no `performance`),
- * so a restored project never crashes the planner.
+ * Fills in fields a stored request may lack (projects saved by an older version have no `performance`,
+ * or no hardware switch in it) and drops fields that no longer exist, so a restored project never
+ * crashes the planner.
  */
 export function normalizeExportRequest(stored: unknown, serverDirectory: string | null): ExportRequest {
   const defaults = defaultExportRequest(serverDirectory);
   if (typeof stored !== 'object' || stored === null) return defaults;
   const s = stored as Partial<ExportRequest>;
   const mode = s.performance?.mode;
+  const hardware = (s.performance as Partial<PerformanceSettings> | undefined)?.hardware;
+  // older projects kept a per-export "hardware encoder" tick under compression; the switch replaced it
+  const { hardware: _legacy, ...compression } = (s.compression ?? {}) as Partial<
+    ExportRequest['compression']
+  > & {
+    hardware?: unknown;
+  };
   return {
     ...defaults,
     ...s,
-    compression: { ...defaults.compression, ...s.compression },
+    compression: { ...defaults.compression, ...compression },
     streaming: { ...defaults.streaming, ...s.streaming },
     performance: {
       mode:
         mode !== undefined && (PERFORMANCE_MODES as readonly string[]).includes(mode)
           ? mode
           : defaults.performance.mode,
+      hardware: typeof hardware === 'boolean' ? hardware : defaults.performance.hardware,
     },
   };
 }

@@ -1016,6 +1016,21 @@ button.x .ico {
   padding-top: var(--spacing-6px);
   border-top: 1px dashed var(--line);
 }
+/* the hardware switch: a checkbox with its line of findings under it, above the modes */
+.export .hw {
+  margin: var(--spacing-8px) 0 var(--spacing-10px);
+  padding: var(--spacing-8px) var(--spacing-10px);
+  border-radius: var(--corner-radius-8px);
+  background: var(--panel);
+}
+.export .hw .check {
+  padding-top: 0;
+  font-weight: var(--font-weight-medium);
+}
+.export .hw .hint {
+  margin-top: var(--spacing-4px);
+  line-height: 1.45;
+}
 .export .folderrow {
   display: flex;
   align-items: center;
@@ -1397,6 +1412,123 @@ button.x .ico {
 }
 .picker .status {
   margin-top: var(--spacing-8px);
+}
+
+/* ---------------------------------------------------------------- exported videos */
+.library .box {
+  width: 800px;
+}
+.library .summary-line {
+  margin-bottom: var(--spacing-8px);
+}
+.library .recs {
+  max-height: 62vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6px);
+}
+.library .rec {
+  border-radius: var(--corner-radius-8px);
+  background: var(--panel2);
+  border: 1px solid transparent;
+}
+.library .rec:hover {
+  border-color: var(--line);
+}
+.library .rec.missing .meta,
+.library .rec.missing .ico-wrap {
+  opacity: 0.6;
+}
+.library .rec-main {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: var(--spacing-10px);
+  align-items: center;
+  padding: var(--spacing-8px) var(--spacing-10px);
+}
+.library .ico-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--corner-radius-8px);
+  background: var(--bg);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.library .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.library .meta b {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-6px);
+  font-size: var(--font-size-13px, 13px);
+  font-weight: var(--font-weight-semibold);
+  min-width: 0;
+}
+.library .meta b .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library .meta small {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library .rec .actions {
+  margin: 0;
+  gap: var(--spacing-6px);
+  flex: none;
+}
+.library .rec .actions > button {
+  height: 28px;
+  min-height: 28px;
+  padding: 2px var(--spacing-8px);
+  font-size: var(--font-size-12px);
+  gap: var(--spacing-4px);
+}
+.library .rec .actions > button.del:hover:not(:disabled) {
+  border-color: var(--border-subtle-error-default);
+  color: var(--rec-text);
+  background: var(--rec-tint);
+}
+.library .player {
+  padding: 0 var(--spacing-10px) var(--spacing-10px);
+}
+.library .player video {
+  display: block;
+  width: 100%;
+  max-height: 48vh;
+  background: #000;
+  border-radius: var(--corner-radius-8px);
+}
+.library .empty {
+  color: var(--muted);
+  text-align: center;
+  padding: var(--spacing-24px) var(--spacing-12px);
+  line-height: 1.5;
+  font-size: var(--font-size-13px, 13px);
+}
+.library .status {
+  margin-top: var(--spacing-8px);
+}
+.library .status.error {
+  color: var(--rec-text);
+}
+.library .status:empty {
+  display: none;
+}
+.library .note {
+  margin-top: var(--spacing-10px);
 }
 
 /* ---------------------------------------------------------------- toast */
@@ -1925,23 +2057,23 @@ button.x .ico {
 /* ---------------------------------------------------------------- narrower windows */
 /* the top bar must stay one row down to 1180 px: things leave it in order of how much they are
    missed (measured with the mic on in auto mode, the widest state; the Edit button, between Preview
-   and Export, is in the count) */
-@media (max-width: 1840px) {
+   and Export, and the Exports button next to Help are in the count) */
+@media (max-width: 1940px) {
   .brand .by {
     display: none;
   }
 }
-@media (max-width: 1730px) {
+@media (max-width: 1830px) {
   #top .stat {
     display: none;
   }
 }
-@media (max-width: 1640px) {
+@media (max-width: 1740px) {
   #top .deck {
     display: none;
   }
 }
-@media (max-width: 1550px) {
+@media (max-width: 1650px) {
   /* Edit becomes a pen icon; its title still says what it does */
   #btnEdit .label {
     display: none;
@@ -1952,7 +2084,7 @@ button.x .ico {
     padding: var(--spacing-4px);
   }
 }
-@media (max-width: 1520px) {
+@media (max-width: 1620px) {
   /* the mode switch keeps its icons (an ear, a hand); the titles still say what each one does */
   .segmented .opt .label {
     display: none;
@@ -1961,7 +2093,7 @@ button.x .ico {
     padding: 0 var(--spacing-6px);
   }
 }
-@media (max-width: 1390px) {
+@media (max-width: 1490px) {
   /* Mute becomes an icon button; its title and the M key still say what it does */
   #btnMute .label {
     display: none;
@@ -1972,14 +2104,14 @@ button.x .ico {
     padding: var(--spacing-4px);
   }
 }
-@media (max-width: 1370px) {
+@media (max-width: 1470px) {
   /* "Export video" becomes "Export", "Hold Space to speak" becomes "Hold Space" */
   #btnExport .long,
   #statusText .long {
     display: none;
   }
 }
-@media (max-width: 1290px) {
+@media (max-width: 1390px) {
   /* Preview becomes a play icon next to the pen; the step badge and the titles still say what they do */
   #btnPreview .label {
     display: none;
@@ -1990,7 +2122,7 @@ button.x .ico {
     padding: var(--spacing-4px);
   }
 }
-@media (max-width: 1230px) {
+@media (max-width: 1330px) {
   #keys {
     display: none;
   }

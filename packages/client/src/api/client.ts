@@ -3,6 +3,7 @@ import {
   type CreateExportJobRequest,
   type DirectoryListing,
   type ExportJob,
+  type ExportRecord,
   type JobEvent,
   type ServerCapabilities,
   type SystemLoad,
@@ -84,6 +85,30 @@ export class ApiClient {
 
   async revealExport(id: string): Promise<void> {
     await this.json('POST', `/api/exports/${id}/reveal`);
+  }
+
+  /** The videos the server has saved, newest first, with whether each is still on disk. */
+  listLibrary(): Promise<ExportRecord[]> {
+    return this.json<ExportRecord[]>('GET', '/api/library', undefined, AbortSignal.timeout(10_000));
+  }
+
+  /** Deletes the file (or the export's folder) and forgets it; with `deleteFiles` false it only forgets. */
+  deleteLibraryItem(id: string, deleteFiles = true): Promise<{ record: ExportRecord; deleted: boolean }> {
+    return this.json('DELETE', `/api/library/${id}${deleteFiles ? '' : '?files=0'}`);
+  }
+
+  async revealLibraryItem(id: string): Promise<void> {
+    await this.json('POST', `/api/library/${id}/reveal`);
+  }
+
+  /** Opens the video in the default player (or the folder in the file manager). */
+  async openLibraryItem(id: string): Promise<void> {
+    await this.json('POST', `/api/library/${id}/open`);
+  }
+
+  /** Where a <video> element can stream the file from (byte ranges supported). */
+  libraryFileUrl(id: string): string {
+    return `${this.base}/api/library/${id}/file`;
   }
 
   /** Sends a PowerPoint file to the server's renderer and gets the PDF back, with any notes it made. */

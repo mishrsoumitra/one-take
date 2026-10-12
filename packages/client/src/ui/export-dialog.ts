@@ -32,6 +32,8 @@ import {
   planExport,
   resolveResolution,
   sanitizeFileName,
+  serverUsesHardware,
+  softwareBeatsHardware,
   totalSeconds,
   type BrowserCapabilities,
   type Container,
@@ -73,6 +75,11 @@ export interface ExportDialogDeps {
   suggestedName: () => string;
   initialRequest: () => ExportRequest;
   onRequestChange: (request: ExportRequest) => void;
+  /** The hardware switch is a browser preference: read on opening, written when the user flips it. */
+  hardwarePreference: () => boolean;
+  onHardwarePreferenceChange: (on: boolean) => void;
+  /** Opens the list of exported videos. */
+  onOpenLibrary: () => void;
   onExportingChange: (exporting: boolean) => void;
   onBeforeExport: () => void;
 }
@@ -242,10 +249,12 @@ export class ExportDialog {
     outFps: HTMLInputElement;
     outHeight: HTMLInputElement;
     maxBitrate: HTMLInputElement;
-    hardware: HTMLInputElement;
     compNote: HTMLElement;
     order: HTMLSelectElement;
     sysLine: HTMLElement;
+    /** The hardware switch and the line under it saying what was found. */
+    hardware: HTMLInputElement;
+    hardwareNote: HTMLElement;
     modes: HTMLElement;
     modeInputs: Record<PerformanceMode, HTMLInputElement>;
     resources: HTMLElement;
@@ -539,11 +548,6 @@ export class ExportDialog {
         }),
       'none',
     );
-    e.hardware = h('input', { type: 'checkbox', checked: r.compression.hardware });
-    e.hardware.onchange = () =>
-      this.update((q) => {
-        q.compression.hardware = e.hardware.checked;
-      });
     e.compNote = h('div', { class: 'hint' });
     e.compBody = h(
       'div',
@@ -559,11 +563,6 @@ export class ExportDialog {
       row('Output frame rate', unit(e.outFps, 'fps'), 'Leave empty to keep the recorded rate.'),
       row('Scale to height', unit(e.outHeight, 'px'), 'Leave empty to keep the recorded size.'),
       row('Max bitrate', unit(e.maxBitrate, 'kbit/s'), 'Caps peaks for streaming; leave empty for pure CRF.'),
-      row(
-        'Hardware encoder',
-        check(e.hardware, 'prefer the GPU encoder when the server has one'),
-        'Faster, but larger files than x264/x265 at the same quality.',
-      ),
       e.compNote,
     );
     e.compression = section(
@@ -590,8 +589,16 @@ export class ExportDialog {
         q.order = e.order.value as PhraseOrder;
       });
 
-    // System check and performance mode.
+    // System check, the hardware switch and the performance mode.
     e.sysLine = h('div', { class: 'sys', id: 'sysLine' });
+    e.hardware = h('input', { type: 'checkbox', id: 'hwSwitch', checked: r.performance.hardware });
+    e.hardware.onchange = () => {
+      this.deps.onHardwarePreferenceChange(e.hardware.checked);
+      this.update((q) => {
+        q.performance.hardware = e.hardware.checked;
+      });
+    };
+    e.hardwareNote = h('div', { class: 'hint', id: 'hwNote' });
     e.modeInputs = {} as Record<PerformanceMode, HTMLInputElement>;
     e.modes = h(
       'div',
@@ -601,7 +608,7 @@ export class ExportDialog {
         input.onchange = () => {
           if (!input.checked) return;
           this.update((q) => {
-            applyPerformanceMode(q, mode, this.deps.serverCaps());
+            applyPerformanceMode(q, mode);
           });
           this.syncInputs();
         };
@@ -700,6 +707,17 @@ export class ExportDialog {
       'Back to settings',
     );
     e.btnClose = h('button', { id: 'btnCloseExport', on: { click: () => this.close() } }, 'Close');
+    const btnLibrary = h(
+      'button',
+      {
+        class: 'ghost',
+        id: 'btnExportLibrary',
+        title: 'The videos exported so far: watch, show in folder, delete',
+        on: { click: () => this.deps.onOpenLibrary() },
+      },
+      icon('folder', 16),
+      'Exported videos…',
+    );
 
     e.settings = h(
       'div',
@@ -753,7 +771,17 @@ export class ExportDialog {
         h(
           'div',
           { class: 'col' },
-          section('This computer', e.sysLine, e.modes),
+          section(
+            'This computer',
+            e.sysLine,
+            h(
+              'div',
+              { class: 'hw', id: 'hwRow' },
+              check(e.hardware, 'Use the hardware encoder when this computer has one'),
+              e.hardwareNote,
+            ),
+            e.modes,
+          ),
           e.compression,
           section('Order', row('Phrases', e.order)),
           section('Plan', e.planBox, e.resources, e.warnings, e.blockers),
@@ -774,6 +802,7 @@ export class ExportDialog {
         { class: 'actions' },
         e.btnBack,
         e.btnCancel,
+        btnLibrary,
         h('div', { class: 'spacer' }),
         e.btnClose,
         e.btnExport,
@@ -810,8 +839,10 @@ export class ExportDialog {
     if (!this.opened) {
       this.opened = true;
       this.request = this.deps.initialRequest();
-      this.syncInputs();
     }
+    // the switch is remembered per browser, not per project, so the preference wins on every opening
+    this.request.performance.hardware = this.deps.hardwarePreference();
+    this.syncInputs();
     if (this.request.fileName === 'lecture' || !this.request.fileName)
       this.request.fileName = sanitizeFileName(this.deps.suggestedName());
     this.els.fileName.value = this.request.fileName;
@@ -856,7 +887,7 @@ export class ExportDialog {
     e.outFps.value = r.compression.outputFps === null ? '' : String(r.compression.outputFps);
     e.outHeight.value = r.compression.height === null ? '' : String(r.compression.height);
     e.maxBitrate.value = r.compression.maxBitrateKbps === null ? '' : String(r.compression.maxBitrateKbps);
-    e.hardware.checked = r.compression.hardware;
+    e.hardware.checked = r.performance.hardware;
     e.order.value = r.order;
     for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
   }
@@ -891,6 +922,62 @@ export class ExportDialog {
         : `GPU encoding ${hw.length ? `for ${hw.join(', ')}` : 'not available (software encoders only)'}; ${[measured, threads, memory, browser.gpu ? `GPU ${browser.gpu}` : null].filter((p) => p !== null).join(', ')}.`,
     );
     return parts;
+  }
+
+  /**
+   * What the switch stands for on this machine: the hardware encoders found on each side, what the
+   * current position means, and the measured speeds when they argue for the other position.
+   */
+  private hardwareNote(
+    server: ServerCapabilities | null,
+    browser: BrowserCapabilities,
+    on: boolean,
+  ): { text: string; available: boolean } {
+    const serverEncoders = server?.system?.ffmpeg?.encoders ?? [];
+    const browserCodecs = hardwareCodecLabels(browser);
+    const available = serverEncoders.length > 0 || browserCodecs.length > 0;
+    if (!available) {
+      return {
+        available,
+        text: `No hardware video encoder was found${browser.videoCodecs.length ? ` in ${browser.browser ?? 'this browser'}` : ''}${server ? ' or in ffmpeg' : ''}, so everything is encoded on the CPU.`,
+      };
+    }
+    const found = [
+      browserCodecs.length
+        ? `${browserCodecs.join(' and ')} in ${browser.browser ?? 'this browser'}`
+        : `none in ${browser.browser ?? 'this browser'}`,
+      server
+        ? serverEncoders.length
+          ? `${serverEncoders.join(', ')} in ffmpeg`
+          : server.ffmpeg
+            ? 'none in ffmpeg'
+            : 'no ffmpeg'
+        : 'server offline',
+    ];
+    const parts = [`Found: ${found.join('; ')}.`];
+    parts.push(
+      on
+        ? 'It does the encoding and leaves the CPU free. Untick to encode on the CPU instead.'
+        : 'Off: the browser and ffmpeg encode on the CPU.',
+    );
+    // measured speeds, when they say the CPU would be quicker on slide video
+    const measured: string[] = [];
+    const bench = browser.benchmark?.avc;
+    if (bench && softwareBeatsHardware(browser) && bench.hardwareFps !== null && bench.softwareFps !== null) {
+      measured.push(`${bench.softwareFps} against ${bench.hardwareFps} fps in the browser`);
+    }
+    const race = server?.system?.ffmpeg?.benchmark ?? null;
+    const fastest = server?.system?.ffmpeg?.fastestEncoder ?? null;
+    if (race && fastest === 'libx264') {
+      const hw = Object.entries(race).find(([e]) => e !== 'libx264');
+      if (hw) measured.push(`libx264 ${race.libx264 ?? 0} against ${hw[0]} ${hw[1]} fps in ffmpeg`);
+    }
+    if (measured.length) {
+      parts.push(
+        `Measured on this machine, the CPU encoder was quicker on slide video (${measured.join('; ')}), because it skips unchanged blocks; ${on ? 'untick for the quickest export' : 'that is what runs now'}.`,
+      );
+    }
+    return { available, text: parts.join(' ') };
   }
 
   private renderResources(lines: readonly ResourceLine[]): void {
@@ -1063,10 +1150,11 @@ export class ExportDialog {
     e.compEnabled.disabled = !compressionPossible;
     e.compEnabled.checked = r.compression.enabled;
     e.compBody.hidden = !r.compression.enabled || !compressionPossible;
+    const serverHardware = serverUsesHardware(r.performance);
     setOptions(
       e.compCodec,
       SERVER_VIDEO_CODECS.map((c) => {
-        const encoder = pickServerVideoEncoder(server, c, r.compression.hardware);
+        const encoder = pickServerVideoEncoder(server, c, serverHardware);
         const okContainer = CONTAINER_INFO[r.container].video.includes(
           c === 'h264' ? 'avc' : c === 'h265' ? 'hevc' : c,
         );
@@ -1095,8 +1183,12 @@ export class ExportDialog {
         ? 'Choose "a folder on this computer" to compress with ffmpeg.'
         : 'Install ffmpeg on this computer to enable compression.';
 
-    // System line and mode
+    // System line, the hardware switch and the mode
     replaceChildren(e.sysLine, ...this.systemLine(server, browser));
+    const hw = this.hardwareNote(server, browser, r.performance.hardware);
+    e.hardware.checked = r.performance.hardware;
+    e.hardware.disabled = !hw.available;
+    e.hardwareNote.textContent = hw.text;
     for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
 
     // Plan
@@ -1104,12 +1196,12 @@ export class ExportDialog {
     const plan = this.plan;
     const est = estimateExport(plan, tl.total);
     const b = plan.browser;
-    const stage1 = `Browser encodes ${VIDEO_CODEC_INFO[b.videoCodec].label} + ${AUDIO_CODEC_INFO[b.audioCodec].label}, ${b.width}×${b.height} @ ${b.fps} fps, up to ${(b.videoBitrateKbps / 1000).toFixed(1)} Mbit/s, into ${CONTAINER_INFO[b.container].label}${b.mezzanine ? ' (mezzanine)' : ''}${b.hardware ? ' on the GPU' : ' on the CPU'}.`;
+    const stage1 = `Browser encodes ${VIDEO_CODEC_INFO[b.videoCodec].label} + ${AUDIO_CODEC_INFO[b.audioCodec].label}, ${b.width}×${b.height} @ ${b.fps} fps, up to ${(b.videoBitrateKbps / 1000).toFixed(1)} Mbit/s, into ${CONTAINER_INFO[b.container].label}${b.mezzanine ? ' (mezzanine)' : ''}${b.hardware ? ' on the hardware encoder' : ' on the CPU'}.`;
     const p = plan.processing;
     const stage2 = p
       ? p.video.mode === 'copy'
         ? `Server repackages it as ${CONTAINER_INFO[p.container].label} without re-encoding${p.container === 'hls' || p.container === 'dash' ? `, ${p.segmentSeconds} s segments` : ''}.`
-        : `Server re-encodes to ${p.video.codec.toUpperCase()} CRF ${p.video.crf} (${p.video.preset}${p.video.tune ? ', stillimage' : ''}${p.video.fps ? `, ${p.video.fps} fps` : ''}${p.video.height ? `, ${p.video.height}p` : ''})${p.ladder ? ` as an adaptive ladder (${p.ladder.map((x) => x.name).join(', ')})` : ''} and writes ${CONTAINER_INFO[p.container].label}.`
+        : `Server re-encodes to ${p.video.codec.toUpperCase()} with ${pickServerVideoEncoder(server, p.video.codec, p.video.hardware) ?? 'ffmpeg'}, CRF ${p.video.crf} (${p.video.preset}${p.video.tune ? ', stillimage' : ''}${p.video.fps ? `, ${p.video.fps} fps` : ''}${p.video.height ? `, ${p.video.height}p` : ''})${p.ladder ? ` as an adaptive ladder (${p.ladder.map((x) => x.name).join(', ')})` : ''} and writes ${CONTAINER_INFO[p.container].label}.`
       : plan.destination === 'server'
         ? 'Server stores the file as is.'
         : 'The file is written by the browser.';
@@ -1254,7 +1346,7 @@ export class ExportDialog {
     const m = p.metrics;
     const b = this.plan?.browser;
     const encoder = b
-      ? `${VIDEO_CODEC_INFO[b.videoCodec].label.split(' / ')[0] ?? b.videoCodec} on the ${b.hardware ? 'GPU' : 'CPU'}`
+      ? `${VIDEO_CODEC_INFO[b.videoCodec].label.split(' / ')[0] ?? b.videoCodec} on the ${b.hardware ? 'hardware encoder' : 'CPU'}`
       : 'encoder';
     const encodeStep = p.steps.find((s) => s.id === 'encode');
     const encodeParts = [
@@ -1468,12 +1560,23 @@ export class ExportDialog {
             { on: { click: () => void this.deps.api.revealExport(id).catch(() => undefined) } },
             'Show in folder',
           ),
+          h(
+            'button',
+            { class: 'ghost', on: { click: () => this.deps.onOpenLibrary() } },
+            'All exported videos',
+          ),
         ),
         result.encoder
           ? h(
               'div',
               { class: 'hint' },
-              `Browser encoder: ${result.encoder.hardwareAcceleration === 'prefer-hardware' ? 'GPU' : 'browser default'}, ${result.encoder.latencyMode} mode.`,
+              `Browser encoder: ${
+                result.encoder.hardwareAcceleration === 'prefer-hardware'
+                  ? 'the hardware encoder'
+                  : result.encoder.hardwareAcceleration === 'prefer-software'
+                    ? 'the CPU'
+                    : 'the browser default'
+              }, ${result.encoder.latencyMode} mode.`,
             )
           : null,
         result.job.command

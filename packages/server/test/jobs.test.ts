@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { detectFfmpeg } from '../src/services/ffmpeg.js';
 import { JobManager } from '../src/services/jobs.js';
+import { ExportLibrary } from '../src/services/library.js';
 
 let tmp: string;
 const ffmpeg: FfmpegInfo | null = await detectFfmpeg(process.env.FFMPEG_PATH ?? null);
@@ -171,8 +172,9 @@ describe('JobManager', () => {
     ).rejects.toMatchObject({ code: 'ffmpeg_missing' });
   });
 
-  it('stores a direct upload under a unique name', async () => {
-    const jobs = new JobManager({ ffmpeg: null });
+  it('stores a direct upload under a unique name and records it in the library', async () => {
+    const library = new ExportLibrary(path.join(tmp, 'library', 'exports.json'));
+    const jobs = new JobManager({ ffmpeg: null, library });
     const data = Buffer.from('x'.repeat(300_000));
     await fs.writeFile(path.join(tmp, 'My lecture.mp4'), 'already here');
     const job = await jobs.create(request());
@@ -186,6 +188,24 @@ describe('JobManager', () => {
     expect(final.outputs[0]).toMatchObject({ kind: 'file', bytes: data.length });
     expect(await fs.readFile(path.join(tmp, 'My lecture (2).mp4'), 'utf8')).toBe(data.toString());
     expect((await fs.readdir(tmp)).filter((n) => n.includes('uploading'))).toEqual([]);
+    expect(await library.list()).toMatchObject([
+      {
+        id: job.id,
+        fileName: 'My lecture (2).mp4',
+        directory: tmp,
+        kind: 'file',
+        container: 'fmp4',
+        bytes: data.length,
+        exists: true,
+        width: 320,
+        height: 180,
+        fps: 10,
+        videoCodec: 'avc',
+        audioCodec: 'aac',
+        encoder: null,
+        command: null,
+      },
+    ]);
   });
 
   it('fails a short upload and cleans up', async () => {
@@ -238,7 +258,8 @@ describe('JobManager', () => {
 describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
   it('remuxes to MP4 and packages HLS and DASH', async () => {
     if (!ffmpeg) return;
-    const jobs = new JobManager({ ffmpeg });
+    const library = new ExportLibrary(path.join(tmp, 'library-ffmpeg', 'exports.json'));
+    const jobs = new JobManager({ ffmpeg, library });
 
     const mp4 = await jobs.create(
       request({
@@ -330,6 +351,15 @@ describe.skipIf(ffmpeg === null)('JobManager with ffmpeg', () => {
     expect(
       (await fs.readdir(tmp)).filter((n) => n.includes('.processing') || n.includes('.uploading')),
     ).toEqual([]);
+    // all three are in the library, with the encoder named where ffmpeg re-encoded
+    const records = await library.list();
+    expect(records.map((r) => [r.fileName, r.kind, r.container, r.encoder])).toEqual([
+      ['stream-dash', 'directory', 'dash', 'libx264'],
+      ['stream-hls', 'directory', 'hls', null],
+      ['remux.mp4', 'file', 'mp4', null],
+    ]);
+    expect(records[0]).toMatchObject({ height: 90, width: 160, fps: 5, videoCodec: 'avc', exists: true });
+    expect(records[0]?.command).toContain('libx264');
   }, 120_000);
 
   it('runs only as many re-encodes at once as the machine profile allows', async () => {

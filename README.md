@@ -50,7 +50,8 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Adaptive streaming.** HLS or DASH ladders (1080p / 720p / 480p / 360p) with a master playlist.
 - **Save anywhere.** A folder picker browses the computer running the server. Files never leave the machine.
 - **Built for long lectures.** Streaming writes, encoder back-pressure, free-space checks, crash-safe fragments, cancel at any stage, and no in-memory assembly. See [Large exports](#large-exports).
-- **Knows your machine.** A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders, each one self-tested) and measured encoder races pick the fastest path. A *Fastest / Balanced / Smallest file* performance mode and a resource map show what each export stage will cost.
+- **Uses your hardware encoder.** The dedicated video encoder (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, until you untick **Use the hardware encoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders, each one self-tested) and measured encoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
+- **Your exports in one list.** Every video saved to a folder on this computer is listed under **Exports** in the top bar, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
 - **Nothing lost.** Every phrase is saved to IndexedDB the moment it ends. Close the tab and come back later. The slides, the phrases and your settings are all still there.
 - **Works without the server too.** In Chrome and Edge the browser can stream the file straight to disk. Other browsers assemble it in memory and download it.
 
@@ -170,10 +171,17 @@ Click **Export video**. In the dialog you choose:
 - **Save to**: a folder on this computer (through the server) or **Save in browser**.
 - **File name**, **Container**, **Resolution**, **Frame rate**, **Quality**, **Video codec**, **Audio** codec and bitrate, **Key frame every**, and **Order**.
 - **Compression (server, ffmpeg)** and, for HLS and DASH, **Segment length**, **Segment type** and **Adaptive bitrate**.
+- Under **This computer**: what the machine has, the **Use the hardware encoder** switch (on by default; untick it to encode on the CPU, and the choice is remembered in this browser) and the performance mode.
 
 The **Plan** panel shows the two stages (what the browser encodes, what the server does afterwards), an estimate of the upload size and the final size, warnings, and any reason the export cannot run. Progress covers encoding, upload and ffmpeg, and you can cancel at any point. When it's done, **Show in folder** opens Finder or Explorer at the file.
 
 To close the slides and start over, click the **×** after the deck's name in the top bar. Slides with nothing recorded on them close at once; otherwise the app asks before deleting the phrases, because they cannot be brought back.
+
+### 9. Find, watch or delete an exported video
+
+Click **Exports** in the top bar (or **Exported videos…** at the bottom of the export dialog). Every video the local server has saved is listed, newest first, with its format, size, duration, where it went and which encoder made it. **Play** streams an MP4, MOV or WebM into a player right there; an HLS or DASH folder opens in the file manager instead. **Show in folder** opens Finder or Explorer at the file. **Delete** asks once, then removes the file from disk and the entry from the list; an HLS or DASH folder is deleted only while it holds nothing but the export. A video you moved or deleted outside the app is shown as *not on disk*, with **Remove from list** in place of Delete.
+
+The list is kept by the server (see [Where files go](#where-files-go)), so it survives restarts. Files saved with **Save in browser** never pass through the server and are not listed.
 
 ## Keyboard shortcuts
 
@@ -264,9 +272,8 @@ Turn on **Compress** to have the server re-encode the video with ffmpeg. The bro
 | Output frame rate     | 1–120 or empty                                                  | Change the frame rate while re-encoding. Empty keeps the recorded rate.                     |
 | Max bitrate           | 100–200 000 kbit/s or empty                                     | Caps the bitrate (with a buffer of twice that) for streaming-friendly output.               |
 | Scale to height       | 16–7680 or empty                                                | Scales while re-encoding, keeping the aspect ratio.                                         |
-| Hardware encoder      | on / off                                                        | Prefers VideoToolbox, NVENC, QSV or VAAPI when ffmpeg has them. Faster, but larger files than x264/x265 at the same quality. Falls back to software with a warning. |
 
-The ffmpeg command that ran is kept on the job (`command` in the API) so you can see exactly what happened.
+Which encoder does the work follows the **Use the hardware encoder** switch under *This computer* (see [System check and performance mode](#system-check-and-performance-mode)): VideoToolbox, NVENC, QSV or VAAPI when ffmpeg has one and the switch is on, otherwise x264, x265, libvpx or SVT-AV1. The *Smallest file* mode always uses the software encoders, because a hardware encoder makes a larger file at the same quality whatever preset it is given. The plan names the encoder before you start, and the ffmpeg command that ran is kept on the job (`command` in the API) so you can see exactly what happened.
 
 ### Streaming (HLS and DASH)
 
@@ -354,49 +361,6 @@ Browsers without WebCodecs get a different path: **Record in real time (WebM)** 
 
 Before an export starts, the dialog shows an estimate of the upload size, the final size and the number of frames. On the server the free space in the destination is checked against the estimate, doubled when ffmpeg will need a temporary copy. The plan also lists blockers, such as a missing server, a missing ffmpeg, an ffmpeg without the right encoder or muxer, or a codec the browser cannot produce. An export with blockers cannot start.
 
-## System check and performance mode
-
-Video work is heavy, so the app looks at the machine before it does any. The server runs a pre-flight check at start-up, and the export dialog turns the result into a mode and a resource map.
-
-**At start-up** (`npm start`) the server prints what it found and serves it at `GET /api/system`:
-
-```
-One Take 1.0.0: system check
-  CPU      Apple M2 Max, 12 cores (8 performance, 4 efficiency), arm64
-  Memory   96 GB total, 69 GB available now
-  GPU      Apple M2 Max, 38 cores, shared memory
-  Disk     412 GB free in /Users/me/Movies/One Take
-  ffmpeg   8.1.2 at /opt/homebrew/bin/ffmpeg
-           hardware encoders: h264_videotoolbox, hevc_videotoolbox
-           fastest for slides at 1080p: libx264 (libx264 910 fps, h264_videotoolbox 400 fps); decoding in software; hwaccels listed: videotoolbox
-  Node     v24.14.0
-  Mode     gpu: GPU encoding available; up to 2 ffmpeg re-encodes at a time
-  Renderer 32.0 GB heap for PowerPoint conversion
-```
-
-- CPU model, core count and the performance/efficiency split (Apple silicon), total and available memory, the GPU (`system_profiler` on macOS, `nvidia-smi`/`lspci` on Linux, PowerShell on Windows) and free disk space where exports go.
-- Every hardware encoder ffmpeg lists (`*_videotoolbox`, `*_nvenc`, `*_qsv`, `*_vaapi`) is **self-tested** with a third of a second of synthetic video. One that is compiled in but has no device behind it is dropped, so the export dialog never offers an encoder that would fail. `--no-self-test` skips this (about 0.2 s per encoder).
-- The **tier** follows: `gpu` when a hardware encoder works, `cpu-fast` with eight or more cores, `cpu`, or `constrained` (under 4 cores or 8 GB). It decides how many ffmpeg re-encodes may run at once (software encoders already use every core, so a second job would only slow both down).
-- Once the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner. That decides whether the *Fastest* mode ticks *hardware encoder* for compression. On an M2 Max the answer is no: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). `--no-benchmark` skips the race.
-- Decoding stays on the CPU. The upload is slide video, and software decoding of eleven minutes of it took 1.5 s where `-hwaccel videotoolbox` took 33 s.
-- The PowerPoint renderer runs in a worker with a heap limit of half the machine's memory (`--renderer-memory 4096` to change it); a deck that needs more fails with a clear message instead of taking the server down.
-
-**`npm run doctor`** runs the same check without starting the server and prints which process needs which resource for a one-hour 1080p lecture: recording, slide rendering, PowerPoint conversion, and every export stage (browser encode, upload, packaging, compression) with its memory, whether it runs on the GPU or the CPU, and a rough time. `npm run bench` (`doctor --bench`, `--height 2160` for 4K) runs the encoder race in the open, adds `libx264 medium` and `libx265 veryfast` for comparison, and says which encoder is really the fastest on this machine.
-
-**In the browser** the app probes WebCodecs once: which codecs it can encode, and for each whether `prefer-hardware` is accepted at 1080p and at 4K, plus thread count, visible memory and the GPU name (WebGPU or WebGL). It then races the GPU and the software H.264 encoder on 150 frames of a 1080p slide (about half a second; the answer is kept for a week in `localStorage`). The export dialog's *This computer* section shows both sides.
-
-**Performance mode** (in the export dialog, saved with the project):
-
-| Mode | Browser stage | Server compression |
-| --- | --- | --- |
-| **Fastest** (default) | whichever H.264 encoder won the browser's race (`prefer-software` when it beat the GPU by 15 % or more, else `prefer-hardware` at sizes the probe confirmed); the codec the GPU can encode goes first when the codec is *auto*; unmeasured software encoders run in `realtime` latency mode | whichever H.264 encoder won the server's race (hardware or `libx264`), `veryfast` preset |
-| **Balanced** | browser defaults | `libx264`/`libx265`, `medium` |
-| **Smallest file** | browser defaults, `quality` latency | software encoders, `slow` preset, `stillimage` tune for x264 |
-
-The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encoder drops from 374 to 166 fps in `realtime` mode, while Chrome's software H.264 encoder runs at about 400 fps in either, so `realtime` is reserved for software codecs. A mode only sets the starting point; every field stays editable. The *Plan* section then lists the resource map for the chosen settings (GPU/CPU/disk per stage, memory, rough time) and warns when the export would take more than 40 % of the machine's memory, when a software codec was chosen although the GPU could do H.264, or when the job will take over half an hour.
-
-**What else was done, and what it is worth.** Slides are still images, so each slide is captured once and every video frame of that slide is a reference clone with a new timestamp. For a software encoder the capture is a planar I420 frame in CPU memory (`core/yuv.ts`, BT.709, about 30 ms per slide). This matters more than it sounds: a canvas-backed frame is RGBA on the GPU and Chrome converts it again for every `encode()` call, which pinned every encoder, hardware or software, H.264 or VP9, at about 370 fps for 1080p on an M2 Max. With planar frames Chrome's software H.264 encoder reaches 570 fps in a real export (700 fps in a bare encoder loop) while the VideoToolbox encoder stays near 380 fps whatever it is fed (that is its pipeline rate; ffmpeg's `h264_videotoolbox` tops out at the same figure), which is why the browser races the two and picks the software encoder on that machine; a GPU encoder keeps the canvas frame, which is already in its memory. Slide bitmaps are decoded already scaled to the output size, the encode runs on an `OffscreenCanvas`, and the preview reuses one timeline instead of rebuilding it every animation frame. Measured on an M2 Max with Chrome: eleven minutes of 1080p at 15 fps encode in 17 s (38× real time, against 27 s before), so an hour-long lecture exports in about a minute and a half; compression on the server adds about a minute per hour with `libx264 veryfast`. Fewer frames is the one lever that always works: 10 fps is a third faster than 15 and looks the same on slides.
-
 ## Large exports
 
 A three-hour lecture is the normal case, so the pipeline is built around it:
@@ -438,25 +402,32 @@ One Take 1.0.0: system check
 - CPU model, core count and the performance/efficiency split (Apple silicon), total and available memory, the GPU (`system_profiler` on macOS, `nvidia-smi`/`lspci` on Linux, PowerShell on Windows) and free disk space where exports go.
 - Every hardware encoder ffmpeg lists (`*_videotoolbox`, `*_nvenc`, `*_qsv`, `*_vaapi`) is **self-tested** with a third of a second of synthetic video. One that is compiled in but has no device behind it is dropped, so the export dialog never offers an encoder that would fail. `--no-self-test` skips this (about 0.2 s per encoder).
 - The **tier** follows: `gpu` when a hardware encoder works, `cpu-fast` with eight or more cores, `cpu`, or `constrained` (under 4 cores or 8 GB). It decides how many ffmpeg re-encodes may run at once (software encoders already use every core, so a second job would only slow both down).
-- Once the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner. That decides whether the *Fastest* mode ticks *hardware encoder* for compression. On an M2 Max the answer is no: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). `--no-benchmark` skips the race.
+- Once the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner. The result is shown under the hardware switch in the export dialog as information; it does not move the switch. On an M2 Max x264 wins: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). The hardware encoder stays the default all the same, because it leaves the CPU free; untick the switch on such a machine for the quickest export. `--no-benchmark` skips the race.
 - Decoding stays on the CPU. The upload is slide video, and software decoding of eleven minutes of it took 1.5 s where `-hwaccel videotoolbox` took 33 s.
 - The PowerPoint renderer runs in a worker with a heap limit of half the machine's memory (`--renderer-memory 4096` to change it); a deck that needs more fails with a clear message instead of taking the server down.
 
 **`npm run doctor`** runs the same check without starting the server and prints which process needs which resource for a one-hour 1080p lecture: recording, slide rendering, PowerPoint conversion, and every export stage (browser encode, upload, packaging, compression) with its memory, whether it runs on the GPU or the CPU, and a rough time. `npm run bench` (`doctor --bench`, `--height 2160` for 4K) runs the encoder race in the open, adds `libx264 medium` and `libx265 veryfast` for comparison, and says which encoder is really the fastest on this machine.
 
-**In the browser** the app probes WebCodecs once: which codecs it can encode, and for each whether `prefer-hardware` is accepted at 1080p and at 4K, plus thread count, visible memory and the GPU name (WebGPU or WebGL). It then races the GPU and the software H.264 encoder on 150 frames of a 1080p slide (about half a second; the answer is kept for a week in `localStorage`). The export dialog's *This computer* section shows both sides.
+**In the browser** the app probes WebCodecs once: which codecs it can encode, for each whether `prefer-hardware` is accepted at 1080p and at 4K and whether `prefer-software` is accepted at all (Chrome has no software HEVC encoder, for instance), plus thread count, visible memory and the GPU name (WebGPU or WebGL). It then races the GPU and the software H.264 encoder on 150 frames of a 1080p slide (about half a second; the answer is kept for a week in `localStorage`). The export dialog's *This computer* section shows both sides.
 
-**Performance mode** (in the export dialog, saved with the project):
+**The hardware switch.** *Use the hardware encoder when this computer has one* sits under the system line and is on by default. The line under it lists what was found on each side (for example `AVC up to 4K and HEVC up to 4K in Chrome 141; h264_videotoolbox, hevc_videotoolbox in ffmpeg`) and, where the races found the CPU quicker on slide video, says so with the figures.
+
+- **On:** the browser asks WebCodecs for the hardware encoder for every codec and size the probe accepted (an unsupported request fails instead of falling back, so it is never asked blindly), codecs the hardware can take come first when the codec is *Automatic*, and ffmpeg uses `h264_videotoolbox`, `hevc_videotoolbox`, `*_nvenc`, `*_qsv` or `*_vaapi` for compression, transcoding and adaptive ladders. A size the hardware refuses (above 4K on most of them) goes to the CPU with a warning.
+- **Off:** the browser asks for the software encoder (`prefer-software`), skips codecs it only has in hardware when the codec is *Automatic* (asked for by name, such a codec is transcoded by ffmpeg on the CPU instead), and ffmpeg uses `libx264`, `libx265`, `libvpx-vp9` or `libsvtav1`.
+
+The switch is a browser preference, like the theme: it applies to every project and is remembered until you change it. A machine without any hardware encoder shows it greyed out. Decoding stays on the CPU in either position (see above: software decoding of slide video is twenty times faster than the GPU path).
+
+**Performance mode** (in the export dialog, saved with the project) picks presets around the switch:
 
 | Mode | Browser stage | Server compression |
 | --- | --- | --- |
-| **Fastest** (default) | whichever H.264 encoder won the browser's race (`prefer-software` when it beat the GPU by 15 % or more, else `prefer-hardware` at sizes the probe confirmed); the codec the GPU can encode goes first when the codec is *auto*; unmeasured software encoders run in `realtime` latency mode | whichever H.264 encoder won the server's race (hardware or `libx264`), `veryfast` preset |
-| **Balanced** | browser defaults | `libx264`/`libx265`, `medium` |
-| **Smallest file** | browser defaults, `quality` latency | software encoders, `slow` preset, `stillimage` tune for x264 |
+| **Fastest** (default) | the hardware encoder when the switch is on and the probe accepted it; otherwise the software encoder in `realtime` latency mode | the hardware encoder when the switch is on; otherwise `libx264`/`libx265`, `veryfast` preset |
+| **Balanced** | the same encoder choice, browser default latency | the same encoder choice, `medium` preset |
+| **Smallest file** | the same encoder choice, `quality` latency | always the software encoders, `slow` preset, `stillimage` tune for x264 (no hardware encoder makes a smaller file) |
 
-The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encoder drops from 374 to 166 fps in `realtime` mode, while Chrome's software H.264 encoder runs at about 400 fps in either, so `realtime` is reserved for software codecs. A mode only sets the starting point; every field stays editable. The *Plan* section then lists the resource map for the chosen settings (GPU/CPU/disk per stage, memory, rough time) and warns when the export would take more than 40 % of the machine's memory, when a software codec was chosen although the GPU could do H.264, or when the job will take over half an hour.
+The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encoder drops from 374 to 166 fps in `realtime` mode, while Chrome's software H.264 encoder runs at about 400 fps in either, so `realtime` is reserved for software codecs. A mode only sets the starting point; every field stays editable. The *Plan* section then names the encoder each stage will use and lists the resource map for the chosen settings (GPU/CPU/disk per stage, memory, rough time), and warns when the export would take more than 40 % of the machine's memory, when the CPU ends up with a codec the hardware could have taken, or when the job will take over half an hour.
 
-**What else was done, and what it is worth.** Slides are still images, so each slide is captured once and every video frame of that slide is a reference clone with a new timestamp. For a software encoder the capture is a planar I420 frame in CPU memory (`core/yuv.ts`, BT.709, about 30 ms per slide). This matters more than it sounds: a canvas-backed frame is RGBA on the GPU and Chrome converts it again for every `encode()` call, which pinned every encoder, hardware or software, H.264 or VP9, at about 370 fps for 1080p on an M2 Max. With planar frames Chrome's software H.264 encoder reaches 570 fps in a real export (700 fps in a bare encoder loop) while the VideoToolbox encoder stays near 380 fps whatever it is fed (that is its pipeline rate; ffmpeg's `h264_videotoolbox` tops out at the same figure), which is why the browser races the two and picks the software encoder on that machine; a GPU encoder keeps the canvas frame, which is already in its memory. Slide bitmaps are decoded already scaled to the output size, the encode runs on an `OffscreenCanvas`, and the preview reuses one timeline instead of rebuilding it every animation frame. Measured on an M2 Max with Chrome: eleven minutes of 1080p at 15 fps encode in 17 s (38× real time, against 27 s before), so an hour-long lecture exports in about a minute and a half; compression on the server adds about a minute per hour with `libx264 veryfast`. Fewer frames is the one lever that always works: 10 fps is a third faster than 15 and looks the same on slides.
+**What else was done, and what it is worth.** Slides are still images, so each slide is captured once and every video frame of that slide is a reference clone with a new timestamp. For a software encoder the capture is a planar I420 frame in CPU memory (`core/yuv.ts`, BT.709, about 30 ms per slide). This matters more than it sounds: a canvas-backed frame is RGBA on the GPU and Chrome converts it again for every `encode()` call, which pinned every encoder, hardware or software, H.264 or VP9, at about 370 fps for 1080p on an M2 Max. With planar frames Chrome's software H.264 encoder reaches 570 fps in a real export (700 fps in a bare encoder loop) while the VideoToolbox encoder stays near 380 fps whatever it is fed (that is its pipeline rate; ffmpeg's `h264_videotoolbox` tops out at the same figure), which is why the race is reported under the hardware switch: on that machine, unticking it gives the quickest export, and leaving it on gives a cooler, idle CPU; a GPU encoder keeps the canvas frame, which is already in its memory. Slide bitmaps are decoded already scaled to the output size, the encode runs on an `OffscreenCanvas`, and the preview reuses one timeline instead of rebuilding it every animation frame. Measured on an M2 Max with Chrome: eleven minutes of 1080p at 15 fps encode in 17 s (38× real time, against 27 s before), so an hour-long lecture exports in about a minute and a half; compression on the server adds about a minute per hour with `libx264 veryfast`. Fewer frames is the one lever that always works: 10 fps is a third faster than 15 and looks the same on slides.
 
 ## What counts as speech
 
@@ -515,7 +486,7 @@ Everything is written to IndexedDB (database `one-take`) the moment it exists:
 - every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made),
 - the project state: phrase order, current slide, your detector settings and the last export settings.
 
-The recording mode (Auto or Press to speak), the theme and the tips setting are browser preferences, kept in `localStorage` rather than with the project.
+The recording mode (Auto or Press to speak), the theme, the tips setting, the microphone, the noise filter and the hardware encoder switch are browser preferences, kept in `localStorage` rather than with the project. The list of exported videos lives on the server side (see [Where files go](#where-files-go)).
 
 Reload the tab or close it and come back, and you continue where you left off. The **×** after the deck's name clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
 
@@ -554,6 +525,7 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--host`              | `ONE_TAKE_HOST`         | `127.0.0.1`            | Address to listen on.                                                      |
 | `--port`, `-p`        | `ONE_TAKE_PORT`         | `4317`                 | Port.                                                                      |
 | `--dir`, `-d`         | `ONE_TAKE_DIR`          | `~/Movies/One Take`    | Suggested output folder. Created on start.                                 |
+| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`).      |
 | `--ffmpeg`            | `FFMPEG_PATH`           | found on `PATH`        | Path to the ffmpeg binary.                                                 |
 | `--ffprobe`           | `FFPROBE_PATH`          | found on `PATH`        | Path to ffprobe (reported in capabilities; used by the e2e test).          |
 | `--static`            | `ONE_TAKE_STATIC`       | `packages/client/dist` | Folder with the built client.                                              |
@@ -575,7 +547,9 @@ Inside the folder you chose, an export passes through three names:
 
 File names are sanitised: path separators and characters that are illegal on Windows or macOS become `-`, reserved names such as `con` fall back to `lecture`, and names are cut at 120 characters. If the target exists you get `lecture (2).mp4` unless you asked to replace it. Cancelled and failed jobs remove their temporary files.
 
-Jobs live in memory. The last 50 finished jobs stay in the list; a server restart forgets in-flight uploads, and the client tells you to export again.
+Jobs live in memory. The last 50 finished jobs stay in the job list; a server restart forgets in-flight uploads, and the client tells you to export again.
+
+Finished exports are also written to `exports.json` in the data folder (`~/.one-take` by default; `--data-dir` to change it): path, size, format, duration, codecs and the ffmpeg encoder that made each one. That file feeds the **Exports** list in the app and survives restarts; the videos themselves stay where they were saved. Deleting from the list removes the file (or the HLS/DASH folder, provided it still holds nothing but the export) and the entry; an entry whose file has gone can be dropped on its own. The file is written whole and renamed into place, and a damaged one is set aside rather than stopping the server.
 
 ### Security
 
@@ -627,6 +601,12 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | `GET`    | `/api/exports/:id/events`     | Server-sent events: the current job first, then every change until it finishes.                  |
 | `DELETE` | `/api/exports/:id`            | Cancels the job and removes partial files.                                                       |
 | `POST`   | `/api/exports/:id/reveal`     | Opens the file manager at the result (`open -R`, `explorer /select`, or `xdg-open`).             |
+| `GET`    | `/api/library`                | Every export the server has finished, newest first, with whether each is still on disk and its size now. |
+| `GET`    | `/api/library/:id`            | One export record.                                                                               |
+| `GET`    | `/api/library/:id/file`       | The video itself, with `Range` support, for the in-app player. `409 not_a_file` for HLS and DASH folders. |
+| `POST`   | `/api/library/:id/reveal`     | Opens the file manager at the export.                                                            |
+| `POST`   | `/api/library/:id/open`       | Opens the export with the default application (the video player, or the folder).                 |
+| `DELETE` | `/api/library/:id`            | Deletes the file or export folder and forgets the record; `?files=0` only forgets it. Returns `{ record, deleted }`. |
 
 ### Export job lifecycle
 
@@ -690,7 +670,31 @@ Before the job is created the server checks that the folder is writable, that ff
 }
 ```
 
-When the job is `done`, `outputs` holds `[{ path, kind: "file" | "directory", bytes }]`.
+When the job is `done`, `outputs` holds `[{ path, kind: "file" | "directory", bytes }]`, and the export is added to the library:
+
+```json
+{
+  "id": "6c1f…",
+  "createdAt": "2026-10-08T12:04:10.000Z",
+  "path": "/Users/you/Movies/One Take/lecture.mp4",
+  "directory": "/Users/you/Movies/One Take",
+  "fileName": "lecture.mp4",
+  "kind": "file",
+  "container": "mp4",
+  "bytes": 215043112,
+  "exists": true,
+  "durationSec": 5400,
+  "width": 1920,
+  "height": 1080,
+  "fps": 15,
+  "videoCodec": "avc",
+  "audioCodec": "aac",
+  "encoder": null,
+  "command": "ffmpeg -hide_banner … -movflags +faststart -f mp4 lecture.6c1f0a2b.processing.mp4"
+}
+```
+
+`encoder` names the ffmpeg video encoder when the server re-encoded (`libx264`, `h264_videotoolbox`); it is `null` for a stream copy. `exists` and `bytes` are read from disk every time the list is asked for.
 
 ### Events
 
@@ -715,9 +719,13 @@ Every error is `{ "error": { "code", "message", "details"? } }`.
 | 403    | `forbidden_host`          | The `Host` header is not loopback.                                    |
 | 403    | `forbidden_origin`        | A non-GET request came from a non-loopback origin.                    |
 | 404    | `job_not_found`           | Unknown job, usually because the server restarted.                    |
+| 404    | `export_not_found`        | The export is not in the library (already deleted or forgotten).      |
 | 404    | `not_found`               | No such route.                                                        |
 | 409    | `not_uploading`           | Data or finish arrived for a job that is no longer uploading.         |
 | 409    | `no_output`               | Reveal was asked for a job that has no result yet.                    |
+| 409    | `file_missing`            | The library entry's file is no longer where it was saved.             |
+| 409    | `not_a_file`              | The in-app player asked for an HLS or DASH folder.                    |
+| 409    | `folder_not_empty`        | Deleting an export folder that has gained files One Take did not make. |
 | 500    | `internal`, `reveal_failed`, `too_many_files` | Something went wrong on the server.               |
 
 ## Project layout
@@ -750,16 +758,17 @@ one-take/
     │       ├── doctor.ts         `npm run doctor` / `npm run bench`: system check and encoder race without the server
     │       ├── config.ts         flags and environment variables
     │       ├── app.ts            app factory: loopback checks, error handler, static client, routes
-    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal)
+    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete)
     │       ├── services/
     │       │   ├── jobs.ts       JobManager: positioned writes, finish, process, cancel, cleanup
     │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs(), progress parsing, runFfmpeg()
-    │       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts
+    │       │   ├── library.ts    ExportLibrary: finished exports in exports.json, read back with what the disk says now, deleted safely
+│       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts, the "only our files" folder check
     │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder self-tests, benchmarkEncoders()
     │       │   ├── load.ts       LoadMonitor: live CPU and memory for /api/system/load, ffmpeg process sampling
     │       │   ├── convert.ts    PptxConverter: runs the renderer in a worker thread with a heap limit
     │       │   └── pptx/         PowerPoint → PDF: html (text runs → paragraphs), layout (line breaking), fonts, geometry, render (pdfkit), worker
-    │       └── util/             errors.ts (ApiError with stable codes), semaphore.ts (limits concurrent re-encodes)
+    │       └── util/             errors.ts (ApiError with stable codes), semaphore.ts (limits concurrent re-encodes), desktop.ts (reveal in the file manager, open with the default app)
     ├── client/               Vite + TypeScript app, no framework
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
@@ -770,7 +779,7 @@ one-take/
     │       ├── storage/          IndexedDB project store (idb)
     │       ├── export/           capabilities, encoder (mediabunny), sinks (server / file / memory), runner, real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, editor, export dialog, folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       ├── ui/               layout, editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
     │   └── public/fonts/         Mona Sans (variable weight, OFL)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
@@ -894,7 +903,11 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 **A PowerPoint slide looks a little different.** Fonts the machine lacks are replaced by a stand-in with the same weight and style, which shifts line breaks. Pass the real fonts with `--fonts`. 3-D effects, soft shadows, embedded video, SmartArt animation and GIF or SVG pictures are approximated or skipped; the browser console lists what the renderer changed. For a pixel-exact result, export the deck as PDF.
 
-**Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Turn **Hardware encoder** off or pick a smaller size.
+**The export runs on the CPU although this machine has a hardware encoder.** Open the export dialog and look under **This computer**: **Use the hardware encoder** must be ticked (it is, unless it was unticked once; the choice is remembered per browser), and the line under it lists the encoders found in the browser and in ffmpeg. On an Apple-silicon Mac that line may add that the CPU encoder measured faster on slides; that is information, not a decision. The *Smallest file* mode keeps ffmpeg on the software encoders by design.
+
+**Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Untick **Use the hardware encoder** or pick a smaller size.
+
+**A video is missing from Exports.** Only exports saved to a folder through the local server are listed. Files saved with **Save in browser** went wherever the browser put them. A listed video marked *not on disk* was moved or deleted outside the app; **Remove from list** drops the entry.
 
 **Export in Safari or Firefox fails for a long lecture.** Those browsers assemble the file in memory. Use the server, or split the lecture.
 

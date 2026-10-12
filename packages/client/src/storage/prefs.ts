@@ -19,6 +19,11 @@ export interface Prefs {
   micDeviceId: string;
   /** Run the noise filter over the microphone. */
   noiseFilter: boolean;
+  /**
+   * Use the dedicated hardware video encoder (Apple's media engine, NVENC, Quick Sync) wherever this
+   * computer has one, in the browser and in ffmpeg. On until the user says no.
+   */
+  hardwareEncoding: boolean;
 }
 
 const DEFAULT_PREFS: Prefs = {
@@ -28,6 +33,7 @@ const DEFAULT_PREFS: Prefs = {
   captureMode: 'auto',
   micDeviceId: '',
   noiseFilter: true,
+  hardwareEncoding: true,
 };
 
 export function loadPrefs(): Prefs {
@@ -45,6 +51,10 @@ export function loadPrefs(): Prefs {
           : DEFAULT_PREFS.captureMode,
       micDeviceId: typeof parsed.micDeviceId === 'string' ? parsed.micDeviceId : DEFAULT_PREFS.micDeviceId,
       noiseFilter: typeof parsed.noiseFilter === 'boolean' ? parsed.noiseFilter : DEFAULT_PREFS.noiseFilter,
+      hardwareEncoding:
+        typeof parsed.hardwareEncoding === 'boolean'
+          ? parsed.hardwareEncoding
+          : DEFAULT_PREFS.hardwareEncoding,
     };
   } catch {
     return { ...DEFAULT_PREFS };

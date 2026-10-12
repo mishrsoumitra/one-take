@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { EDGE_SLACK_SEC, speechRanges, trimSilences, type Range } from '../src/core/silence.js';
+import { cutRanges, EDGE_SLACK_SEC, speechRanges, trimSilences, type Range } from '../src/core/silence.js';
 import { SPEECH_FRAME_SEC } from '../src/core/speech.js';
 import { type Segment } from '../src/core/timeline.js';
 
@@ -80,6 +80,44 @@ describe('speechRanges', () => {
   it('never runs past the end of the clip', () => {
     const probs = scores([0.9, 10]);
     expect(speechRanges(probs, 0.3, settings)).toEqual([{ from: 0, to: 0.3 }]);
+  });
+});
+
+describe('cutRanges', () => {
+  it('leaves a sliver at either end alone and says when an end was cut', () => {
+    const whole = cutRanges([{ from: 0.1, to: 4.9 }], 5);
+    expect(whole.keep).toEqual([{ from: 0, to: 5 }]);
+    expect(whole.startCut).toBe(false);
+    expect(whole.endCut).toBe(false);
+    const tail = cutRanges([{ from: 0, to: 3 }], 5);
+    expect(tail.keep).toEqual([{ from: 0, to: 3 }]);
+    expect(tail.endCut).toBe(true);
+    expect(tail.startCut).toBe(false);
+    const head = cutRanges([{ from: 1, to: 5 }], 5);
+    expect(head.startCut).toBe(true);
+    expect(head.endCut).toBe(false);
+  });
+
+  it('clamps to the clip and drops what is left empty', () => {
+    const cut = cutRanges(
+      [
+        { from: -1, to: 0.5 },
+        { from: 2, to: 9 },
+        { from: 6, to: 6 },
+      ],
+      4,
+    );
+    expect(cut.keep).toEqual([
+      { from: 0, to: 0.5 },
+      { from: 2, to: 4 },
+    ]);
+  });
+
+  it('reports nothing kept as both ends cut', () => {
+    const none = cutRanges([], 3);
+    expect(none.keep).toEqual([]);
+    expect(none.startCut).toBe(true);
+    expect(none.endCut).toBe(true);
   });
 });
 

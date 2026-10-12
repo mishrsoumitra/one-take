@@ -1,31 +1,47 @@
 /**
- * Voice activity detection over fixed-size blocks (10 ms by default).
+ * The live phrase detector: decides, block by block (10 ms by default), whether something that could
+ * be a voice is going on, and gathers it into phrases.
  *
  * Each block arrives with the voice detector's latest score (see `speech.ts` and `voice.ts`): how
  * much what is heard right now sounds like someone speaking. A block is "heard" when the score says
- * voice (0.5 to start a phrase, 0.35 to keep one going) and, for the first blocks of a phrase, its
- * level is above the speech line, so a faint voice from the next room does not start a phrase. Without
- * a score (null: the tests drive the detector by level alone) the level alone decides, and the speech
- * line rises above the room's noise floor to make up for it.
+ * it could be a voice (0.35 to open a phrase, and only 0.15 to keep one open) and, for the first
+ * blocks of a phrase, its level is above the speech line, so a faint voice from the next room does
+ * not start a phrase. Without a score (null: the tests drive the detector by level alone) the level
+ * alone decides, and the speech line rises above the room's noise floor to make up for it.
  *
- * A phrase starts after three heard blocks and keeps `prerollMs` of audio from before that moment. It
- * ends after `hangoverMs` of unheard blocks, of which only `tailMs` is kept. Bursts shorter than
- * `minSpeechMs` are dropped unless they continue a phrase that was split by a slide change.
+ * The bars are low and the hold is long on purpose. This detector hears each frame once and has to
+ * answer at once, so it is not the one that cuts: a soft aside, a sentence that trails off, a low
+ * creaky ending, all stay in the phrase. The phrase ends only after two seconds (or `hangoverMs`,
+ * whichever is longer) with nothing voice-like at all, of which only `tailMs` is kept; then the
+ * second listen (`hindsight.ts`) goes over the finished phrase with the whole of it in view and
+ * makes the cuts.
+ *
+ * A phrase starts after three heard blocks and keeps `prerollMs` of audio from before that moment.
+ * Bursts shorter than `minSpeechMs` are dropped unless they continue a phrase that was split by a
+ * slide change.
  *
  * The detector does not know how it is being driven: `gate` is opened and closed by the recorder,
  * which in press-to-speak mode only opens it while the talk key is held.
  */
 import { rmsDb } from './pcm.js';
-import { SPEECH_KEEP, SPEECH_START } from './speech.js';
+import { LIVE_KEEP, LIVE_START } from './speech.js';
 
 export interface VadSettings {
   /** dBFS; the speech line. Sound under it never counts as speech (raised above the noise floor when there is no score). */
   threshold: number;
+  /** A pause this long is cut by the second listen; the live phrase holds on for at least {@link LIVE_HOLD_MS}. */
   hangoverMs: number;
   prerollMs: number;
   tailMs: number;
   minSpeechMs: number;
 }
+
+/**
+ * The least a live phrase stays open with nothing voice-like heard, in ms: long enough that a quiet
+ * stretch inside a sentence is never cut live, short enough that the phrase shows up soon after the
+ * speaker stops.
+ */
+export const LIVE_HOLD_MS = 2000;
 
 export interface PhraseResult {
   blocks: Float32Array[];
@@ -71,8 +87,18 @@ export class VoiceActivityDetector {
     return this.cur.length * this.blockMs;
   }
 
+  /** The phrase being spoken continues a part already split off by a slide change. */
+  get continuing(): boolean {
+    return this._speaking && this.continuation;
+  }
+
   get quietMs(): number {
     return this.quietRun * this.blockMs;
+  }
+
+  /** How long a phrase stays open with nothing heard: the hangover, but never under {@link LIVE_HOLD_MS}. */
+  get holdMs(): number {
+    return Math.max(this.settings.hangoverMs, LIVE_HOLD_MS);
   }
 
   /** Audio held in memory right now: the pre-roll plus the phrase being spoken. Bounded while idle. */
@@ -110,7 +136,7 @@ export class VoiceActivityDetector {
       speech === null ? Math.max(this.settings.threshold, this.noise + 6) : this.settings.threshold;
     const loud = db > this.threshold;
     const heard =
-      speech === null ? loud : this._speaking ? speech >= SPEECH_KEEP : speech >= SPEECH_START && loud;
+      speech === null ? loud : this._speaking ? speech >= LIVE_KEEP : speech >= LIVE_START && loud;
 
     if (!this.gate) {
       // Nothing heard while the gate is closed is kept, not even as pre-roll: what was said while
@@ -132,7 +158,7 @@ export class VoiceActivityDetector {
     if (heard) {
       this.quietRun = 0;
       this.curLoud++;
-    } else if (++this.quietRun * this.blockMs >= this.settings.hangoverMs) {
+    } else if (++this.quietRun * this.blockMs >= this.holdMs) {
       this.end();
     }
   }

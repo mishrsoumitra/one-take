@@ -24,9 +24,10 @@ import {
   withSlide,
 } from '../core/edit.js';
 import { fmtSec, fmtTime } from '../core/format.js';
+import { listenAgain } from '../core/hindsight.js';
 import { type CaptureMode } from '../core/recorder.js';
 import { speechRanges, trimSilences, type Range as SpeechRange } from '../core/silence.js';
-import { scoreClip, type VoiceScorer } from '../core/speech.js';
+import { type VoiceScorer } from '../core/speech.js';
 import {
   buildTimeline,
   segmentDuration,
@@ -143,6 +144,8 @@ export class Editor {
   /** The finished take is playing instead of the lecture. */
   private auditioning = false;
   private takeRaf = 0;
+  /** Bumped by every take started, stopped or closed, so a stop that finishes late knows it was overtaken. */
+  private takeGeneration = 0;
   private clipRows: HTMLElement[] = [];
   private previouslyFocused: Element | null = null;
   /** The voice detector is going through the clips looking for pauses. */
@@ -499,7 +502,7 @@ export class Editor {
     e.btnPlayRange.onclick = () => void this.playRange();
     e.slideSelect.onchange = () => this.changeSlide(Number(e.slideSelect.value));
     e.btnRecord.onclick = () => {
-      if (this.take.recording) this.stopTake();
+      if (this.take.recording) void this.stopTake();
       else void this.startTake();
     };
     e.btnTakeCancel.onclick = () => this.closeTake();
@@ -911,13 +914,12 @@ export class Editor {
   }
 
   /**
-   * Every clip goes through the voice detector; the stretches without a voice, apart from pauses shorter
-   * than the hangover and the pre-roll and tail at the ends, are cut out, splitting a clip where a
-   * long pause sat inside it. One change on the undo stack, however many clips it touched.
+   * Every clip goes through the second listen; the stretches without a voice, apart from pauses
+   * shorter than the hangover and the pre-roll and tail at the ends, are cut out, splitting a clip
+   * where a long pause sat inside it. One change on the undo stack, however many clips it touched.
    */
   private async removePauses(): Promise<void> {
     if (this.scanning || this.list.length === 0) return;
-    const detector = this.deps.speech();
     this.pause();
     this.closeTake();
     this.scanning = true;
@@ -934,7 +936,7 @@ export class Editor {
           this.e.info.textContent = `Listening for pauses… ${pct}%`;
         };
         show(0);
-        const probs = await scoreClip(detector, seg.pcm, seg.sampleRate, show);
+        const probs = await listenAgain(seg.pcm, seg.sampleRate, show);
         done += segmentDuration(seg);
         ranges.set(seg.id, speechRanges(probs, segmentDuration(seg), settings));
       }
@@ -1174,6 +1176,7 @@ export class Editor {
   }
 
   private closeTake(): void {
+    this.takeGeneration++;
     if (this.take.recording) this.take.cancel();
     cancelAnimationFrame(this.takeRaf);
     this.e.btnHold.hidden = true;
@@ -1190,6 +1193,7 @@ export class Editor {
   private async startTake(): Promise<void> {
     const target = this.target;
     if (!target) return;
+    this.takeGeneration++;
     if (this.auditioning) {
       this.player.stop();
       this.auditioning = false;
@@ -1246,10 +1250,9 @@ export class Editor {
     loop();
   }
 
-  private stopTake(): void {
+  private async stopTake(): Promise<void> {
     if (!this.take.recording) return;
     cancelAnimationFrame(this.takeRaf);
-    const take = this.take.stop();
     const e = this.e;
     e.btnHold.hidden = true;
     e.btnHold.classList.remove('on');
@@ -1258,6 +1261,17 @@ export class Editor {
     e.btnRecord.classList.add('primary');
     e.btnRecord.classList.remove('rec');
     e.takeStatus.classList.remove('rec');
+    e.takeStatus.textContent = 'Listening again for the pauses…';
+    e.btnRecord.disabled = true;
+    const generation = ++this.takeGeneration;
+    let take: Take;
+    try {
+      take = await this.take.stop();
+    } finally {
+      e.btnRecord.disabled = false;
+    }
+    // the panel closed (or another take began) while the last phrases were being gone over
+    if (this.takeGeneration !== generation) return;
     this.drawTakeMeter();
     if (take.phrases.length === 0) {
       e.takeStatus.textContent = 'Nothing was heard above the speech line. Try again, a little louder.';

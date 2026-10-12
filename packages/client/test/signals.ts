@@ -13,6 +13,8 @@ export const RATE = SPEECH_RATE;
 export const VOICE_URL = new URL('./fixtures/voice-16k.wav', import.meta.url);
 /** A man's voice (Daniel), 6.5 s. */
 export const MALE_VOICE_URL = new URL('./fixtures/voice-male-16k.wav', import.meta.url);
+/** A deep voice (Daniel with the pitch base at 58 Hz, under a 70 Hz pitch floor), 4.9 s. */
+export const LOW_VOICE_URL = new URL('./fixtures/voice-low-16k.wav', import.meta.url);
 
 /** 16-bit mono PCM out of a RIFF file. */
 export function readWav(url: URL): Int16Array {

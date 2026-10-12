@@ -353,6 +353,7 @@ if (!(await armed())) check(await page.startMic(), 'the mic starts again at the 
 check(restartFailures === 0, `every mic restart during the session armed again (${restartFailures} did not)`);
 await sleep(500);
 await ev('__onetake.stopMic()');
+await ev('__onetake.settled()');
 const finalSnap = await snapshot();
 const heapEnd = await page.heapMb();
 const elapsedMin = (Date.now() - started) / 60_000;

@@ -8,7 +8,8 @@
  * phrase, and they sit on the slide that was showing. The total recorded is bounded from both sides by
  * the speech that was fed. The timeline built from thousands of phrases is checked for consistency.
  *
- * Blocks are 48 samples (4.8 kHz) so four hours cost a few seconds; the detector only looks at levels.
+ * Blocks are 48 samples (4.8 kHz) so four hours cost a few seconds; the detector only looks at levels,
+ * and so does the second listen behind it (`levelReview`), which cuts with the real rules.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -16,6 +17,8 @@ import { rmsDb } from '../src/core/pcm.js';
 import { Recorder, type CaptureMode, type Phrase } from '../src/core/recorder.js';
 import { buildTimeline, durationPerSlide, totalDuration, type Segment } from '../src/core/timeline.js';
 import { type VadSettings } from '../src/core/vad.js';
+
+import { levelReview } from './review.js';
 
 const settings: VadSettings = {
   threshold: -45,
@@ -108,7 +111,7 @@ class Session {
     this.rec = new Recorder(
       BLOCK_MS,
       settings,
-      { mode, slide: 0 },
+      { mode, slide: 0, review: levelReview(settings, BLOCK_MS) },
       {
         onPhrase: (p) => this.onPhrase(p),
         onSpeakingChange: (on) => {
@@ -438,11 +441,12 @@ describe('a long lecture through the recorder', () => {
   it(
     'four hours, auto and press to speak alternating, with slides going back and forth',
     { timeout: 120_000 },
-    () => {
+    async () => {
       const capacity = 4 * HOUR + 2 * MINUTE;
       const session = new Session('auto', capacity, 60, rng(20261009));
       const started = performance.now();
       const counts = lecture(session, 4 * HOUR, 'auto');
+      await session.rec.settled();
       const elapsed = performance.now() - started;
       const rec = session.rec;
       const phrases = session.stored.length;
@@ -480,7 +484,7 @@ describe('a long lecture through the recorder', () => {
     },
   );
 
-  it('press to speak never records with the key up, however much is said', { timeout: 60_000 }, () => {
+  it('press to speak never records with the key up, however much is said', { timeout: 60_000 }, async () => {
     const session = new Session('hold', 70 * MINUTE, 12, rng(7));
     // an hour of talk with the key never touched
     for (let m = 0; m < 60; m++) {
@@ -488,6 +492,7 @@ describe('a long lecture through the recorder', () => {
       session.quiet(session.between(200, 3000));
       if (m % 7 === 0) session.rec.setSlide(session.nextSlide());
     }
+    await session.rec.settled();
     expect(session.stored).toHaveLength(0);
     expect(session.starts).toBe(0);
     expect(session.rec.vad.bufferedMs).toBe(0);
@@ -496,6 +501,7 @@ describe('a long lecture through the recorder', () => {
     session.speak(3000);
     session.rec.hold(false);
     session.speak(5000);
+    await session.rec.settled();
     expect(session.stored).toHaveLength(1);
     expect(session.stored[0]?.blocks).toBe(300);
     expect(session.verify()).toEqual([]);
@@ -504,7 +510,7 @@ describe('a long lecture through the recorder', () => {
   it(
     'a twenty-minute sentence held the whole time, split across slides every minute or so',
     { timeout: 60_000 },
-    () => {
+    async () => {
       const session = new Session('hold', 21 * MINUTE, 30, rng(42));
       session.rec.hold(true);
       let spoken = 0;
@@ -516,6 +522,7 @@ describe('a long lecture through the recorder', () => {
         if (spoken < total) session.rec.setSlide(session.nextSlide());
       }
       session.rec.hold(false);
+      await session.rec.settled();
       expect(session.verify()).toEqual([]);
       expect(session.recorded).toBe(20 * MINUTE); // every block kept, nothing added
       expect(session.stored.length).toBeGreaterThanOrEqual(14);
@@ -532,11 +539,14 @@ describe('a long lecture through the recorder', () => {
   it(
     'survives an hour of chaos: keys, modes, mutes and discards at random moments',
     { timeout: 60_000 },
-    () => {
+    async () => {
       const session = new Session('auto', 61 * MINUTE, 25, rng(1234));
       const s = session;
       let discards = 0;
+      let actions = 0;
       while (s.t < 60 * MINUTE) {
+        // the reviews come back between actions, as they would in the app (within a moment of a phrase ending)
+        if (++actions % 10 === 0) await s.rec.settled();
         const r = s.random();
         if (r < 0.3) s.speak(s.between(50, 4000));
         else if (r < 0.55) s.quiet(s.between(50, 3000));
@@ -547,17 +557,18 @@ describe('a long lecture through the recorder', () => {
         else if (r < 0.88) s.rec.setPaused(s.random() < 0.3);
         else if (r < 0.92) s.cough(s.between(20, 200));
         else if (r < 0.95) {
-          if (s.rec.speaking) discards++;
-          s.rec.discard();
+          // the phrase being spoken, or one finished and still being reviewed
+          if (s.rec.discard()) discards++;
         } else s.speak(s.between(4000, 15000));
       }
       s.rec.setPaused(false);
       s.rec.setMuted(false);
       s.rec.hold(false);
       s.rec.end();
+      await s.rec.settled();
       expect(s.verify()).toEqual([]);
       expect(discards).toBeGreaterThanOrEqual(5);
-      expect(s.stored.length).toBeGreaterThan(100);
+      expect(s.stored.length).toBeGreaterThan(60);
       expect(s.recorded).toBeLessThanOrEqual(s.speechOpen + s.quietOpen);
       expect(s.rec.speaking).toBe(false);
       expect(s.starts).toBe(s.ends);

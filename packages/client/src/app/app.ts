@@ -16,6 +16,7 @@ import { PreviewPlayer } from '../audio/preview.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
+import { cutPhrase } from '../core/silence.js';
 import { MicScorer } from '../core/speech.js';
 import {
   buildTimeline,
@@ -72,6 +73,8 @@ export class App {
   private prefs: Prefs = loadPrefs();
   /** The detector and the mode driving it; exists while the mic is on. */
   private recorder: Recorder | null = null;
+  /** Resolves once every phrase finished so far has been through the second listen and stored. */
+  private settling: Promise<void> = Promise.resolve();
   /** Tells a voice from the rest of what the microphone hears. */
   private readonly voice = new VoiceDetector();
   /** Scores the microphone for the detector; exists while the mic is on. */
@@ -746,7 +749,12 @@ export class App {
     const recorder = new Recorder(
       BLOCK_MS,
       this.store.settings,
-      { mode: s.mode, slide: s.current },
+      {
+        mode: s.mode,
+        slide: s.current,
+        // the second listen: each finished phrase is gone over whole before it is stored
+        review: (blocks) => cutPhrase(blocks, this.sampleRate, this.store.settings),
+      },
       {
         onPhrase: (phrase) =>
           this.addSegment(phrase.blocks, phrase.slide, phrase.joined, phrase.prevId, true).id,
@@ -773,6 +781,7 @@ export class App {
     }
     void this.listMics();
     this.recorder = recorder;
+    this.settling = this.settling.then(() => recorder.settled());
     this.scorer = new MicScorer(this.voice);
     s.armed = true;
     s.muted = false;
@@ -792,8 +801,11 @@ export class App {
   }
 
   stopMic(): void {
-    this.recorder?.end();
+    const recorder = this.recorder;
+    recorder?.end();
     this.mic.stop();
+    // phrases still being reviewed are stored as the reviews come back
+    if (recorder) this.settling = this.settling.then(() => recorder.settled());
     this.recorder = null;
     this.scorer = null;
     const s = this.store.state;
@@ -878,8 +890,8 @@ export class App {
 
   deleteLast(): void {
     const s = this.store.state;
-    if (s.speaking && this.recorder) {
-      this.recorder.discard();
+    // the phrase being spoken, or one just finished and still being gone over, is not stored yet
+    if (this.recorder?.discard()) {
       this.toast.show('Dropped the phrase you were just saying. Go again.');
       return;
     }
@@ -1229,6 +1241,7 @@ export class App {
       api: this.api,
       startMic: () => this.startMic(),
       stopMic: () => this.stopMic(),
+      settled: () => this.settling,
       setMode: (mode: CaptureMode) => this.setMode(mode),
       setNoiseFilter: (on: boolean) => this.setNoiseFilter(on),
       prefs: () => this.prefs,

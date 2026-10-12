@@ -63,6 +63,7 @@ function server(system: SystemProfile | null): ServerCapabilities {
     shortcuts: [],
     presentations: { extensions: ['pptx'], renderer: 'test' },
     system,
+    transcription: null,
   };
 }
 

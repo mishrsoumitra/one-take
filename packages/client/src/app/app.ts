@@ -144,6 +144,8 @@ export class App {
       serverCaps: () => this.serverCaps,
       refreshServer: () => this.refreshServer(),
       timeline: (order) => this.timeline(order),
+      segments: () => this.store.state.segments,
+      timelineSettings: () => this.store.settings,
       slides: () => this.store.state.slides,
       suggestedName: () => {
         const source = this.store.state.slideSource;
@@ -1300,7 +1302,9 @@ export class App {
     const result = await runExport({
       request,
       plan,
-      timeline: this.timeline(request.order),
+      segments: this.store.state.segments,
+      order: request.order,
+      timelineSettings: this.store.settings,
       slides: this.store.state.slides,
       api: this.serverCaps ? this.api : null,
       signal: new AbortController().signal,

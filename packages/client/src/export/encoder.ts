@@ -25,6 +25,7 @@ import {
 } from 'mediabunny';
 
 import { type Slide } from '../app/types.js';
+import { type Cue } from '../core/captions.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 import { BT709_LIMITED, rgbaToI420 } from '../core/yuv.js';
@@ -57,6 +58,8 @@ export interface EncodeOptions {
   seekable: boolean;
   signal: AbortSignal;
   onProgress: (progress: EncodeProgress) => void;
+  /** Subtitles to draw into the picture, in timeline order. */
+  captions?: readonly Cue[];
 }
 
 export interface EncodeResult {
@@ -96,6 +99,42 @@ export function makeOutputFormat(
 
 export function totalFrames(timeline: Timeline, fps: number): number {
   return Math.ceil((timeline.total + TAIL_SECONDS) * fps);
+}
+
+/** Subtitle text: about 4.5 % of the height, white on a soft dark box at the bottom of the picture. */
+const CAPTION_SIZE = 0.045;
+const CAPTION_BOTTOM = 0.06;
+const CAPTION_FONT = '"Mona Sans", "Helvetica Neue", Helvetica, Arial, sans-serif';
+
+/** Draws the cue's lines, centred, over whatever is on the canvas already. */
+export function drawCaption(g: Canvas2D, lines: readonly string[], width: number, height: number): void {
+  if (lines.length === 0) return;
+  const size = Math.max(12, Math.round(height * CAPTION_SIZE));
+  const lineHeight = Math.round(size * 1.3);
+  const padX = Math.round(size * 0.6);
+  const padY = Math.round(size * 0.3);
+  g.font = `600 ${size}px ${CAPTION_FONT}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const widest = Math.max(...lines.map((l) => g.measureText(l).width));
+  const boxW = Math.min(width - 2 * padX, widest + 2 * padX);
+  const boxH = lines.length * lineHeight + 2 * padY;
+  const x = Math.round((width - boxW) / 2);
+  const y = Math.round(height - height * CAPTION_BOTTOM - boxH);
+  g.fillStyle = 'rgba(0, 0, 0, 0.62)';
+  g.beginPath();
+  const r = Math.round(size * 0.25);
+  g.moveTo(x + r, y);
+  g.arcTo(x + boxW, y, x + boxW, y + boxH, r);
+  g.arcTo(x + boxW, y + boxH, x, y + boxH, r);
+  g.arcTo(x, y + boxH, x, y, r);
+  g.arcTo(x, y, x + boxW, y, r);
+  g.closePath();
+  g.fill();
+  g.fillStyle = '#fff';
+  lines.forEach((line, i) => {
+    g.fillText(line, Math.round(width / 2), y + padY + lineHeight * i + lineHeight / 2, boxW - 2 * padX);
+  });
 }
 
 type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -202,10 +241,13 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
   const frameDuration = 1 / fps;
   const frameTotal = totalFrames(timeline, fps);
   const chunkFrames = Math.round(rate * AUDIO_CHUNK_SECONDS);
+  const cues = options.captions ?? [];
+  let cueAt = 0;
   let frames = 0;
   let audioPos = 0; // samples emitted
-  let currentSlide = -1;
-  /** The current slide as one captured frame; every frame of it is a reference clone of this. */
+  /** What the captured frame shows: the slide and the subtitle on it. */
+  let currentKey = '';
+  /** The current slide (with its subtitle) as one captured frame; every frame of it is a reference clone of this. */
   let slideFrame: VideoSample | null = null;
   let acc = new Float32Array(chunkFrames);
   let accN = 0;
@@ -261,23 +303,32 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     return new VideoSample(canvas, { timestamp: 0, duration: frameDuration });
   }
 
-  async function drawSlide(index: number): Promise<VideoSample> {
-    if (index === currentSlide && slideFrame) return slideFrame;
-    currentSlide = index;
+  async function drawSlide(index: number, caption: readonly string[] | null): Promise<VideoSample> {
+    const key = `${index}|${caption?.join('\n') ?? ''}`;
+    if (key === currentKey && slideFrame) return slideFrame;
+    currentKey = key;
     const bmp = await bitmaps.get(index);
     g.fillStyle = '#000';
     g.fillRect(0, 0, width, height);
     g.drawImage(bmp, Math.round((width - bmp.width) / 2), Math.round((height - bmp.height) / 2));
+    if (caption) drawCaption(g, caption, width, height);
     slideFrame?.close();
     slideFrame = captureSlide();
     return slideFrame;
   }
 
+  /** The subtitle showing at `sec`, walking the cues forward as the video does. */
+  function captionAt(sec: number): readonly string[] | null {
+    while (cueAt < cues.length && (cues[cueAt]?.end ?? Infinity) <= sec) cueAt++;
+    const cue = cues[cueAt];
+    return cue && cue.start <= sec ? cue.lines : null;
+  }
+
   async function pushFrames(untilSec: number, slideIndex: number, keyFirst: boolean): Promise<void> {
-    const base = await drawSlide(slideIndex);
     let key = keyFirst;
     while (frames * frameDuration < untilSec - 1e-6) {
       checkAbort();
+      const base = await drawSlide(slideIndex, cues.length ? captionAt(frames * frameDuration) : null);
       const frame = base.clone();
       frame.setTimestamp(frames / fps);
       frame.setDuration(frameDuration);
@@ -332,7 +383,8 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
       report(k + 1);
     }
     if (accN > 0) await emitAudio(acc.subarray(0, accN));
-    await pushFrames(audioPos / rate + TAIL_SECONDS, Math.max(0, currentSlide), false);
+    const lastSlide = timeline.items[timeline.items.length - 1]?.seg.slide ?? 0;
+    await pushFrames(audioPos / rate + TAIL_SECONDS, Math.max(0, lastSlide), false);
     checkAbort();
     video.close();
     audio.close();

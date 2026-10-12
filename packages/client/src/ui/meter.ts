@@ -6,7 +6,7 @@ export interface MeterInput {
   threshold: number;
   noise: number;
   settingThreshold: number;
-  /** The voice model's latest score, or null while the level alone decides. */
+  /** The voice detector's latest score, or null while the level alone decides. */
   voice: number | null;
 }
 

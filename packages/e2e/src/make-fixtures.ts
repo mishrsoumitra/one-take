@@ -2,8 +2,8 @@
  * Builds test fixtures: a 4-page 16:9 PDF, a 3-slide PowerPoint deck and a WAV of speech with
  * thinking pauses; for the stress run, a 12-page PDF and a sixty-second voice loop.
  *
- * The speech is real: the app's detector is a neural voice model that hears a tone as a tone, so the
- * voice comes from macOS text-to-speech (`say`), rendered once per process and cut to length.
+ * The speech is real: the app's detector listens for the pitch and the changes of a human voice, so
+ * the voice comes from macOS text-to-speech (`say`), rendered once per process and cut to length.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -109,8 +109,7 @@ let voiceBank: Float64Array | null | undefined;
 /**
  * A lecturer's voice, from macOS text-to-speech, with the pauses between sentences shortened so a cut
  * of any length is voice almost all the way through. Null where `say` is not available: the harmonic
- * stand-in is used then, with a warning, and the detector (which listens for a human voice) will hear
- * little of it.
+ * stand-in is used then, with a warning; it is not what the detector is tuned for.
  */
 function voice(): Float64Array | null {
   if (voiceBank !== undefined) return voiceBank;
@@ -125,7 +124,7 @@ function voice(): Float64Array | null {
     voiceBank = tighten(readWavSamples(fs.readFileSync(file)));
   } catch (error) {
     console.warn(
-      `no text-to-speech voice (${(error as Error).message}); the fixture uses a harmonic tone, which the voice model will not hear as speech`,
+      `no text-to-speech voice (${(error as Error).message}); the fixture uses a harmonic tone instead of a voice`,
     );
     voiceBank = null;
   } finally {

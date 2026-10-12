@@ -101,7 +101,7 @@ export class Recorder {
     this.vad.gate = this.gateOpen;
   }
 
-  /** Takes the next block with the voice model's latest score (null: decide by level alone). */
+  /** Takes the next block with the voice detector's latest score (null: decide by level alone). */
   process(block: Float32Array, speech: number | null = null): void {
     this.vad.process(block, speech);
   }

@@ -13,11 +13,10 @@ import {
 import { ApiClient } from '../api/client.js';
 import { MicCapture } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
-import { loadSpeechModel } from '../audio/speech-model.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
-import { SpeechScorer, type SpeechModel } from '../core/speech.js';
+import { MicScorer } from '../core/speech.js';
 import {
   buildTimeline,
   durationPerSlide,
@@ -27,6 +26,7 @@ import {
   type Segment,
   type Timeline,
 } from '../core/timeline.js';
+import { VoiceDetector } from '../core/voice.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
@@ -72,12 +72,10 @@ export class App {
   private prefs: Prefs = loadPrefs();
   /** The detector and the mode driving it; exists while the mic is on. */
   private recorder: Recorder | null = null;
-  /** The voice model once loaded; null while it loads and when this browser cannot run it. */
-  private speechModel: SpeechModel | null = null;
-  private speechState: 'loading' | 'ready' | 'failed' = 'loading';
-  /** Scores the microphone for the detector; exists while the mic is on and the model is loaded. */
-  private scorer: SpeechScorer | null = null;
-  private levelOnlyWarned = false;
+  /** Tells a voice from the rest of what the microphone hears. */
+  private readonly voice = new VoiceDetector();
+  /** Scores the microphone for the detector; exists while the mic is on. */
+  private scorer: MicScorer | null = null;
   /** The start in progress, so a second Start (a double press, a held R key) joins it instead of racing it. */
   private micStarting: Promise<void> | null = null;
   private sampleRate = 48000;
@@ -167,7 +165,7 @@ export class App {
       mic: this.mic,
       micDeviceId: () => this.refs.micSelect.value || undefined,
       nextId: () => this.nextSegmentId(),
-      speech: () => this.speechModel,
+      speech: () => this.voice,
       onChange: (segments) => this.applyEdit(segments),
       onClose: () => {
         // the editor may have moved the playhead to another slide; show the one the user left on
@@ -186,7 +184,6 @@ export class App {
   async init(): Promise<void> {
     this.store.state.mode = this.prefs.captureMode;
     this.wire();
-    void this.loadSpeech();
     this.syncSliders();
     this.updateModeSwitch();
     this.drawMeter();
@@ -743,8 +740,7 @@ export class App {
     }
     void this.listMics();
     this.recorder = recorder;
-    this.scorer = this.speechModel ? new SpeechScorer(this.speechModel) : null;
-    if (this.speechState === 'failed') this.warnLevelOnly();
+    this.scorer = new MicScorer(this.voice);
     s.armed = true;
     s.muted = false;
     s.held = false;
@@ -799,27 +795,6 @@ export class App {
     if (vad.speaking && Math.round(vad.currentMs / BLOCK_MS) % 20 === 0) {
       this.refs.capFlagText.textContent = `RECORDING ${fmtSec(vad.currentMs / 1000)}`;
     }
-  }
-
-  /**
-   * The voice model loads in the background from the moment the app opens, so it is normally ready
-   * long before the mic starts; if it arrives while the mic is already on, the blocks from then on
-   * are scored. A browser that cannot run it is told once, when the mic starts.
-   */
-  private async loadSpeech(): Promise<void> {
-    const model = await loadSpeechModel();
-    this.speechModel = model;
-    this.speechState = model ? 'ready' : 'failed';
-    if (model && this.recorder) this.scorer = new SpeechScorer(model);
-    if (!model && this.store.state.armed) this.warnLevelOnly();
-  }
-
-  private warnLevelOnly(): void {
-    if (this.levelOnlyWarned) return;
-    this.levelOnlyWarned = true;
-    this.toast.show(
-      'The voice model could not be loaded, so speech is detected by level alone. Keep the speech line above the room noise.',
-    );
   }
 
   /* ------------------------------------------------------------------ */
@@ -1217,7 +1192,6 @@ export class App {
       settings: this.store.settings,
       vad: () => this.recorder?.vad ?? null,
       recorder: () => this.recorder,
-      speech: () => this.speechState,
       scorer: () => this.scorer,
       api: this.api,
       startMic: () => this.startMic(),

@@ -392,7 +392,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
         'label',
         {
           title:
-            'Sound under this line never counts as speech, even a faint voice from the next room. Your voice should go clearly past it; the voice model tells it from noise above the line.',
+            'Sound under this line never counts as speech, even a faint voice from the next room. Your voice should go clearly past it; the voice detector tells it from noise above the line.',
         },
         h('span', { class: 'label' }, 'Speech line'),
         thr,

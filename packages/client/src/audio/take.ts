@@ -4,7 +4,7 @@
  */
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
-import { SpeechScorer, type SpeechModel } from '../core/speech.js';
+import { MicScorer, type VoiceScorer } from '../core/speech.js';
 import { type VadSettings } from '../core/vad.js';
 
 import { type MicCapture } from './mic.js';
@@ -30,8 +30,8 @@ export class TakeRecorder {
   constructor(
     private readonly mic: MicCapture,
     private readonly blockMs: number,
-    /** The voice model, when it is loaded; without it the take is cut by level alone. */
-    private readonly speech: () => SpeechModel | null = () => null,
+    /** The voice detector that cuts the take. */
+    private readonly speech: () => VoiceScorer,
   ) {}
 
   get recording(): boolean {
@@ -63,7 +63,7 @@ export class TakeRecorder {
     return this.recorder?.vad.noise ?? -60;
   }
 
-  /** The voice model's latest score, or null while the level alone decides. */
+  /** The voice detector's latest score, or null while the level alone decides. */
   get voice(): number | null {
     return this.recorder?.vad.voice ?? null;
   }
@@ -97,14 +97,13 @@ export class TakeRecorder {
         onSpeakingChange: () => undefined,
       },
     );
-    const model = this.speech();
-    const scorer = model ? new SpeechScorer(model) : null;
+    const scorer = new MicScorer(this.speech());
     const info = await this.mic.start({
       deviceId: options.deviceId,
       blockMs: this.blockMs,
       onBlock: (block) => {
-        scorer?.push(block, this.mic.sampleRate);
-        this.recorder?.process(block, scorer?.prob ?? null);
+        scorer.push(block, this.mic.sampleRate);
+        this.recorder?.process(block, scorer.prob);
       },
     });
     if (!info) return false;

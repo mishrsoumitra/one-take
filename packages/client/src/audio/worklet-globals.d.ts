@@ -1,4 +1,6 @@
 /* Globals of the AudioWorklet scope, which lib.dom does not declare. */
+/** The sample rate of the context the worklet runs in. */
+declare const sampleRate: number;
 declare class AudioWorkletProcessor {
   readonly port: MessagePort;
   constructor(options?: { processorOptions?: Record<string, unknown> });

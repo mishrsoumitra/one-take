@@ -15,9 +15,20 @@ export interface Prefs {
   theme: Theme;
   /** `auto`: the detector decides when you speak. `hold`: only while the talk key or button is held. */
   captureMode: CaptureMode;
+  /** The chosen microphone's device id; empty for the browser's default. */
+  micDeviceId: string;
+  /** Run the noise filter over the microphone. */
+  noiseFilter: boolean;
 }
 
-const DEFAULT_PREFS: Prefs = { welcomeSeen: false, tips: true, theme: 'dark', captureMode: 'auto' };
+const DEFAULT_PREFS: Prefs = {
+  welcomeSeen: false,
+  tips: true,
+  theme: 'dark',
+  captureMode: 'auto',
+  micDeviceId: '',
+  noiseFilter: true,
+};
 
 export function loadPrefs(): Prefs {
   try {
@@ -32,6 +43,8 @@ export function loadPrefs(): Prefs {
         parsed.captureMode === 'hold' || parsed.captureMode === 'auto'
           ? parsed.captureMode
           : DEFAULT_PREFS.captureMode,
+      micDeviceId: typeof parsed.micDeviceId === 'string' ? parsed.micDeviceId : DEFAULT_PREFS.micDeviceId,
+      noiseFilter: typeof parsed.noiseFilter === 'boolean' ? parsed.noiseFilter : DEFAULT_PREFS.noiseFilter,
     };
   } catch {
     return { ...DEFAULT_PREFS };

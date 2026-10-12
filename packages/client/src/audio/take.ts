@@ -19,6 +19,7 @@ export interface TakeStartOptions {
   settings: VadSettings;
   mode: CaptureMode;
   deviceId?: string;
+  noiseFilter: boolean;
 }
 
 export class TakeRecorder {
@@ -100,6 +101,7 @@ export class TakeRecorder {
     const scorer = new MicScorer(this.speech());
     const info = await this.mic.start({
       deviceId: options.deviceId,
+      noiseFilter: options.noiseFilter,
       blockMs: this.blockMs,
       onBlock: (block) => {
         scorer.push(block, this.mic.sampleRate);

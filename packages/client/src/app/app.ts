@@ -78,6 +78,8 @@ export class App {
   private scorer: MicScorer | null = null;
   /** The start in progress, so a second Start (a double press, a held R key) joins it instead of racing it. */
   private micStarting: Promise<void> | null = null;
+  /** The microphone has been opened once: the browser now tells the microphones apart by name. */
+  private micOpened = false;
   private sampleRate = 48000;
   private segmentCounter = 0;
   private metaTimer = 0;
@@ -164,6 +166,7 @@ export class App {
       mode: () => this.store.state.mode,
       mic: this.mic,
       micDeviceId: () => this.refs.micSelect.value || undefined,
+      noiseFilter: () => this.prefs.noiseFilter,
       nextId: () => this.nextSegmentId(),
       speech: () => this.voice,
       onChange: (segments) => this.applyEdit(segments),
@@ -183,6 +186,7 @@ export class App {
 
   async init(): Promise<void> {
     this.store.state.mode = this.prefs.captureMode;
+    this.refs.noiseFilter.checked = this.prefs.noiseFilter;
     this.wire();
     this.syncSliders();
     this.updateModeSwitch();
@@ -334,11 +338,19 @@ export class App {
     r.btnEdit.onclick = () => this.openEditor();
     r.btnExport.onclick = () => this.openExport();
     r.btnClose.onclick = () => void this.closeSlides();
+    // both controls give the keyboard back once a choice is made: a focused select or checkbox would
+    // swallow Space and the arrow keys, which belong to the talk key and the slides
     r.micSelect.onchange = () => {
+      this.prefs = savePrefs({ micDeviceId: r.micSelect.value });
+      r.micSelect.blur();
       if (this.store.state.armed) {
         this.stopMic();
         void this.startMic();
       }
+    };
+    r.noiseFilter.onchange = () => {
+      this.setNoiseFilter(r.noiseFilter.checked);
+      r.noiseFilter.blur();
     };
     r.thr.oninput = () => {
       this.store.settings.threshold = Number(r.thr.value);
@@ -623,10 +635,14 @@ export class App {
   /* Microphone                                                          */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * Fills the microphone picker. The browser only names the microphones once the mic has been
+   * allowed, so until the first start the list says so; the remembered choice is picked whenever it
+   * is plugged in, and the default otherwise.
+   */
   private async listMics(): Promise<void> {
     const devices = await MicCapture.listDevices();
     const sel = this.refs.micSelect;
-    const current = sel.value;
     while (sel.options.length > 1) sel.remove(1);
     for (const d of devices) {
       const o = document.createElement('option');
@@ -634,7 +650,22 @@ export class App {
       o.textContent = d.label || 'Microphone';
       sel.appendChild(o);
     }
-    sel.value = current;
+    if (devices.length === 0 && !this.micOpened) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.disabled = true;
+      o.textContent = 'Start the mic once to list the others';
+      sel.appendChild(o);
+    }
+    const wanted = this.prefs.micDeviceId;
+    sel.value = devices.some((d) => d.deviceId === wanted) ? wanted : '';
+  }
+
+  /** Turns the noise filter on or off: at once while the mic is on, and for every mic from now on. */
+  setNoiseFilter(on: boolean): void {
+    this.prefs = savePrefs({ noiseFilter: on });
+    this.refs.noiseFilter.checked = on;
+    this.mic.setNoiseFilter(on);
   }
 
   /** Preview and export pause the recorder; it stops listening until they end. */
@@ -729,9 +760,11 @@ export class App {
     try {
       const info = await this.mic.start({
         deviceId: this.refs.micSelect.value || undefined,
+        noiseFilter: this.prefs.noiseFilter,
         blockMs: BLOCK_MS,
         onBlock: (block) => this.onBlock(block),
       });
+      this.micOpened = true;
       if (!info) return; // stopped again before it had opened
       this.sampleRate = info.sampleRate;
     } catch (error) {
@@ -1197,6 +1230,9 @@ export class App {
       startMic: () => this.startMic(),
       stopMic: () => this.stopMic(),
       setMode: (mode: CaptureMode) => this.setMode(mode),
+      setNoiseFilter: (on: boolean) => this.setNoiseFilter(on),
+      prefs: () => this.prefs,
+      mic: this.mic,
       hold: (down: boolean) => this.hold(down),
       toggleMute: () => this.toggleMute(),
       goTo: (i: number) => this.goTo(i),

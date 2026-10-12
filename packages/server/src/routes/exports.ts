@@ -1,11 +1,10 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
 import { type Readable } from 'node:stream';
 
 import { CreateExportJobSchema, FinishExportJobSchema, type JobEvent } from '@one-take/shared';
 import { type FastifyInstance } from 'fastify';
 
 import { type AppDependencies } from '../app.js';
+import { revealInFileManager } from '../util/desktop.js';
 import { ApiError } from '../util/errors.js';
 
 interface IdParams {
@@ -84,21 +83,7 @@ export function registerExportRoutes(app: FastifyInstance, deps: AppDependencies
     const job = jobs.get(request.params.id);
     const target = job.outputs[0]?.path;
     if (!target) throw ApiError.conflict('no_output', 'This export has no output yet.');
-    const [cmd, args] =
-      process.platform === 'darwin'
-        ? ['open', ['-R', target]]
-        : process.platform === 'win32'
-          ? ['explorer.exe', [`/select,${target}`]]
-          : ['xdg-open', [path.dirname(target)]];
-    try {
-      spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
-    } catch (error) {
-      throw new ApiError(
-        500,
-        'reveal_failed',
-        `Could not open the file manager: ${(error as Error).message}`,
-      );
-    }
+    revealInFileManager(target);
     return { ok: true };
   });
 }

@@ -299,15 +299,17 @@ export function performanceWarnings(input: ResourceInput, lines: readonly Resour
       `The file (${formatGb(estimate.uploadBytes)}) is assembled in memory here; that is a quarter of this machine's RAM.`,
     );
   }
+  // With the hardware switch on, say when the CPU ends up with the work anyway (the switch off is the
+  // user's choice and gets no warning).
   if (!b.hardware && b.hardwareAcceleration !== 'prefer-software') {
     const hwCodec = (['avc', 'hevc'] as const).find((c) => browser.hardware[c] >= b.height);
     if (hwCodec && b.videoCodec !== hwCodec) {
       warnings.push(
-        `${b.videoCodec.toUpperCase()} is encoded in software in this browser. ${hwCodec.toUpperCase()} (MP4) would use the GPU and be several times faster.`,
+        `${b.videoCodec.toUpperCase()} is encoded in software in this browser. ${hwCodec.toUpperCase()} (MP4) would use the hardware encoder and be several times faster.`,
       );
     } else if (b.width * b.height > PIXELS_1080P && Object.values(browser.hardware).some((h) => h >= 1080)) {
       warnings.push(
-        'The GPU encoder works up to 1080p in this browser; above that the CPU encodes, which is much slower.',
+        'The hardware encoder works up to 1080p in this browser; above that the CPU encodes, which is much slower.',
       );
     }
   }

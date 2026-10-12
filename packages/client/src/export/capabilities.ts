@@ -1,14 +1,16 @@
 /**
  * What this browser can do, probed once at start-up: which codecs WebCodecs encodes, which of them the
- * GPU takes (`prefer-hardware` at 1080p and 4K), how many threads and how much memory the browser
- * admits to, and the GPU's name. The export planner uses this to choose codecs and encoder settings
- * for this machine rather than a generic one.
+ * GPU takes (`prefer-hardware` at 1080p and 4K) and which have a software encoder (`prefer-software`),
+ * how many threads and how much memory the browser admits to, and the GPU's name. The export planner
+ * uses this to choose codecs and encoder settings for this machine rather than a generic one.
  */
 import {
   NO_HARDWARE,
+  NO_SOFTWARE,
   type BrowserCapabilities,
   type BrowserEncoderBenchmark,
   type HardwareSupport,
+  type SoftwareSupport,
   type VideoCodecId,
 } from '@one-take/shared';
 import { canEncodeVideo, getEncodableAudioCodecs, getEncodableVideoCodecs } from 'mediabunny';
@@ -43,6 +45,22 @@ export async function probeHardwareEncoders(codecs: readonly VideoCodecId[]): Pr
         }
         if (!ok) break;
         support[codec] = size.height;
+      }
+    }),
+  );
+  return support;
+}
+
+/** Which codecs accept `prefer-software` at 1080p, so "no hardware" can be honoured without failing. */
+export async function probeSoftwareEncoders(codecs: readonly VideoCodecId[]): Promise<SoftwareSupport> {
+  const support: SoftwareSupport = { ...NO_SOFTWARE };
+  const size = PROBE_SIZES[0];
+  await Promise.all(
+    codecs.map(async (codec) => {
+      try {
+        support[codec] = await canEncodeVideo(codec, { ...size, hardwareAcceleration: 'prefer-software' });
+      } catch {
+        support[codec] = false;
       }
     }),
   );
@@ -217,6 +235,7 @@ export async function detectBrowserCapabilities(): Promise<BrowserCapabilities> 
       videoCodecs: [],
       audioCodecs: [],
       hardware: { ...NO_HARDWARE },
+      software: { ...NO_SOFTWARE },
       benchmark: null,
       gpu: await detectGpuName(),
     };
@@ -227,13 +246,17 @@ export async function detectBrowserCapabilities(): Promise<BrowserCapabilities> 
     detectGpuName(),
   ]);
   const videoCodecs = video.filter((c): c is VideoCodecId => (VIDEO as readonly string[]).includes(c));
-  const hardware = await probeHardwareEncoders(videoCodecs);
+  const [hardware, software] = await Promise.all([
+    probeHardwareEncoders(videoCodecs),
+    probeSoftwareEncoders(videoCodecs),
+  ]);
   const benchmark = videoCodecs.includes('avc') ? await benchmarkAvcEncoders(hardware.avc > 0) : null;
   return {
     ...base,
     videoCodecs,
     audioCodecs: audio.filter((c): c is 'aac' | 'opus' => c === 'aac' || c === 'opus'),
     hardware,
+    software,
     benchmark,
     gpu,
   };

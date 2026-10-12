@@ -10,7 +10,9 @@ import {
   CONTAINERS,
   SERVER_VIDEO_CODECS,
   VIDEO_CODECS,
+  type AudioCodecId,
   type Container,
+  type VideoCodecId,
 } from './containers.js';
 import { PERFORMANCE_MODES } from './performance.js';
 import { type PresentationSupport } from './presentations.js';
@@ -60,8 +62,6 @@ export const CompressionSchema = z.object({
   maxBitrateKbps: z.int().min(100).max(200_000).nullable(),
   /** Scale to this height while re-encoding; null keeps the recorded size. */
   height: dimension.nullable(),
-  /** Prefer a hardware encoder on the server when one exists. */
-  hardware: z.boolean(),
 });
 export type Compression = z.infer<typeof CompressionSchema>;
 
@@ -97,8 +97,11 @@ export const ExportRequestSchema = z.object({
   compression: CompressionSchema,
   streaming: StreamingSchema,
   order: z.enum(['recorded', 'slide']),
-  /** How hard to push for speed versus file size; see performance.ts. */
-  performance: z.object({ mode: z.enum(PERFORMANCE_MODES) }),
+  /**
+   * The hardware switch (use the dedicated encoder wherever this computer has one) and how hard to push
+   * for speed versus file size; see performance.ts.
+   */
+  performance: z.object({ mode: z.enum(PERFORMANCE_MODES), hardware: z.boolean() }),
 });
 export type ExportRequest = z.infer<typeof ExportRequestSchema>;
 
@@ -261,6 +264,39 @@ export interface ExportJob {
 }
 
 export type JobEvent = { type: 'job'; job: ExportJob } | { type: 'log'; line: string };
+
+/**
+ * A finished export the server remembers across restarts (`GET /api/library`): what was written where,
+ * so the app can list, play, reveal and delete the videos it made. Exports saved through the browser
+ * never pass through the server and are not recorded.
+ */
+export interface ExportRecord {
+  /** The id of the job that made it. */
+  id: string;
+  /** When the file was finished. */
+  createdAt: string;
+  /** The file, or the folder for HLS and DASH. */
+  path: string;
+  directory: string;
+  /** `lecture.mp4`, or `lecture` for a folder. */
+  fileName: string;
+  kind: 'file' | 'directory';
+  container: Container;
+  /** Size on disk now (the whole folder for HLS and DASH); the size at export time when it is gone. */
+  bytes: number;
+  /** False when the file has been moved or deleted outside One Take since. */
+  exists: boolean;
+  durationSec: number;
+  width: number;
+  height: number;
+  fps: number;
+  videoCodec: VideoCodecId;
+  audioCodec: AudioCodecId;
+  /** The ffmpeg encoder that produced the video (`h264_videotoolbox`, `libx264`), null for a stream copy. */
+  encoder: string | null;
+  /** The ffmpeg command that ran, when one did. */
+  command: string | null;
+}
 
 export interface FfmpegInfo {
   path: string;

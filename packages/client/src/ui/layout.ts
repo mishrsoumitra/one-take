@@ -35,6 +35,8 @@ export interface LayoutRefs {
   /** Opens the editor: play with a scrub bar, re-record, cut, add or remove clips. */
   btnEdit: HTMLButtonElement;
   btnExport: HTMLButtonElement;
+  /** Opens the list of exported videos: play, show in folder, delete. */
+  btnLibrary: HTMLButtonElement;
   btnHelp: HTMLButtonElement;
   /** Switches between grauity's dark and light themes. */
   btnTheme: HTMLButtonElement;
@@ -198,6 +200,16 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('download'),
     h('span', { class: 'label' }, 'Export', h('span', { class: 'long' }, ' video')),
   );
+  const btnLibrary = h(
+    'button',
+    {
+      id: 'btnLibrary',
+      class: 'ghost',
+      title: 'Your exported videos: watch them, show them in the folder, or delete them',
+    },
+    icon('folder'),
+    label('Exports'),
+  );
   const btnHelp = h(
     'button',
     { id: 'btnHelp', class: 'ghost', title: 'How it works' },
@@ -241,7 +253,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     ),
     h('div', { class: 'spacer' }),
     h('div', { class: 'group', id: 'gExport' }, stepExport, btnPreview, btnEdit, btnExport),
-    h('div', { class: 'group tools' }, btnHelp, btnTheme),
+    h('div', { class: 'group tools' }, btnLibrary, btnHelp, btnTheme),
   );
 
   /* ------------------------------------------------------------------ stage */
@@ -491,6 +503,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     btnPreview,
     btnEdit,
     btnExport,
+    btnLibrary,
     btnHelp,
     btnTheme,
     stage,

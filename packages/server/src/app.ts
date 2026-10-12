@@ -9,8 +9,10 @@ import { registerCapabilityRoutes } from './routes/capabilities.js';
 import { registerConvertRoutes } from './routes/convert.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
+import { registerLibraryRoutes } from './routes/library.js';
 import { type ConverterService } from './services/convert.js';
 import { type JobManager } from './services/jobs.js';
+import { type ExportLibrary } from './services/library.js';
 import { type LoadMonitor } from './services/load.js';
 import { ApiError, errorMessage } from './util/errors.js';
 
@@ -21,6 +23,8 @@ export interface AppDependencies {
   capabilities: () => ServerCapabilities;
   /** The live CPU and memory figures behind `/api/system/load`. */
   load: LoadMonitor;
+  /** The exports the server finished, remembered across restarts. */
+  library: ExportLibrary;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
@@ -104,6 +108,7 @@ export function buildApp(deps: AppDependencies): FastifyInstance {
   registerCapabilityRoutes(app, deps);
   registerFsRoutes(app);
   registerExportRoutes(app, deps);
+  registerLibraryRoutes(app, deps);
   registerConvertRoutes(app, deps);
 
   if (config.staticDir) {

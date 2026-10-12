@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp, hostIsLoopback, originIsLoopback } from '../src/app.js';
 import { PptxConverter, presentationSupport, type ConverterService } from '../src/services/convert.js';
 import { JobManager } from '../src/services/jobs.js';
+import { ExportLibrary } from '../src/services/library.js';
 import { LoadMonitor } from '../src/services/load.js';
 
 let tmp: string;
@@ -25,21 +26,27 @@ afterAll(async () => {
 });
 
 function makeApp(allowRemote = false, converter: ConverterService = new PptxConverter({ inline: true })) {
+  const library = new ExportLibrary(path.join(tmp, 'data', 'exports.json'));
   return buildApp({
     config: {
       host: '127.0.0.1',
       port: 0,
       staticDir,
       defaultDirectory: tmp,
+      dataDir: path.join(tmp, 'data'),
       ffmpegPath: null,
       ffprobePath: null,
       fontDirectories: [],
       logLevel: 'silent',
       allowRemote,
+      selfTest: false,
+      benchmark: false,
+      rendererMemoryMb: null,
     },
-    jobs: new JobManager({ ffmpeg: null }),
+    jobs: new JobManager({ ffmpeg: null, library }),
     converter,
     load: new LoadMonitor(),
+    library,
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
@@ -309,7 +316,73 @@ describe('app', () => {
     expect(await fs.readFile(path.join(tmp, 'api test.mp4'), 'utf8')).toBe('hello world');
     const list = await app.inject({ method: 'GET', url: '/api/exports', headers: { host: 'localhost' } });
     expect(list.json<{ id: string }[]>().map((j) => j.id)).toContain(id);
+
+    // the finished export is in the library, with its file, and can be streamed, revealed and deleted
+    const library = await app.inject({ method: 'GET', url: '/api/library', headers: { host: 'localhost' } });
+    expect(library.statusCode).toBe(200);
+    const record = library.json<{ id: string; fileName: string; exists: boolean; bytes: number }[]>()[0];
+    expect(record).toMatchObject({ id, fileName: 'api test.mp4', exists: true, bytes: 11 });
+    const whole = await app.inject({
+      method: 'GET',
+      url: `/api/library/${id}/file`,
+      headers: { host: 'localhost' },
+    });
+    expect(whole.statusCode).toBe(200);
+    expect(whole.headers['content-type']).toContain('video/mp4');
+    expect(whole.headers['accept-ranges']).toBe('bytes');
+    expect(whole.body).toBe('hello world');
+    const part = await app.inject({
+      method: 'GET',
+      url: `/api/library/${id}/file`,
+      headers: { host: 'localhost', range: 'bytes=6-' },
+    });
+    expect(part.statusCode).toBe(206);
+    expect(part.headers['content-range']).toBe('bytes 6-10/11');
+    expect(part.body).toBe('world');
+    const tail = await app.inject({
+      method: 'GET',
+      url: `/api/library/${id}/file`,
+      headers: { host: 'localhost', range: 'bytes=-5' },
+    });
+    expect(tail.statusCode).toBe(206);
+    expect(tail.body).toBe('world');
+    const beyond = await app.inject({
+      method: 'GET',
+      url: `/api/library/${id}/file`,
+      headers: { host: 'localhost', range: 'bytes=50-60' },
+    });
+    expect(beyond.statusCode).toBe(416);
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: `/api/library/${id}`,
+      headers: { host: 'localhost', origin: 'http://localhost:4317' },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ deleted: true, record: { id } });
+    await expect(fs.access(path.join(tmp, 'api test.mp4'))).rejects.toThrow();
+    const empty = await app.inject({ method: 'GET', url: '/api/library', headers: { host: 'localhost' } });
+    expect(empty.json()).toEqual([]);
+    const gone = await app.inject({
+      method: 'GET',
+      url: `/api/library/${id}`,
+      headers: { host: 'localhost' },
+    });
+    expect(gone.statusCode).toBe(404);
+    expect(gone.json()).toMatchObject({ error: { code: 'export_not_found' } });
     await app.close();
+  });
+
+  it('parses byte ranges the way players send them', async () => {
+    const { parseRange } = await import('../src/routes/library.js');
+    expect(parseRange('bytes=0-', 100)).toEqual({ start: 0, end: 99 });
+    expect(parseRange('bytes=10-19', 100)).toEqual({ start: 10, end: 19 });
+    expect(parseRange('bytes=90-500', 100)).toEqual({ start: 90, end: 99 });
+    expect(parseRange('bytes=-10', 100)).toEqual({ start: 90, end: 99 });
+    expect(parseRange('bytes=100-', 100)).toBeNull();
+    expect(parseRange('bytes=5-2', 100)).toBeNull();
+    expect(parseRange('items=0-1', 100)).toBeNull();
+    expect(parseRange(undefined, 100)).toBeNull();
+    expect(parseRange('bytes=0-', 0)).toBeNull();
   });
 
   it('serves the built client with an SPA fallback', async () => {

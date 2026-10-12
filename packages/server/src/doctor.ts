@@ -92,20 +92,23 @@ function referenceLines(
   ];
   if (hw) {
     out.push(
-      run('MP4 compressed, GPU encoder', {
+      run('MP4 compressed, hardware encoder', {
         container: 'mp4',
-        compression: { ...base.compression, enabled: true, hardware: true, preset: 'veryfast' },
+        compression: { ...base.compression, enabled: true, preset: 'veryfast' },
+        performance: { mode: 'fastest', hardware: true },
       }),
     );
   }
   out.push(
-    run('MP4 compressed, libx264 veryfast', {
+    run('MP4 compressed, libx264 veryfast (hardware switch off)', {
       container: 'mp4',
-      compression: { ...base.compression, enabled: true, hardware: false, preset: 'veryfast' },
+      compression: { ...base.compression, enabled: true, preset: 'veryfast' },
+      performance: { mode: 'fastest', hardware: false },
     }),
-    run('MP4 compressed, libx264 medium', {
+    run('MP4 compressed, libx264 medium (hardware switch off)', {
       container: 'mp4',
-      compression: { ...base.compression, enabled: true, hardware: false, preset: 'medium' },
+      compression: { ...base.compression, enabled: true, preset: 'medium' },
+      performance: { mode: 'balanced', hardware: false },
     }),
   );
   return out;
@@ -181,6 +184,7 @@ async function main(): Promise<number> {
     audioCodecs: ['aac', 'opus'],
     fileSystemAccess: true,
     hardware: { ...NO_HARDWARE, avc: 2160, hevc: 2160 },
+    software: { avc: true, hevc: false, vp9: true, av1: true },
     benchmark: null,
     hardwareConcurrency: system.cpu.cores,
     deviceMemoryGb: null,
@@ -241,7 +245,11 @@ async function main(): Promise<number> {
       if (race.fastestEncoder) {
         const hardware = isHardwareEncoder(race.fastestEncoder);
         console.info(
-          `\n  Fastest H.264 encoder here: ${race.fastestEncoder} at ${race.results[race.fastestEncoder] ?? 0} fps (${((race.results[race.fastestEncoder] ?? 0) / 15).toFixed(0)}× real time at 15 fps). The Fastest mode ${hardware ? 'ticks' : 'leaves unticked'} "hardware encoder" for compression accordingly.`,
+          `\n  Fastest H.264 encoder here: ${race.fastestEncoder} at ${race.results[race.fastestEncoder] ?? 0} fps (${((race.results[race.fastestEncoder] ?? 0) / 15).toFixed(0)}× real time at 15 fps). ${
+            hardware
+              ? 'The hardware encoder is used by default.'
+              : 'The hardware encoder is still used by default, because it leaves the CPU free; untick "Use the hardware encoder" in the export dialog to use the faster software encoder instead.'
+          }`,
         );
       } else {
         console.info('\n  No encoder could be measured.');

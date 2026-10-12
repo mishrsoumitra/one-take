@@ -223,6 +223,8 @@ export interface FfmpegPlan {
   cwd: string;
   /** Path of the playable result (a file, or the manifest inside the output folder). */
   mainFile: string;
+  /** The video encoder that does the work (`libx264`, `h264_videotoolbox`), null for a stream copy. */
+  videoEncoder: string | null;
 }
 
 export function pickVideoEncoder(
@@ -468,10 +470,12 @@ export function buildFfmpegArgs(
     1,
     Math.round((v.mode === 'encode' ? v.keyFrameIntervalSec : spec.segmentSeconds) * outFps),
   );
+  let videoEncoder: string | null = null;
 
   if (spec.ladder && v.mode === 'encode') {
     const encoder = pickVideoEncoder(info, v.codec, v.hardware);
     if (!encoder) throw new Error(`ffmpeg has no ${v.codec} encoder`);
+    videoEncoder = encoder;
     const audioCodec = spec.audio.mode === 'encode' ? spec.audio.codec : 'aac';
     const audioEncoder = pickAudioEncoder(info, audioCodec);
     if (!audioEncoder) throw new Error(`ffmpeg has no ${audioCodec} encoder`);
@@ -495,6 +499,7 @@ export function buildFfmpegArgs(
     } else {
       const encoder = pickVideoEncoder(info, v.codec, v.hardware);
       if (!encoder) throw new Error(`ffmpeg has no ${v.codec} encoder`);
+      videoEncoder = encoder;
       const filters: string[] = [];
       if (v.fps !== null) filters.push(`fps=${v.fps}`);
       if (v.height !== null && v.height !== input.height) filters.push(`scale=-2:${v.height}`);
@@ -521,7 +526,12 @@ export function buildFfmpegArgs(
 
   const container = containerArgs(spec, outputName);
   args.push(...container.args);
-  return { args, cwd, mainFile: isDir ? path.join(outputPath, container.mainFile) : outputPath };
+  return {
+    args,
+    cwd,
+    mainFile: isDir ? path.join(outputPath, container.mainFile) : outputPath,
+    videoEncoder,
+  };
 }
 
 /* ------------------------------------------------------------------ */

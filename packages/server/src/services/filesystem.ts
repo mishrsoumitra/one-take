@@ -160,6 +160,27 @@ export async function removeQuietly(p: string): Promise<void> {
   }
 }
 
+/** Files One Take itself writes into an HLS or DASH folder (plus its own temporary names). */
+const GENERATED_EXTENSIONS = new Set(['m3u8', 'mpd', 'ts', 'm4s', 'mp4', 'tmp']);
+
+/**
+ * The name of the first file in `dir` (searched recursively) that One Take did not write, or null when
+ * the folder holds nothing but an export of ours. Decides whether a folder may be replaced or deleted.
+ */
+export async function foreignFileIn(dir: string): Promise<string | null> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      const inner = await foreignFileIn(path.join(dir, e.name));
+      if (inner !== null) return inner;
+      continue;
+    }
+    const ext = path.extname(e.name).slice(1).toLowerCase();
+    if (!GENERATED_EXTENSIONS.has(ext)) return e.name;
+  }
+  return null;
+}
+
 export async function directorySize(dir: string): Promise<number> {
   let total = 0;
   const entries = await fs.readdir(dir, { withFileTypes: true });

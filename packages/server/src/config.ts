@@ -11,6 +11,8 @@ export interface ServerConfig {
   staticDir: string | null;
   /** Suggested output folder. */
   defaultDirectory: string;
+  /** Where the server keeps its own small files: the list of finished exports. */
+  dataDir: string;
   ffmpegPath: string | null;
   ffprobePath: string | null;
   /** Extra folders with fonts for drawing PowerPoint slides, searched before the system font folders. */
@@ -45,6 +47,7 @@ export function loadConfig(
       port: { type: 'string', short: 'p' },
       static: { type: 'string' },
       dir: { type: 'string', short: 'd' },
+      'data-dir': { type: 'string' },
       ffmpeg: { type: 'string' },
       ffprobe: { type: 'string' },
       fonts: { type: 'string' },
@@ -75,11 +78,15 @@ export function loadConfig(
   const defaultDirectory = path.resolve(
     values.dir ?? env.ONE_TAKE_DIR ?? path.join(os.homedir(), 'Movies', 'One Take'),
   );
+  const dataDir = path.resolve(
+    values['data-dir'] ?? env.ONE_TAKE_DATA_DIR ?? path.join(os.homedir(), '.one-take'),
+  );
   return {
     host: values.host ?? env.ONE_TAKE_HOST ?? '127.0.0.1',
     port,
     staticDir: values['no-static'] ? null : (values.static ?? env.ONE_TAKE_STATIC ?? builtClientDir()),
     defaultDirectory,
+    dataDir,
     ffmpegPath: values.ffmpeg ?? env.FFMPEG_PATH ?? null,
     ffprobePath: values.ffprobe ?? env.FFPROBE_PATH ?? null,
     fontDirectories,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import { type ServerCapabilities } from '@one-take/shared';
 
@@ -10,6 +11,7 @@ import { PptxConverter, presentationSupport } from './services/convert.js';
 import { detectFfmpeg, detectFfprobe } from './services/ffmpeg.js';
 import { shortcutDirectories } from './services/filesystem.js';
 import { JobManager } from './services/jobs.js';
+import { ExportLibrary } from './services/library.js';
 import { LoadMonitor } from './services/load.js';
 import {
   benchmarkEncoders,
@@ -56,18 +58,22 @@ async function main(): Promise<void> {
   };
 
   const load = new LoadMonitor();
+  const library = new ExportLibrary(path.join(config.dataDir, 'exports.json'), {
+    log: (m) => app.log.info(m),
+  });
   const jobs = new JobManager({
     ffmpeg,
     system,
     log: (m) => app.log.info(m),
     processLoad: (pid) => load.process(pid),
+    library,
   });
   const converter = new PptxConverter({
     fontDirectories: config.fontDirectories,
     memoryLimitMb: config.rendererMemoryMb ?? undefined,
     log: (m) => app.log.info(m),
   });
-  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities, load });
+  const app = buildApp({ config, jobs, converter, capabilities: () => capabilities, load, library });
 
   const shutdown = async (signal: string) => {
     app.log.info(`${signal} received, shutting down`);
@@ -103,6 +109,7 @@ async function main(): Promise<void> {
       : 'API only (no built client found; run "npm run build")',
   );
   app.log.info(`default output folder: ${config.defaultDirectory}`);
+  app.log.info(`finished exports are listed in ${library.filePath}`);
 
   // The encoder race runs a few seconds after the server answers, so start-up stays quick and the race
   // rarely overlaps the browser's own encoder test on first load; the profile is updated in place and

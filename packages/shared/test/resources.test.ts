@@ -71,6 +71,7 @@ const chrome: BrowserCapabilities = {
   audioCodecs: ['aac', 'opus'],
   fileSystemAccess: true,
   hardware: { avc: 2160, hevc: 2160, vp9: 0, av1: 0 },
+  software: { avc: true, hevc: false, vp9: true, av1: true },
   benchmark: null,
   hardwareConcurrency: 12,
   deviceMemoryGb: 8,
@@ -117,14 +118,13 @@ describe('estimateResources', () => {
     expect(cpu[0]?.seconds ?? 0).toBeGreaterThan(gpu[0]?.seconds ?? 0);
   });
 
-  it('shows the server re-encode on the GPU or CPU as asked', () => {
+  it('shows the server re-encode on the GPU or CPU as the switch says', () => {
     const r = defaultExportRequest('/out');
     r.compression.enabled = true;
-    r.compression.hardware = true;
     const gpu = estimateResources(input(r, server(profile())));
     expect(gpu[2]).toMatchObject({ stage: 'Server re-encodes', unit: 'gpu' });
     expect(gpu[2]?.detail).toContain('h264_videotoolbox');
-    r.compression.hardware = false;
+    r.performance.hardware = false;
     r.compression.preset = 'veryslow';
     const cpu = estimateResources(input(r, server(profile())));
     expect(cpu[2]).toMatchObject({ unit: 'cpu' });

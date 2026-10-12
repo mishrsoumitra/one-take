@@ -83,8 +83,9 @@ export class ExportLibrary {
   ): Promise<{ record: ExportRecord; deleted: boolean }> {
     const record = await this.get(id);
     let deleted = false;
-    if (options.deleteFiles && record.exists) {
-      deleted = await deleteOutput(record);
+    if (options.deleteFiles) {
+      if (record.exists) deleted = await deleteOutput(record);
+      for (const sidecar of record.sidecars) await fs.rm(sidecar, { force: true }).catch(() => undefined);
     }
     await this.mutate((entries) => entries.filter((e) => e.id !== id));
     this.log(`export ${id} ${deleted ? 'deleted' : 'forgotten'}: ${record.path}`);
@@ -153,15 +154,17 @@ function isStoredExport(value: unknown): value is StoredExport {
 
 /** The record with what the disk says now: whether it is still there and how big it is. */
 async function describe(entry: StoredExport): Promise<ExportRecord> {
+  // records written before sidecars existed have none
+  const base = { ...entry, sidecars: Array.isArray(entry.sidecars) ? entry.sidecars : [] };
   try {
     const st = await fs.stat(entry.path);
     if (entry.kind === 'directory' ? !st.isDirectory() : !st.isFile()) {
-      return { ...entry, exists: false };
+      return { ...base, exists: false };
     }
     const bytes = st.isDirectory() ? await directorySize(entry.path) : st.size;
-    return { ...entry, bytes, exists: true };
+    return { ...base, bytes, exists: true };
   } catch {
-    return { ...entry, exists: false };
+    return { ...base, exists: false };
   }
 }
 

@@ -16,18 +16,23 @@ import {
   type ExportJob,
   type ExportPlan,
   type ExportRequest,
+  type Sidecar,
+  type TranscriptionJob,
+  type TranscriptWord,
 } from '@one-take/shared';
 
 import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
-import { type Timeline } from '../core/timeline.js';
+import { buildCues, toSrt, toTranscript, toVtt, type Cue } from '../core/captions.js';
+import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
 
 import { encodeLecture, ExportCancelledError, type EncodeProgress, type EncodeResult } from './encoder.js';
+import { mapWords, needsPreparation, prepareSegments, transcriptionAudio } from './prepare.js';
 import { createBufferSink, createFileSink, createServerSink, type Sink } from './sinks.js';
 
-export type ExportStage = 'preparing' | 'encoding' | 'processing' | 'finalizing' | 'done';
+export type ExportStage = 'preparing' | 'transcribing' | 'encoding' | 'processing' | 'finalizing' | 'done';
 
-export type ExportStepId = 'encode' | 'process' | 'finalize';
+export type ExportStepId = 'prepare' | 'transcribe' | 'encode' | 'process' | 'finalize';
 
 export interface ExportStep {
   id: ExportStepId;
@@ -90,6 +95,8 @@ export interface ExportProgress {
 
 /** What the plan expected each stage to take, from the resource map; the time left starts here. */
 export interface ExportEstimates {
+  prepareSec: number | null;
+  transcribeSec: number | null;
   encodeSec: number | null;
   processSec: number | null;
 }
@@ -97,15 +104,28 @@ export interface ExportEstimates {
 /** How WebCodecs was configured for the browser stage, for the result panel and the tests. */
 export type EncoderUsed = EncodeResult['encoder'];
 
+/** The transcript that was made for the export, and the files it became. */
+export interface ExportCaptions {
+  words: TranscriptWord[];
+  cues: Cue[];
+  sidecars: Sidecar[];
+  language: string | null;
+}
+
 export type ExportResult =
-  | { kind: 'server'; job: ExportJob; encoder: EncoderUsed }
-  | { kind: 'file'; name: string; bytes: number; encoder: EncoderUsed }
-  | { kind: 'blob'; name: string; blob: Blob; encoder: EncoderUsed };
+  | { kind: 'server'; job: ExportJob; encoder: EncoderUsed; captions: ExportCaptions | null }
+  | { kind: 'file'; name: string; bytes: number; encoder: EncoderUsed; captions: ExportCaptions | null }
+  | { kind: 'blob'; name: string; blob: Blob; encoder: EncoderUsed; captions: ExportCaptions | null };
 
 export interface RunExportOptions {
   request: ExportRequest;
   plan: ExportPlan;
-  timeline: Timeline;
+  /** The phrases as recorded; the export prepares its own copies (cuts, volume, speed). */
+  segments: readonly Segment[];
+  order: PhraseOrder;
+  timelineSettings: TimelineSettings;
+  /** Ids of filler hits the user chose to keep. */
+  keepFillers?: ReadonlySet<string>;
   slides: readonly Slide[];
   api: ApiClient | null;
   signal: AbortSignal;
@@ -248,6 +268,16 @@ class ProgressTracker {
     });
   }
 
+  /** The recogniser's progress while it transcribes on the server. */
+  transcriptionProgress(job: TranscriptionJob): void {
+    this.update('transcribe', job.progress, job.message);
+    this.emit({
+      stage: 'transcribing',
+      percent: job.progress === null ? null : Math.round(job.progress * 100),
+      message: job.message,
+    });
+  }
+
   /** A job event from the server while it processes the upload. */
   jobProgress(job: ExportJob, durationSec: number): void {
     const p = job.progress;
@@ -381,16 +411,45 @@ function processLabel(plan: ExportPlan): string {
 }
 
 export async function runExport(options: RunExportOptions): Promise<ExportResult> {
-  const { request, plan, timeline, signal, onProgress } = options;
+  const { request, plan, signal, onProgress } = options;
   if (plan.blockers.length > 0) throw new Error(plan.blockers[0]);
-  if (timeline.items.length === 0) throw new Error('Nothing to export yet');
+  if (options.segments.length === 0) throw new Error('Nothing to export yet');
+  const enhance = request.enhance;
   const info = CONTAINER_INFO[plan.browser.container];
   const baseName = sanitizeFileName(request.fileName);
-  const estimate = estimateExport(plan, timeline.total);
-  const estimates = options.estimates ?? { encodeSec: null, processSec: null };
+  const estimates = options.estimates ?? {
+    prepareSec: null,
+    transcribeSec: null,
+    encodeSec: null,
+    processSec: null,
+  };
   const toServer = plan.destination === 'server';
+  const api = options.api;
+  const preparing = needsPreparation(enhance);
+  const transcribing = enhance.captions.enabled;
+  if (transcribing && !api) throw new Error('Transcripts and subtitles need the local server (npm start).');
 
   const tracker = new ProgressTracker(onProgress, [
+    ...(preparing
+      ? [
+          {
+            id: 'prepare' as const,
+            label: 'Prepare the audio',
+            runsOn: 'browser' as const,
+            modelSec: estimates.prepareSec,
+          },
+        ]
+      : []),
+    ...(transcribing
+      ? [
+          {
+            id: 'transcribe' as const,
+            label: 'Transcribe on the server',
+            runsOn: 'server' as const,
+            modelSec: estimates.transcribeSec,
+          },
+        ]
+      : []),
     { id: 'encode', label: 'Encode in the browser', runsOn: 'browser', modelSec: estimates.encodeSec },
     ...(toServer && plan.processing
       ? [
@@ -413,8 +472,59 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
 
   const wakeLock = await requestWakeLock();
   try {
+    // 1. the phrases as the export will hear them: fillers cut, volume evened, pace changed
+    if (preparing) tracker.begin('prepare');
+    const prepared = await prepareSegments(options.segments, {
+      enhance,
+      keep: options.keepFillers,
+      order: request.order,
+      settings: options.timelineSettings,
+      signal,
+      onProgress: (fraction, message) => {
+        if (!preparing) return;
+        tracker.update('prepare', fraction, message);
+        tracker.emit({ stage: 'preparing', message, percent: Math.round(fraction * 100) });
+      },
+    });
+    if (preparing) tracker.finish('prepare');
+    const timeline = prepared.timeline;
+    if (timeline.items.length === 0) throw new Error('Nothing is left to export after the cuts.');
+
+    // 2. the transcript, from the original audio, carried onto the final timeline
+    let captions: ExportCaptions | null = null;
+    if (transcribing && api) {
+      tracker.begin('transcribe');
+      tracker.emit({ stage: 'transcribing', message: 'Sending the audio to the recogniser…', percent: null });
+      const audio = transcriptionAudio(options.segments);
+      const job = await api.transcribe(audio.wav, enhance.captions.language, audio.durationSec, signal);
+      let final: TranscriptionJob;
+      try {
+        final = await api.watchTranscription(
+          job.id,
+          (event) => tracker.transcriptionProgress(event.job),
+          signal,
+        );
+      } catch (error) {
+        await api.cancelTranscription(job.id).catch(() => undefined);
+        throw error;
+      }
+      if (final.state === 'failed')
+        throw new Error(final.error ?? 'The recogniser could not transcribe the audio.');
+      if (final.state === 'cancelled') throw new ExportCancelledError();
+      const words = mapWords(final.words ?? [], audio, prepared.maps);
+      const cues = buildCues(words);
+      const sidecars: Sidecar[] = [];
+      if (enhance.captions.sidecar) {
+        sidecars.push({ extension: 'srt', content: toSrt(cues) }, { extension: 'vtt', content: toVtt(cues) });
+      }
+      if (enhance.captions.transcript) sidecars.push({ extension: 'txt', content: toTranscript(words) });
+      captions = { words, cues, sidecars, language: final.language };
+      tracker.finish('transcribe');
+    }
+    const burn = captions && enhance.captions.burnIn ? captions.cues : undefined;
+    const estimate = estimateExport(plan, timeline.total);
+
     if (toServer) {
-      const api = options.api;
       if (!api) throw new Error('The server is not reachable.');
       if (request.destination.kind !== 'server') throw new Error('Internal: destination mismatch');
       const job = await api.createExport({
@@ -432,11 +542,12 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
           estimatedBytes: estimate.uploadBytes,
         },
         processing: plan.processing,
+        sidecars: captions?.sidecars,
       });
       const sink = createServerSink(api, job.id, signal, plan.browser.container === 'fmp4');
       let encodeResult;
       try {
-        encodeResult = await encodeWithSink(sink, options, tracker, true);
+        encodeResult = await encodeWithSink(sink, options, tracker, true, timeline, burn);
       } catch (error) {
         await api.cancelExport(job.id).catch(() => undefined);
         throw error;
@@ -455,7 +566,7 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
       );
       if (final.state === 'failed') throw new Error(final.error ?? 'The server could not finish the export.');
       if (final.state === 'cancelled') throw new ExportCancelledError();
-      return { kind: 'server', job: final, encoder: encodeResult.encoder };
+      return { kind: 'server', job: final, encoder: encodeResult.encoder, captions };
     }
 
     // Browser destination: a real file when the browser can stream to disk, otherwise memory + download.
@@ -472,14 +583,14 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
       }
       sink = createBufferSink(info.mimeType);
     }
-    const result = await encodeWithSink(sink, options, tracker, false);
+    const result = await encodeWithSink(sink, options, tracker, false, timeline, burn);
     tracker.finish('encode');
     tracker.begin('finalize');
     const blob = sink.blob();
     tracker.finish('finalize');
     tracker.emit({ stage: 'done', message: 'Done', percent: 100 });
-    if (blob) return { kind: 'blob', name: fileName, blob, encoder: result.encoder };
-    return { kind: 'file', name: fileName, bytes: result.bytes, encoder: result.encoder };
+    if (blob) return { kind: 'blob', name: fileName, blob, encoder: result.encoder, captions };
+    return { kind: 'file', name: fileName, bytes: result.bytes, encoder: result.encoder, captions };
   } finally {
     tracker.stop();
     wakeLock?.release().catch(() => undefined);
@@ -491,13 +602,16 @@ async function encodeWithSink(
   options: RunExportOptions,
   tracker: ProgressTracker,
   toServer: boolean,
+  timeline: Timeline,
+  captions: readonly Cue[] | undefined,
 ): Promise<{ bytes: number; frames: number; encoder: EncoderUsed }> {
   tracker.begin('encode');
   tracker.emit({ stage: 'encoding', message: 'Starting the encoder…', percent: 0 });
   try {
     const result = await encodeLecture({
-      timeline: options.timeline,
+      timeline,
       slides: options.slides,
+      captions,
       plan: options.plan.browser,
       target: sink.target,
       fastStart: sink.fastStart,

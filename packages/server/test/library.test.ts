@@ -34,6 +34,7 @@ function entry(id: string, filePath: string, overrides: Partial<StoredExport> = 
     audioCodec: 'aac',
     encoder: null,
     command: null,
+    sidecars: [],
     ...overrides,
   };
 }
@@ -72,6 +73,26 @@ describe('ExportLibrary', () => {
     await expect(lib.remove('job-1', { deleteFiles: true })).rejects.toMatchObject({
       code: 'export_not_found',
     });
+  });
+
+  it('deletes the subtitle files with the video, and forgets a record without them', async () => {
+    const lib = new ExportLibrary(path.join(tmp, 'g', 'exports.json'));
+    const video = path.join(tmp, 'talk.mp4');
+    const srt = path.join(tmp, 'talk.srt');
+    const txt = path.join(tmp, 'talk.txt');
+    await fs.writeFile(video, 'v');
+    await fs.writeFile(srt, '1\n');
+    await fs.writeFile(txt, 'words');
+    await lib.add(entry('job-1', video, { sidecars: [srt, txt] }));
+    expect((await lib.list())[0]).toMatchObject({ sidecars: [srt, txt] });
+    await lib.remove('job-1', { deleteFiles: true });
+    for (const p of [video, srt, txt]) await expect(fs.access(p)).rejects.toThrow();
+    // a record written before sidecars existed reads back with none
+    const file = path.join(tmp, 'g', 'exports.json');
+    const old = entry('job-2', path.join(tmp, 'old.mp4')) as Partial<StoredExport>;
+    delete old.sidecars;
+    await fs.writeFile(file, JSON.stringify({ version: 1, exports: [old] }));
+    expect((await new ExportLibrary(file).list())[0]).toMatchObject({ id: 'job-2', sidecars: [] });
   });
 
   it('keeps the file when asked only to forget it', async () => {

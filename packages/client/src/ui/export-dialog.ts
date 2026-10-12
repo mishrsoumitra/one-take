@@ -2,10 +2,13 @@
 import {
   AUDIO_BITRATES_KBPS,
   AUDIO_CODEC_INFO,
+  CAPTION_LANGUAGES,
   COMPRESSION_PRESETS,
   CONTAINER_INFO,
   CONTAINERS,
   CRF_RANGES,
+  FILLER_SENSITIVITIES,
+  FILLER_SENSITIVITY_LABELS,
   FPS_OPTIONS,
   QUALITY_LABELS,
   QUALITY_LEVELS,
@@ -13,6 +16,9 @@ import {
   RESOLUTION_SIZES,
   SEGMENT_SECONDS_OPTIONS,
   SERVER_VIDEO_CODECS,
+  SPEED_MAX,
+  SPEED_MIN,
+  SPEED_OPTIONS,
   VIDEO_CODEC_INFO,
   VIDEO_CODECS,
   PERFORMANCE_MODE_INFO,
@@ -47,8 +53,17 @@ import {
 
 import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
-import { type PhraseOrder, type Timeline } from '../core/timeline.js';
+import { toTranscript } from '../core/captions.js';
+import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
 import { canRecordRealtime, recordRealtime } from '../export/fallback.js';
+import {
+  needsPreparation,
+  plannedDuration,
+  prepareSegments,
+  scanFillers,
+  type FillerHit,
+  type FillerScan,
+} from '../export/prepare.js';
 import {
   downloadBlob,
   ExportCancelledError,
@@ -63,6 +78,7 @@ import {
 import { clear, h, replaceChildren, syncRangeFill } from './dom.js';
 import { type FolderPicker } from './folder-picker.js';
 import { icon } from './icon.js';
+import { SnippetPlayer } from './snippet.js';
 
 export interface ExportDialogDeps {
   api: ApiClient;
@@ -71,6 +87,9 @@ export interface ExportDialogDeps {
   serverCaps: () => ServerCapabilities | null;
   refreshServer: () => Promise<ServerCapabilities | null>;
   timeline: (order: PhraseOrder) => Timeline;
+  /** The phrases as recorded and the pauses to put between them; the export prepares its own copies. */
+  segments: () => readonly Segment[];
+  timelineSettings: () => TimelineSettings;
   slides: () => readonly Slide[];
   suggestedName: () => string;
   initialRequest: () => ExportRequest;
@@ -205,6 +224,12 @@ export class ExportDialog {
   private loadTimer: number | null = null;
   private loadFailed = false;
   private view: 'settings' | 'progress' = 'settings';
+  /** The filler scan for the current phrases and sensitivity, and the hits the user chose to keep. */
+  private fillerScan: FillerScan | null = null;
+  private fillerScanKey = '';
+  private fillerScanRun = 0;
+  private readonly fillerKeep = new Set<string>();
+  private readonly snippet = new SnippetPlayer();
   private readonly els: {
     sumTime: HTMLElement;
     sumSegs: HTMLElement;
@@ -237,6 +262,22 @@ export class ExportDialog {
     keyInt: HTMLInputElement;
     audioCodec: HTMLSelectElement;
     audioBitrate: HTMLSelectElement;
+    // enhance: speed, volume, fillers, transcript
+    speed: HTMLSelectElement;
+    customSpeed: HTMLInputElement;
+    customSpeedWrap: HTMLElement;
+    evenLoudness: HTMLInputElement;
+    fillersRemove: HTMLInputElement;
+    fillersSensitivity: HTMLSelectElement;
+    fillersStatus: HTMLElement;
+    fillersList: HTMLElement;
+    captionsEnabled: HTMLInputElement;
+    captionsNote: HTMLElement;
+    captionsLanguage: HTMLSelectElement;
+    captionsBurn: HTMLInputElement;
+    captionsSidecar: HTMLInputElement;
+    captionsTranscript: HTMLInputElement;
+    captionsBody: HTMLElement;
     compression: HTMLElement;
     compEnabled: HTMLInputElement;
     compBody: HTMLElement;
@@ -476,6 +517,100 @@ export class ExportDialog {
       this.update((q) => {
         q.audio.bitrateKbps = Number(e.audioBitrate.value);
       });
+
+    // Enhance: speed, volume, filler words, transcript and subtitles.
+    e.speed = h('select', { id: 'speedSel' });
+    e.speed.onchange = () =>
+      this.update((q) => {
+        if (e.speed.value !== 'custom') q.enhance.speed = Number(e.speed.value);
+      });
+    e.customSpeed = number(r.enhance.speed, SPEED_MIN, SPEED_MAX, 0.05, (v) =>
+      this.update((q) => {
+        if (v !== null) q.enhance.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, v));
+      }),
+    );
+    e.customSpeedWrap = unit(e.customSpeed, '×');
+    e.evenLoudness = h('input', { type: 'checkbox', id: 'evenLoudness', checked: r.enhance.evenLoudness });
+    e.evenLoudness.onchange = () =>
+      this.update((q) => {
+        q.enhance.evenLoudness = e.evenLoudness.checked;
+      });
+    e.fillersRemove = h('input', { type: 'checkbox', id: 'fillersOn', checked: r.enhance.fillers.remove });
+    e.fillersRemove.onchange = () =>
+      this.update((q) => {
+        q.enhance.fillers.remove = e.fillersRemove.checked;
+      });
+    e.fillersSensitivity = h('select', { id: 'fillersSensitivity' });
+    setOptions(
+      e.fillersSensitivity,
+      FILLER_SENSITIVITIES.map((s) => ({ value: s, label: FILLER_SENSITIVITY_LABELS[s] })),
+      r.enhance.fillers.sensitivity,
+    );
+    e.fillersSensitivity.onchange = () =>
+      this.update((q) => {
+        q.enhance.fillers.sensitivity = e.fillersSensitivity
+          .value as ExportRequest['enhance']['fillers']['sensitivity'];
+      });
+    e.fillersStatus = h('div', { class: 'hint', id: 'fillersStatus' });
+    e.fillersList = h('div', { class: 'fillers', id: 'fillersList', hidden: true });
+    e.captionsEnabled = h('input', {
+      type: 'checkbox',
+      id: 'captionsOn',
+      checked: r.enhance.captions.enabled,
+    });
+    e.captionsEnabled.onchange = () =>
+      this.update((q) => {
+        q.enhance.captions.enabled = e.captionsEnabled.checked;
+      });
+    e.captionsNote = h('div', { class: 'hint', id: 'captionsNote' });
+    e.captionsLanguage = h('select', { id: 'captionsLanguage' });
+    setOptions(
+      e.captionsLanguage,
+      CAPTION_LANGUAGES.map(([code, label]) => ({ value: code, label })),
+      r.enhance.captions.language,
+    );
+    e.captionsLanguage.onchange = () =>
+      this.update((q) => {
+        q.enhance.captions.language = e.captionsLanguage.value;
+      });
+    e.captionsBurn = h('input', { type: 'checkbox', id: 'captionsBurn', checked: r.enhance.captions.burnIn });
+    e.captionsBurn.onchange = () =>
+      this.update((q) => {
+        q.enhance.captions.burnIn = e.captionsBurn.checked;
+      });
+    e.captionsSidecar = h('input', {
+      type: 'checkbox',
+      id: 'captionsSidecar',
+      checked: r.enhance.captions.sidecar,
+    });
+    e.captionsSidecar.onchange = () =>
+      this.update((q) => {
+        q.enhance.captions.sidecar = e.captionsSidecar.checked;
+      });
+    e.captionsTranscript = h('input', {
+      type: 'checkbox',
+      id: 'captionsTranscript',
+      checked: r.enhance.captions.transcript,
+    });
+    e.captionsTranscript.onchange = () =>
+      this.update((q) => {
+        q.enhance.captions.transcript = e.captionsTranscript.checked;
+      });
+    e.captionsBody = h(
+      'div',
+      { class: 'sub' },
+      row('Language', e.captionsLanguage, 'Tell the recogniser the language, or let it work it out.'),
+      row(
+        'Output',
+        h(
+          'div',
+          { class: 'stack checks' },
+          check(e.captionsBurn, 'subtitles drawn into the video'),
+          check(e.captionsSidecar, 'subtitle files next to the video (.srt and .vtt)'),
+          check(e.captionsTranscript, 'the transcript as a text file (.txt)'),
+        ),
+      ),
+    );
 
     e.compEnabled = h('input', { type: 'checkbox', checked: r.compression.enabled });
     e.compEnabled.onchange = () =>
@@ -767,6 +902,37 @@ export class ExportDialog {
             row('Key frame every', unit(e.keyInt, 's'), 'Smaller values seek faster and make bigger files.'),
           ),
           section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
+          section(
+            'Enhance',
+            row(
+              'Speed',
+              h('div', { class: 'stack' }, e.speed, e.customSpeedWrap),
+              'The voice keeps its pitch; the slides follow the words.',
+            ),
+            row('Volume', check(e.evenLoudness, 'even out the volume from phrase to phrase')),
+            row(
+              'Filler words',
+              h(
+                'div',
+                { class: 'stack' },
+                check(e.fillersRemove, 'cut "um", "uh", "er" and "hmm"'),
+                e.fillersSensitivity,
+                e.fillersStatus,
+                e.fillersList,
+              ),
+              'Found by their shape (a held, flat, central vowel standing apart), not by a model. Untick any the list gets wrong.',
+            ),
+            row(
+              'Transcript',
+              h(
+                'div',
+                { class: 'stack' },
+                check(e.captionsEnabled, 'transcribe the speech and add subtitles'),
+                e.captionsNote,
+                e.captionsBody,
+              ),
+            ),
+          ),
         ),
         h(
           'div',
@@ -863,6 +1029,7 @@ export class ExportDialog {
 
   close(): void {
     if (this.running) return;
+    this.snippet.stop();
     this.overlay.classList.remove('on');
   }
 
@@ -889,6 +1056,15 @@ export class ExportDialog {
     e.maxBitrate.value = r.compression.maxBitrateKbps === null ? '' : String(r.compression.maxBitrateKbps);
     e.hardware.checked = r.performance.hardware;
     e.order.value = r.order;
+    e.customSpeed.value = String(r.enhance.speed);
+    e.evenLoudness.checked = r.enhance.evenLoudness;
+    e.fillersRemove.checked = r.enhance.fillers.remove;
+    e.fillersSensitivity.value = r.enhance.fillers.sensitivity;
+    e.captionsEnabled.checked = r.enhance.captions.enabled;
+    e.captionsLanguage.value = r.enhance.captions.language;
+    e.captionsBurn.checked = r.enhance.captions.burnIn;
+    e.captionsSidecar.checked = r.enhance.captions.sidecar;
+    e.captionsTranscript.checked = r.enhance.captions.transcript;
     for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
   }
 
@@ -980,6 +1156,118 @@ export class ExportDialog {
     return { available, text: parts.join(' ') };
   }
 
+  /** Seconds the fillers that are still to be cut would remove. */
+  private fillerRemovedSec(): number {
+    if (!this.fillerScan) return 0;
+    return this.fillerScan.hits
+      .filter((hit) => !this.fillerKeep.has(hit.id))
+      .reduce((sum, hit) => sum + (hit.candidate.cutTo - hit.candidate.cutFrom), 0);
+  }
+
+  /**
+   * Scans the phrases for fillers when the option is on and the phrases or the sensitivity changed.
+   * The scan runs in the background; the status line and the list follow, then the plan is refreshed
+   * for the shorter video.
+   */
+  private refreshFillers(): void {
+    const e = this.els;
+    const r = this.request;
+    if (!r.enhance.fillers.remove) {
+      e.fillersStatus.textContent = '';
+      e.fillersList.hidden = true;
+      e.fillersSensitivity.hidden = true;
+      return;
+    }
+    e.fillersSensitivity.hidden = false;
+    const segments = this.deps.segments();
+    const key = `${r.enhance.fillers.sensitivity}|${segments.map((s) => s.id).join(',')}`;
+    if (key === this.fillerScanKey) {
+      this.renderFillers();
+      return;
+    }
+    this.fillerScanKey = key;
+    this.fillerScan = null;
+    const run = ++this.fillerScanRun;
+    e.fillersStatus.textContent = 'Looking for filler words…';
+    e.fillersList.hidden = true;
+    void scanFillers(segments, r.enhance.fillers.sensitivity, (fraction) => {
+      if (run === this.fillerScanRun) {
+        e.fillersStatus.textContent = `Looking for filler words… ${Math.round(fraction * 100)} %`;
+      }
+    })
+      .then((scan) => {
+        if (run !== this.fillerScanRun) return;
+        this.fillerScan = scan;
+        this.renderFillers();
+        this.refresh();
+      })
+      .catch((error: unknown) => {
+        if (run !== this.fillerScanRun) return;
+        e.fillersStatus.textContent = `Could not scan for fillers: ${(error as Error).message}`;
+      });
+  }
+
+  /** The status line and the list of hits, each with a ▶ to hear it and a tick to cut it. */
+  private renderFillers(): void {
+    const e = this.els;
+    const scan = this.fillerScan;
+    if (!scan) return;
+    const hits = scan.hits;
+    const kept = hits.filter((hit) => this.fillerKeep.has(hit.id)).length;
+    const removed = this.fillerRemovedSec();
+    e.fillersStatus.textContent =
+      hits.length === 0
+        ? 'No filler words found at this sensitivity.'
+        : `Found ${hits.length} filler word${hits.length === 1 ? '' : 's'} (${removed.toFixed(1)} s to cut${kept ? `, ${kept} kept` : ''}). Listen to each one; untick what should stay.`;
+    e.fillersList.hidden = hits.length === 0;
+    const tl = this.deps.timeline(this.request.order);
+    const segments = this.deps.segments();
+    replaceChildren(e.fillersList, ...hits.map((hit) => this.fillerRow(hit, tl, segments)));
+  }
+
+  private fillerRow(hit: FillerHit, tl: Timeline, segments: readonly Segment[]): HTMLElement {
+    const item = tl.items.find((it) => it.seg.id === hit.segmentId);
+    const seg = segments.find((s) => s.id === hit.segmentId);
+    const c = hit.candidate;
+    const at = (item?.start ?? 0) + c.from;
+    const tick = h('input', { type: 'checkbox', checked: !this.fillerKeep.has(hit.id) });
+    tick.onchange = () => {
+      if (tick.checked) this.fillerKeep.delete(hit.id);
+      else this.fillerKeep.add(hit.id);
+      this.renderFillers();
+      this.refresh();
+    };
+    const play = h(
+      'button',
+      {
+        class: 'ghost icon xs',
+        title: 'Hear it, with a little of what is around it',
+        attrs: { 'aria-label': 'Play' },
+      },
+      icon('play', 16),
+    );
+    play.onclick = () => {
+      if (!seg) return;
+      if (this.snippet.playing) {
+        this.snippet.stop();
+        return;
+      }
+      play.classList.add('on');
+      void this.snippet.play(seg.pcm, seg.sampleRate, Math.max(0, c.cutFrom - 0.25), c.cutTo + 0.25, () =>
+        play.classList.remove('on'),
+      );
+    };
+    const sure = c.score >= 0.55 ? 'almost certainly' : c.score >= 0.35 ? 'probably' : 'maybe';
+    return h(
+      'label',
+      { class: 'filler', dataset: { id: hit.id } },
+      tick,
+      h('span', { class: 'when' }, formatDuration(at)),
+      h('span', { class: 'what' }, `${(c.to - c.from).toFixed(2)} s, ${sure} a filler`),
+      play,
+    );
+  }
+
   private renderResources(lines: readonly ResourceLine[]): void {
     const e = this.els;
     const total = totalSeconds(lines);
@@ -1050,7 +1338,6 @@ export class ExportDialog {
     const browser = this.deps.browserCaps();
     const ffmpeg = server?.ffmpeg ?? null;
     const tl = this.deps.timeline(r.order);
-    e.sumTime.textContent = formatDuration(tl.total);
     e.sumSegs.textContent = String(tl.items.length);
     e.sumSlides.textContent = String(new Set(tl.items.map((i) => i.seg.slide)).size);
 
@@ -1144,6 +1431,45 @@ export class ExportDialog {
       r.audio.codec,
     );
 
+    // Enhance
+    const speedIsPreset = (SPEED_OPTIONS as readonly number[]).includes(r.enhance.speed);
+    setOptions(
+      e.speed,
+      [
+        ...SPEED_OPTIONS.map((sp) => ({
+          value: String(sp),
+          label: sp === 1 ? '1× (as recorded)' : `${sp}×`,
+        })),
+        { value: 'custom', label: 'Custom…' },
+      ],
+      speedIsPreset ? String(r.enhance.speed) : 'custom',
+    );
+    e.customSpeedWrap.hidden = speedIsPreset;
+    if (!speedIsPreset) e.customSpeed.value = String(r.enhance.speed);
+    this.refreshFillers();
+    const recogniser = server?.transcription ?? null;
+    const canTranscribe = server !== null && recogniser !== null;
+    e.captionsEnabled.disabled = !canTranscribe;
+    e.captionsNote.textContent = !server
+      ? 'Needs the local server (npm start) with whisper installed; the audio never leaves this computer.'
+      : !recogniser
+        ? 'No speech recogniser on this computer. Install whisper (brew install openai-whisper, or whisper-cpp) and restart the server.'
+        : `${recogniser.note}.${recogniser.engine === 'openai-whisper' && !recogniser.modelReady ? ' The first transcription downloads the model; later ones start at once.' : ''} The audio never leaves this computer.`;
+    e.captionsBody.hidden = !r.enhance.captions.enabled || !canTranscribe;
+    const extraBlockers: string[] = [];
+    if (r.enhance.captions.enabled && !canTranscribe) {
+      extraBlockers.push(
+        server
+          ? 'Transcripts need whisper on the server: install it and restart the server, or untick the transcript.'
+          : 'Transcripts need the local server: start it with "npm start", or untick the transcript.',
+      );
+    }
+    // the final video's length, with the fillers cut and the pace changed
+    const durationSec = plannedDuration(tl, r.enhance, this.fillerRemovedSec());
+    e.sumTime.textContent = formatDuration(durationSec);
+    e.sumTime.title =
+      Math.abs(durationSec - tl.total) > 0.05 ? `${formatDuration(tl.total)} as recorded` : '';
+
     // Compression
     const compressionPossible = r.destination.kind === 'server' && ffmpeg !== null;
     e.compression.classList.toggle('disabled', !compressionPossible);
@@ -1194,7 +1520,8 @@ export class ExportDialog {
     // Plan
     this.plan = planExport(r, server, browser);
     const plan = this.plan;
-    const est = estimateExport(plan, tl.total);
+    plan.blockers.push(...extraBlockers);
+    const est = estimateExport(plan, durationSec);
     const b = plan.browser;
     const stage1 = `Browser encodes ${VIDEO_CODEC_INFO[b.videoCodec].label} + ${AUDIO_CODEC_INFO[b.audioCodec].label}, ${b.width}×${b.height} @ ${b.fps} fps, up to ${(b.videoBitrateKbps / 1000).toFixed(1)} Mbit/s, into ${CONTAINER_INFO[b.container].label}${b.mezzanine ? ' (mezzanine)' : ''}${b.hardware ? ' on the hardware encoder' : ' on the CPU'}.`;
     const p = plan.processing;
@@ -1219,7 +1546,7 @@ export class ExportDialog {
     const resourceInput = {
       plan,
       estimate: est,
-      durationSec: tl.total,
+      durationSec,
       slides: {
         count: slideList.length,
         width: Math.max(1, ...slideList.map((s) => s.width)),
@@ -1465,7 +1792,24 @@ export class ExportDialog {
   private estimates(): ExportEstimates {
     const find = (...stages: string[]) =>
       this.resourceLines.find((l) => stages.includes(l.stage))?.seconds ?? null;
+    const r = this.request;
+    const dur = this.deps.timeline(r.order).total;
+    const en = r.enhance;
+    // rough figures: the filler scan is about a hundredth of real time (and already done when the
+    // list was shown), the time-stretch a few thousandths; the recogniser about a fifth of real time
+    const prepareSec = needsPreparation(en)
+      ? Math.max(
+          1,
+          Math.round(
+            dur *
+              ((en.fillers.remove ? 0.01 : 0) + (en.speed !== 1 ? 0.004 : 0) + (en.evenLoudness ? 0.001 : 0)),
+          ),
+        )
+      : null;
+    const transcribeSec = en.captions.enabled ? Math.max(3, Math.round(dur / 5)) : null;
     return {
+      prepareSec,
+      transcribeSec,
       encodeSec: find('Browser encodes'),
       processSec: find('Server re-encodes', 'Server packages'),
     };
@@ -1497,7 +1841,10 @@ export class ExportDialog {
       const result = await runExport({
         request: this.request,
         plan,
-        timeline: this.deps.timeline(this.request.order),
+        segments: this.deps.segments(),
+        order: this.request.order,
+        timelineSettings: this.deps.timelineSettings(),
+        keepFillers: new Set(this.fillerKeep),
         slides: this.deps.slides(),
         api: this.deps.serverCaps() ? this.deps.api : null,
         signal: controller.signal,
@@ -1531,6 +1878,59 @@ export class ExportDialog {
 
   private cancel(): void {
     this.running?.abort();
+  }
+
+  /** What became of the transcript: the files next to the video, or downloads, and the text itself. */
+  private captionsResult(result: ExportResult): HTMLElement | null {
+    const c = result.captions;
+    if (!c) return null;
+    const name = sanitizeFileName(this.request.fileName);
+    const files =
+      result.kind === 'server'
+        ? result.job.sidecars.length
+          ? h(
+              'div',
+              null,
+              'Next to the video: ',
+              h('b', null, result.job.sidecars.map((p) => p.split(/[\\/]/).pop() ?? p).join(', ')),
+            )
+          : null
+        : c.sidecars.length
+          ? h(
+              'div',
+              { class: 'actions inline' },
+              ...c.sidecars.map((s) =>
+                h(
+                  'button',
+                  {
+                    on: {
+                      click: () =>
+                        downloadBlob(
+                          new Blob([s.content], { type: 'text/plain;charset=utf-8' }),
+                          `${name}.${s.extension}`,
+                        ),
+                    },
+                  },
+                  `Download .${s.extension}`,
+                ),
+              ),
+            )
+          : null;
+    return h(
+      'div',
+      { class: 'captions-result', id: 'captionsResult' },
+      files,
+      h(
+        'details',
+        null,
+        h(
+          'summary',
+          null,
+          `Transcript: ${c.words.length} words${c.language ? ` (${c.language})` : ''}, ${c.cues.length} subtitle${c.cues.length === 1 ? '' : 's'}`,
+        ),
+        h('pre', { class: 'transcript' }, toTranscript(c.words)),
+      ),
+    );
   }
 
   private showResult(result: ExportResult): void {
@@ -1579,6 +1979,7 @@ export class ExportDialog {
               }, ${result.encoder.latencyMode} mode.`,
             )
           : null,
+        this.captionsResult(result),
         result.job.command
           ? h(
               'details',
@@ -1592,6 +1993,7 @@ export class ExportDialog {
       replaceChildren(
         e.result,
         h('div', null, 'Saved ', h('b', null, result.name), ` (${formatBytes(result.bytes)})`, took),
+        this.captionsResult(result),
       );
     } else {
       const size = formatBytes(result.blob.size);
@@ -1610,6 +2012,7 @@ export class ExportDialog {
           ` (${size})`,
           took,
         ),
+        this.captionsResult(result),
       );
     }
   }
@@ -1633,8 +2036,15 @@ export class ExportDialog {
     const startedAt = performance.now();
     try {
       const b = this.plan.browser;
+      const prepared = await prepareSegments(this.deps.segments(), {
+        enhance: this.request.enhance,
+        keep: new Set(this.fillerKeep),
+        order: this.request.order,
+        settings: this.deps.timelineSettings(),
+        signal: controller.signal,
+      });
       const blob = await recordRealtime({
-        timeline: this.deps.timeline(this.request.order),
+        timeline: prepared.timeline,
         slides: this.deps.slides(),
         width: b.width,
         height: b.height,
@@ -1659,6 +2069,7 @@ export class ExportDialog {
         name: `${sanitizeFileName(this.request.fileName)}.webm`,
         blob,
         encoder: null,
+        captions: null,
       });
     } catch (error) {
       this.renderProgress(

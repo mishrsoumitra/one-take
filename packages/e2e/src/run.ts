@@ -141,6 +141,21 @@ check(
   (await ev<string>('document.getElementById("modeAuto").getAttribute("aria-checked")')) === 'true',
   'the mode switch shows Auto',
 );
+// 4-pre. the first mic start with no voice learned yet opens the enrollment; skipped here (the
+// who-is-speaking check walks through it), which turns the voice check off until "Learn my voice"
+page.step('enrollment offered');
+await ev('void __onetake.startMic()');
+check(
+  await page.waitFor('__onetake.enroll.isOpen', 50, 100),
+  'the voice enrollment opens at the first mic start',
+);
+await page.screenshot('enroll.png');
+await ev('document.getElementById("enrollSkip").click()');
+check(await page.waitFor('!__onetake.enroll.isOpen', 20, 100), 'Skip closes the enrollment');
+check(
+  await ev<boolean>('__onetake.prefs().voiceCheck === false && __onetake.profile() === null'),
+  'skipping turns the voice check off and leaves no profile',
+);
 page.step('recording in auto mode');
 check(await page.startMic(), 'mic started');
 const t0 = Date.now();
@@ -157,6 +172,27 @@ await at(16.5, () => Promise.resolve());
   const scored = await ev<number>('__onetake.scorer()?.frames ?? 0');
   // 16.5 s of microphone in 32 ms frames, less a little for the mic opening
   check(scored > 400, `the voice detector scored the microphone as it was heard (${scored} frames)`);
+}
+// 4-live. with the mic on: the deep filter is the one running, the camera is watched, the self-view shows
+check(
+  await page.waitFor('__onetake.mic.engine === "deep"', 50, 100),
+  `DeepFilterNet3 is running over the microphone (${await ev<string>('__onetake.mic.deepNote')})`,
+);
+check(
+  (await ev<string>('document.getElementById("meterNote").textContent')).includes('deep filter'),
+  'the meter note names the filter that is running',
+);
+check(
+  await ev<boolean>('document.getElementById("camSel").value === "" && __onetake.lips.state === "watching"'),
+  `the lip check is on by default and watching the camera (${await ev<string>('__onetake.lips.state')})`,
+);
+check(
+  !(await ev<boolean>('document.getElementById("self").hidden')),
+  'the self-view shows on the stage while the camera is watched',
+);
+{
+  const samples = await ev<number>('__onetake.lips.track.length');
+  check(samples > 20, `the lip worker sends samples from the camera (${samples})`);
 }
 await ev('__onetake.stopMic()');
 await ev('__onetake.settled()'); // the last phrases go through the second listen before they are stored
@@ -200,23 +236,40 @@ check(
 }
 check(
   await ev<boolean>(
-    'document.getElementById("noiseFilter").checked && __onetake.prefs().noiseFilter === true',
+    'document.getElementById("noiseFilter").value === "deep" && __onetake.prefs().noiseFilter === "deep"',
   ),
-  'the noise filter is on by default',
+  'the deep noise filter is the default',
 );
-await page.mouseDown('#noiseFilter');
-await page.mouseUp('#noiseFilter');
+// choosing in the list, as a click on an option does
+await ev(
+  'const s = document.getElementById("noiseFilter"); s.focus(); s.value = "off"; s.dispatchEvent(new Event("change"))',
+);
 check(
   await ev<boolean>(
-    '!document.getElementById("noiseFilter").checked && __onetake.prefs().noiseFilter === false',
+    'document.getElementById("noiseFilter").value === "off" && __onetake.prefs().noiseFilter === "off" && __onetake.mic.wantedFilter === "off"',
   ),
-  'a click on the switch turns the noise filter off and remembers it',
+  'choosing Off turns the noise filter off and remembers it',
 );
 check(
   await ev<boolean>('document.activeElement !== document.getElementById("noiseFilter")'),
-  'the switch gives the keyboard back to the app after a click',
+  'the list gives the keyboard back to the app after a choice',
 );
-await ev('__onetake.setNoiseFilter(true)');
+await ev('__onetake.setNoiseFilter("classic")');
+check(
+  await ev<boolean>(
+    '__onetake.mic.wantedFilter === "classic" && __onetake.prefs().noiseFilter === "classic"',
+  ),
+  'the classic filter can be chosen too',
+);
+await ev('__onetake.setNoiseFilter("deep")');
+await ev('__onetake.setCamera("off")');
+check(
+  await ev<boolean>(
+    '__onetake.lips.state === "off" && document.getElementById("self").hidden && __onetake.prefs().lipCheck === false',
+  ),
+  'Camera off stops the lip check at once and is remembered',
+);
+await ev('__onetake.setCamera("")');
 
 // 4b. press to speak: the mic is on but hears nothing until Space is held. The WAV played once and is
 // now silent, so the mic is restarted (which rewinds the file) with the key work timed to its speech.
@@ -301,12 +354,12 @@ await at1(11.8, async () => {
 });
 await page.screenshot('press-to-speak.png');
 check(await ev<boolean>('__onetake.mic.filtering === true'), 'the microphone ran through the noise filter');
-await ev('__onetake.setNoiseFilter(false)');
+await ev('__onetake.setNoiseFilter("off")');
 check(
   await ev<boolean>('__onetake.mic.filtering === false && __onetake.state.armed'),
-  'the switch takes effect without reopening the mic',
+  'the choice takes effect without reopening the mic',
 );
-await ev('__onetake.setNoiseFilter(true)');
+await ev('__onetake.setNoiseFilter("deep")');
 await ev('__onetake.stopMic()');
 check(await ev<boolean>('document.getElementById("btnHold").hidden'), 'the stage button leaves with the mic');
 await ev('document.getElementById("modeAuto").click()');
@@ -874,8 +927,8 @@ check(
 );
 check((await ev<string>('__onetake.state.mode')) === 'auto', 'the recording mode survived the reload');
 check(
-  await ev<boolean>('document.getElementById("noiseFilter").checked === true'),
-  'the noise filter switch survived the reload',
+  await ev<boolean>('document.getElementById("noiseFilter").value === "deep"'),
+  'the noise filter choice survived the reload',
 );
 await page.screenshot('restored.png');
 
@@ -1209,6 +1262,8 @@ check(
   resultText.includes('Saved') && resultText.includes('from-dialog.mp4'),
   'the result names the saved file',
 );
+// the CPU figure needs two load samples a second apart; a fast export can finish before the second
+await page.waitFor('/\\d+ % of \\d+ cores/.test(document.getElementById("cpuText").textContent)', 50, 100);
 const liveFacts = await ev<string>(
   '[...document.querySelectorAll("#cpuText, #memText, #factBrowser")].map((e) => e.textContent).join(" | ")',
 );

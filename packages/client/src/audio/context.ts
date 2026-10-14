@@ -3,14 +3,19 @@
  *
  * One context instead of one per user keeps a single audio graph and a single rendering thread,
  * and it is suspended whenever nothing is using it, so no context is left rendering silence in
- * the background.
+ * the background. It runs at 48 kHz whatever the device's own rate: the deep noise filter
+ * (`deepfilter.ts`) only works at that rate, and the browser resamples the microphone and the
+ * output to and from it.
  */
+
+/** The rate the context runs at; DeepFilterNet3's. */
+export const CONTEXT_RATE = 48000;
 
 let context: AudioContext | null = null;
 const users = new Set<string>();
 
 export function audioContext(): AudioContext {
-  context ??= new AudioContext();
+  context ??= new AudioContext({ sampleRate: CONTEXT_RATE });
   return context;
 }
 

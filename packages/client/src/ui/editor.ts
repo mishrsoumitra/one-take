@@ -8,7 +8,7 @@
  * the editor was opened.
  */
 import { type Settings, type Slide } from '../app/types.js';
-import { type MicCapture } from '../audio/mic.js';
+import { type MicCapture, type NoiseFilterMode } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
 import { TakeRecorder, type Take } from '../audio/take.js';
 import {
@@ -50,8 +50,8 @@ export interface EditorDeps {
   mode: () => CaptureMode;
   mic: MicCapture;
   micDeviceId: () => string | undefined;
-  /** Whether the noise filter is on, the same switch as under the level meter. */
-  noiseFilter: () => boolean;
+  /** Which noise filter runs, the same choice as under the level meter. */
+  noiseFilter: () => NoiseFilterMode;
   nextId: () => string;
   /** The voice detector; it cuts takes and finds the pauses in recorded clips. */
   speech: () => VoiceScorer;

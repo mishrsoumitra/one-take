@@ -5,6 +5,7 @@ import '@newtonschool/grauity/css/grauity-icons.scss';
 import './styles/theme.css';
 import './styles/grauity.css';
 import './styles/app.css';
+import './styles/checks.css';
 
 import { App } from './app/app.js';
 import { installFavicon } from './ui/icon.js';

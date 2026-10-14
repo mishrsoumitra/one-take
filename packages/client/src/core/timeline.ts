@@ -1,4 +1,5 @@
 /** The ordered list of phrases with the silence placed between them; shared by preview and export. */
+import { type SpeakerVerdict } from './identity.js';
 
 export interface Segment {
   id: string;
@@ -10,6 +11,8 @@ export interface Segment {
   joined: boolean;
   prevId: string | null;
   createdAt: number;
+  /** Whose voice it is, once the lip and voice checks have judged the phrase (see `identity.ts`). */
+  speaker?: SpeakerVerdict;
 }
 
 export interface TimelineItem {

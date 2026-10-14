@@ -31,6 +31,14 @@ export interface Phrase {
   /** Continues the previous phrase without a gap (the slide changed mid-sentence). */
   joined: boolean;
   prevId: string | null;
+  /**
+   * The live phrase this piece came from: the number handed to `onSpeakingChange` when it started.
+   * Every piece of one live phrase (the parts either side of a slide change, the stretches the
+   * review kept) shares it.
+   */
+  key: number;
+  /** Where the piece sits in the microphone's stream, as block indices (see `VoiceActivityDetector.seen`). */
+  at: BlockRange;
 }
 
 /** A stretch of a phrase to keep, as block indices (the end exclusive). */
@@ -55,7 +63,11 @@ export type PhraseReview = (blocks: Float32Array[]) => Promise<PhraseVerdict>;
 export interface RecorderCallbacks {
   /** Stores a finished phrase (or the part spoken before a slide change) and returns its id. */
   onPhrase: (phrase: Phrase) => string;
-  onSpeakingChange: (speaking: boolean) => void;
+  /**
+   * A live phrase started or ended; `key` names it (see `Phrase.key`). An end comes whether the
+   * phrase was kept, too short, or discarded, and a slide change in mid-sentence is not an end.
+   */
+  onSpeakingChange: (speaking: boolean, key: number) => void;
 }
 
 export interface RecorderOptions {
@@ -72,6 +84,10 @@ interface Finished {
   /** Continues the part stored at the last slide change, if the review leaves the seam alone. */
   continuation: boolean;
   dropped: boolean;
+  /** The live phrase it came from. */
+  key: number;
+  /** The stream index of its first block. */
+  start: number;
 }
 
 export class Recorder {
@@ -89,6 +105,8 @@ export class Recorder {
   private lastId: string | null = null;
   /** The last phrase stored ended mid-sentence at a slide change with nothing cut off its end: a continuation may join it. */
   private lastOpen = false;
+  /** Counts the live phrases; the current one's number is `phrase`. */
+  private _phrase = 0;
 
   constructor(
     blockMs: number,
@@ -100,13 +118,18 @@ export class Recorder {
     this._slide = options.slide;
     this.review = options.review ?? null;
     this.vad = new VoiceActivityDetector(blockMs, settings, {
-      onSpeechStart: () => callbacks.onSpeakingChange(true),
+      onSpeechStart: () => callbacks.onSpeakingChange(true, ++this._phrase),
       onSpeechEnd: (phrase) => {
-        if (phrase) this.finish(phrase.blocks, phrase.continuation);
-        callbacks.onSpeakingChange(false);
+        if (phrase) this.finish(phrase.blocks, phrase.continuation, phrase.endBlock);
+        callbacks.onSpeakingChange(false, this._phrase);
       },
     });
     this.sync();
+  }
+
+  /** The key of the live phrase being spoken, or of the last one once it has ended; 0 before the first. */
+  get phrase(): number {
+    return this._phrase;
   }
 
   get mode(): CaptureMode {
@@ -201,8 +224,8 @@ export class Recorder {
     if (this.vad.speaking) {
       // whether the part being stored itself continued an earlier part: read before the split marks the rest as one
       const continuation = this.vad.continuing;
-      const blocks = this.vad.split();
-      if (blocks) this.finish(blocks, continuation, true);
+      const part = this.vad.split();
+      if (part) this.finish(part.blocks, continuation, part.endBlock, true);
     }
     this._slide = index;
   }
@@ -236,8 +259,15 @@ export class Recorder {
    * A phrase (or, with `split`, the part of one spoken before a slide change) is finished: queue it
    * for its review, or store it at once when there is none.
    */
-  private finish(blocks: Float32Array[], continuation: boolean, split = false): void {
-    const finished: Finished = { blocks, slide: this._slide, continuation, dropped: false };
+  private finish(blocks: Float32Array[], continuation: boolean, endBlock: number, split = false): void {
+    const finished: Finished = {
+      blocks,
+      slide: this._slide,
+      continuation,
+      dropped: false,
+      key: this._phrase,
+      start: endBlock - blocks.length,
+    };
     if (!this.review) {
       this.store(finished, { keep: [{ from: 0, to: blocks.length }], startCut: false, endCut: false }, split);
       return;
@@ -275,6 +305,8 @@ export class Recorder {
         slide: finished.slide,
         joined,
         prevId: joined ? this.lastId : null,
+        key: finished.key,
+        at: { from: finished.start + range.from, to: finished.start + range.to },
       });
     });
     // only a part that ended at a slide change, with its end intact, can be continued

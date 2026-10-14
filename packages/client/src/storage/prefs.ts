@@ -1,4 +1,5 @@
 /** Small per-browser preferences (not project data) kept in localStorage; every access is fail-safe. */
+import { type NoiseFilterMode } from '../audio/mic.js';
 import { type CaptureMode } from '../core/recorder.js';
 
 const KEY = 'one-take.prefs';
@@ -17,8 +18,14 @@ export interface Prefs {
   captureMode: CaptureMode;
   /** The chosen microphone's device id; empty for the browser's default. */
   micDeviceId: string;
-  /** Run the noise filter over the microphone. */
-  noiseFilter: boolean;
+  /** Which noise filter runs over the microphone: the deep one (DeepFilterNet3), the classic one, or none. */
+  noiseFilter: NoiseFilterMode;
+  /** Watch the camera for the lip check while recording. */
+  lipCheck: boolean;
+  /** The chosen camera's device id; empty for the browser's default. */
+  cameraDeviceId: string;
+  /** Compare each phrase's voice with the enrolled profile. */
+  voiceCheck: boolean;
   /**
    * Use the dedicated hardware video encoder (Apple's media engine, NVENC, Quick Sync) wherever this
    * computer has one, in the browser and in ffmpeg. On until the user says no.
@@ -32,29 +39,45 @@ const DEFAULT_PREFS: Prefs = {
   theme: 'dark',
   captureMode: 'auto',
   micDeviceId: '',
-  noiseFilter: true,
+  noiseFilter: 'deep',
+  lipCheck: true,
+  cameraDeviceId: '',
+  voiceCheck: true,
   hardwareEncoding: true,
 };
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function noiseFilter(value: unknown): NoiseFilterMode {
+  if (value === 'deep' || value === 'classic' || value === 'off') return value;
+  // the switch used to be on or off: on meant the classic filter, the only one there was
+  if (value === true) return 'classic';
+  if (value === false) return 'off';
+  return DEFAULT_PREFS.noiseFilter;
+}
 
 export function loadPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw) as Partial<Prefs>;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof Prefs, unknown>>;
     return {
-      welcomeSeen: typeof parsed.welcomeSeen === 'boolean' ? parsed.welcomeSeen : DEFAULT_PREFS.welcomeSeen,
-      tips: typeof parsed.tips === 'boolean' ? parsed.tips : DEFAULT_PREFS.tips,
+      welcomeSeen: bool(parsed.welcomeSeen, DEFAULT_PREFS.welcomeSeen),
+      tips: bool(parsed.tips, DEFAULT_PREFS.tips),
       theme: parsed.theme === 'light' || parsed.theme === 'dark' ? parsed.theme : DEFAULT_PREFS.theme,
       captureMode:
         parsed.captureMode === 'hold' || parsed.captureMode === 'auto'
           ? parsed.captureMode
           : DEFAULT_PREFS.captureMode,
       micDeviceId: typeof parsed.micDeviceId === 'string' ? parsed.micDeviceId : DEFAULT_PREFS.micDeviceId,
-      noiseFilter: typeof parsed.noiseFilter === 'boolean' ? parsed.noiseFilter : DEFAULT_PREFS.noiseFilter,
-      hardwareEncoding:
-        typeof parsed.hardwareEncoding === 'boolean'
-          ? parsed.hardwareEncoding
-          : DEFAULT_PREFS.hardwareEncoding,
+      noiseFilter: noiseFilter(parsed.noiseFilter),
+      lipCheck: bool(parsed.lipCheck, DEFAULT_PREFS.lipCheck),
+      cameraDeviceId:
+        typeof parsed.cameraDeviceId === 'string' ? parsed.cameraDeviceId : DEFAULT_PREFS.cameraDeviceId,
+      voiceCheck: bool(parsed.voiceCheck, DEFAULT_PREFS.voiceCheck),
+      hardwareEncoding: bool(parsed.hardwareEncoding, DEFAULT_PREFS.hardwareEncoding),
     };
   } catch {
     return { ...DEFAULT_PREFS };

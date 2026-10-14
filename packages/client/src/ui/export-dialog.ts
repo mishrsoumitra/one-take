@@ -1780,6 +1780,9 @@ export class ExportDialog {
         });
     };
     tick();
+    // the CPU figure is the use between two samples, so a second one follows at once (the server
+    // wants 250 ms between them): an export that is over within the second still shows a figure
+    window.setTimeout(tick, 300);
     this.loadTimer = window.setInterval(tick, 1000);
   }
 

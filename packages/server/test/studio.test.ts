@@ -45,20 +45,27 @@ function pcm(samples: number, value: number): Buffer {
  * A worker that halves every sample for the deep clean and negates it for the voice, reporting
  * progress twice, and records what it was asked.
  */
-function fakeWorker(options: { fail?: string; slowMs?: number } = {}) {
+function fakeWorker(options: { fail?: string; gateFrom?: number } = {}) {
   const calls: { op: string; body: Record<string, unknown> }[] = [];
   let stopped = 0;
+  let open: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
   return {
     calls,
     get stopped() {
       return stopped;
     },
+    /** Lets the gated requests go on. */
+    open: () => open(),
     stop: () => {
       stopped++;
     },
     request: async (op: string, body: Record<string, unknown>, onProgress: (f: number) => void) => {
       calls.push({ op, body });
-      if (options.slowMs) await new Promise((r) => setTimeout(r, options.slowMs));
+      // from the `gateFrom`th request on, wait until the test opens the gate
+      if (options.gateFrom !== undefined && calls.length > options.gateFrom) await gate;
       if (options.fail && String(body.audio).includes(options.fail)) throw new Error('model said no');
       onProgress(0.5);
       const input = await fs.readFile(String(body.audio));
@@ -238,7 +245,7 @@ describe('StudioManager', () => {
   });
 
   it('cancels a running job, stopping the worker and keeping what was done', async () => {
-    const worker = fakeWorker({ slowMs: 60 });
+    const worker = fakeWorker({ gateFrom: 1 });
     const manager = new StudioManager({ info: READY, dataDir: path.join(tmp, 'f'), staticDir: null, worker });
     const job = await manager.create({
       clips: [
@@ -249,15 +256,19 @@ describe('StudioManager', () => {
     });
     await manager.writeAudio(job.id, Readable.from([pcm(20, 5)]));
     await manager.start(job.id);
-    await new Promise((r) => setTimeout(r, 90)); // the denoise is done, the first voice is under way
+    // the denoise goes through; the first voice request is held at the gate
+    for (let i = 0; i < 200 && worker.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(worker.calls.length).toBe(2);
     const cancelled = await manager.cancel(job.id);
     expect(cancelled.state).toBe('cancelled');
     expect(worker.stopped).toBe(1);
     expect(cancelled.clips[0]?.deep).toBe(true);
     const deep = await fs.readFile(manager.resultPath(job.id, 'a', 'deep'));
     expect(deep.readInt16LE(0)).toBe(2);
-    await new Promise((r) => setTimeout(r, 150));
+    worker.open();
+    await new Promise((r) => setTimeout(r, 30));
     expect(manager.get(job.id).state).toBe('cancelled');
+    expect(worker.calls.length).toBe(2); // the second voice was never asked for
   });
 });
 

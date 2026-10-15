@@ -22,6 +22,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - [Output formats](#output-formats)
 - [Quality and encoding settings](#quality-and-encoding-settings)
 - [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles)
+- [The studio: deep clean and only your voice](#the-studio-deep-clean-and-only-your-voice)
 - [How an export works](#how-an-export-works)
 - [Large exports](#large-exports)
 - [System check and performance mode](#system-check-and-performance-mode)
@@ -57,6 +58,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Uses your hardware encoder.** The dedicated video encoder (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, until you untick **Use the hardware encoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders, each one self-tested) and measured encoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
 - **Your exports in one list.** Every video saved to a folder on this computer is listed under **Exports** in the top bar, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
 - **Faster, cleaner, with subtitles.** At export time the lecture can be played at 1.25×, 1.5× or 2× with the voice keeping its pitch (a time-stretch in plain code, no library), the volume evened out from phrase to phrase, and the "um"s and "uh"s cut: a filler is found by its shape in the spectrum, a held, flat, central vowel standing between two pauses, with a list to listen to each one before it goes. With whisper installed, the server transcribes the speech and the export gets subtitles drawn into the picture, `.srt` and `.vtt` files next to the video, and a `.txt` transcript. The audio never leaves the machine.
+- **A studio for the export.** Once `npm run studio` has set it up, the local server runs heavy models over the recording as the microphone heard it, before any filter: MossFormer2's deep clean over the whole recording, and AV-MossFormer2's target speaker extraction to keep only your voice in the phrases where another voice was heard (the camera's film of your mouth tells it which voice is yours; without a face, the separation model and your voice profile do). Every clip then has three versions, **Original**, **Cleaned** and **Only my voice**, to hear and choose in the editor, and the flagged phrases get a review list like the filler list. Each wait can be skipped. The camera's picture can get a blurred or plain background and even exposure and colour before it goes into the frame.
 - **Nothing lost.** Every phrase is saved to IndexedDB the moment it ends. Close the tab and come back later. The slides, the phrases and your settings are all still there.
 - **Works without the server too.** In Chrome and Edge the browser can stream the file straight to disk. Other browsers assemble it in memory and download it.
 
@@ -69,6 +71,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 | ffmpeg (optional)          | HLS, DASH, compression, the faststart MP4 remux and transcoding. Without it you still get MP4, MOV, MKV and WebM written directly by the browser.                           |
 | ffprobe (optional)         | Only the end-to-end test needs it.                                                                                                                                          |
 | A microphone               | A headset or USB microphone gives the cleanest cut. The built-in laptop mic works too; you may need to raise the speech threshold.                                         |
+| Python 3.10 to 3.13, or uv (optional) | The studio: the deep clean and keeping only your voice at export time, set up once with `npm run studio` (about 1.7 GB of models). Without it those switches are greyed out. |
 
 Install ffmpeg with your package manager:
 
@@ -182,6 +185,7 @@ Click **Edit** to open the editor. It shows the lecture as a player with a scrub
 - **Delete a clip** with the **Delete** button or the `Delete` key.
 - **Remove pauses.** The second listen goes through every clip and cuts out the stretches where nobody is speaking: a long silence at the end of a clip, or a pause inside one (the clip is split there, just as a live phrase is). Pauses shorter than *Phrase ends after* stay, and so do the pre-roll and tail. It is one change, so one Undo brings everything back. Use it on a recording made before the voice detector was there, or after a session in a room loud enough to keep a phrase open.
 - **The picture follows.** A clip recorded with the camera on keeps its picture through every cut, split, keep, move and Remove pauses: the frames are never decoded and encoded again, the clip only remembers which stretch of them to play. The editor's player shows the picture over the slide while it plays, and a take recorded with the camera on gets one too.
+- **Original, Cleaned or Only my voice.** Under the waveform, each clip can be switched between the microphone as it was, the cleaned version and only your voice, each with its own ▶, and the studio can be asked to make a version of that one clip. See [Three versions of every clip](#three-versions-of-every-clip).
 - **Undo** (`Cmd/Ctrl+Z`) steps back through everything you did since opening the editor.
 
 Every change is saved the moment it is made, so there is no Save button: **Done** (or `Esc`) just closes the editor. The main microphone is turned off while the editor is open, because the editor records its own takes.
@@ -193,6 +197,7 @@ Click **Export video**. In the dialog you choose:
 - **Save to**: a folder on this computer (through the server) or **Save in browser**.
 - **File name**, **Container**, **Resolution**, **Frame rate**, **Quality**, **Video codec**, **Audio** codec and bitrate, **Key frame every**, and **Order**.
 - **Compression (server, ffmpeg)** and, for HLS and DASH, **Segment length**, **Segment type** and **Adaptive bitrate**.
+- **Sound**: the studio's deep clean and only-your-voice switches with what each will cost on this computer, the check for a second voice, and the list of flagged phrases to listen to, keep or leave out. See [The studio](#the-studio-deep-clean-and-only-your-voice).
 - Under **This computer**: what the machine has, the **Use the hardware encoder** switch (on by default; untick it to encode on the CPU, and the choice is remembered in this browser) and the performance mode.
 - Under **Camera** (shown when any phrase has a picture): whether to **show the camera picture over the slides**, where it will be, and a reminder to pick 24 or 30 fps so the speaker moves smoothly (slides alone look the same at 15 fps).
 - Under **Enhance**: the playback **Speed**, **even out the volume**, **cut filler words** with a list of what was found, and **transcribe the speech and add subtitles**. See [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles).
@@ -368,7 +373,52 @@ Pass `--whisper /path/to/program` to use a particular one. Transcription runs on
 
 This is the one place where One Take leans on a trained model, and it is yours to install or not: without whisper the switch is greyed out and everything else works as before.
 
+## The studio: deep clean and only your voice
+
+The **Sound** section of the export dialog runs the heaviest work of the export on the local server, over the recording as the microphone heard it, before any filter: a phrase keeps two copies, the one the live noise filter cleaned (what you hear while you record) and the raw one, and the studio starts from the raw one. These are trained models that take their time (seconds to minutes; the dialog says how long on this computer), so each is a wait you can skip: untick the switch, or press **Continue without waiting for the studio** while it runs, and what it had finished goes in while the rest plays as it was.
+
+### Setting it up
+
+`npm run studio` makes a Python environment of its own under the server's data folder (`~/.one-take/studio/venv`, about 1.1 GB with PyTorch), fetches the three model checkpoints from Hugging Face (ClearerVoice-Studio's `MossFormer2_SE_48K`, 222 MB; `MossFormer2_SS_16K`, 670 MB; `AV_MossFormer2_TSE_16K`, 735 MB) and the speaker model, and checks that everything imports. It needs `uv` or a Python 3.10 to 3.13; on Apple silicon the models run on the GPU through Metal, on an NVIDIA card through CUDA, otherwise on the CPU. Restart the server afterwards: its start-up line `Studio` and the Sound section both say what was found. Without the environment every switch is greyed out with the reason and the export runs exactly as before. `--studio-python /path/to/python` uses an environment of your own; `--no-studio` skips the check.
+
+### The deep clean
+
+**Deep clean the sound from the raw microphone** runs MossFormer2 (speech enhancement at 48 kHz) over the whole recording: the phrases are sent as one run of audio, in order, so the model hears what the room sounds like over seconds, and the result is cut back into phrases. Unlike the live filter, which hears each frame once and must decide at once, it looks at four seconds at a time with the whole phrase in view. On a synthetic test (a voice over brown noise 8 dB under it) it lifted the voice from 5.6 to 13.5 dB over the noise and took the room-only stretches down to silence; on an M2 Max it runs at about a twentieth of real time, so an hour of lecture takes a few minutes.
+
+### Only your voice
+
+**Keep only your voice where another voice was heard** runs on the phrases the lip and voice checks flagged (*Another voice* or *Not sure whose voice*, see [Who is speaking](#who-is-speaking)) and on any clip you switched to *Only my voice* in the editor:
+
+- When the camera saw your face while the phrase was said, AV-MossFormer2 (audio-visual target speaker extraction) gets the audio and a film of your mouth: 25 grey crops a second, 112 pixels square, cut from the face the lip check already finds and kept with the phrase. The film tells it which voice is yours, so it handles two people talking at once, which audio alone cannot.
+- Without a face, MossFormer2 separates the phrase into two voices and the one closer to your voice profile (the same speaker model as the voice check, run on the server with the same features) is kept; without a profile, the louder one. A voice picked this way that is nothing like your profile means you are not in that phrase, and it is left as it was.
+
+Both work at 16 kHz; the result goes back to the recording's rate by adding what the recording has above 8 kHz, scaled frame by frame by how much of the lower band the model kept, so a silenced stretch stays silent up top. The voice step runs after the deep clean when both are on, which is where it does best.
+
+**Check every phrase for a second voice** (off unless you ask) runs the separation over every phrase and flags one where a second voice is active in at least a tenth of it, keeps going for a second, and speaks within 24 dB of yours. It is slow (the separation model over the whole lecture) and the bars are approximate; the flagged list is there to listen and decide.
+
+### The flagged phrases
+
+Under the switches, every phrase the checks flagged is listed the way the filler words are: when it is, how long, what the checks said (the reasons on hover), a ▶ to hear it, and a tick. A ticked phrase goes into the export (with only your voice kept when that switch is on); untick one and it is left out of the video altogether. Nothing is deleted: the phrase is still there in the timeline and the editor.
+
+### Three versions of every clip
+
+In the editor, under the waveform, each clip has a switch: **Original** (the microphone before any filter), **Cleaned** (the live filter's version until the deep clean has run, the deep clean after) and **Only my voice** (once the studio has kept it), each with a ▶ to hear it. The choice is saved with the clip, the preview plays it, the waveform draws it and the export uses it; a change of choice is on the undo stack like any other edit. Two buttons under the switch ask the studio for a version of just that clip, so you can hear the deep clean or the extraction before an export. Re-record, cut, keep, split and Remove pauses work on every version at once (and on the film and the picture), so the versions never drift apart: all of them are the same samples, only cleaned differently.
+
+How the raw copy is kept in step: a second capture node reads the microphone before the filter into a tape, and when a phrase is stored its stretch of the tape is taken a fixed delay earlier (41 ms for the deep filter, 21 ms for the classic one) and nudged by correlation to where it best matches the filtered phrase, so a filter that changed mid-phrase never leaves the two copies out of step. A phrase recorded with the filter off has no separate raw copy; Original plays the recording itself.
+
+### The camera's picture
+
+When the camera was recorded, the **Camera** section can also clean its picture before it is drawn into the frame: **Background** blurs what is behind you or paints it a plain colour (MediaPipe's selfie segmenter tells you from the background, fetched once, 250 kB), and **Picture** evens out the exposure and takes the colour cast out (a stretch of the brightness within two to one, a gamma towards a middle grey, grey-world colour balance within limits, all followed slowly so the picture never flickers). Each frame is cleaned once, as it changes.
+
+### What it costs
+
+The deep clean over an hour takes a few minutes on an Apple GPU and considerably longer on a CPU; keeping a voice costs about a third of real time per flagged phrase. The models take a gigabyte or two of memory while the worker runs; it stops on its own after three minutes of nothing to do. Everything stays on the machine: the audio and the mouth films go to the local server as files in its data folder, are processed there and deleted; the checkpoints were fetched once by `npm run studio`.
+
 ## How an export works
+
+### Stage 0: the studio on the server
+
+When the Sound section asks for it, the phrases go to the server first, as the microphone heard them: the deep clean comes back for every phrase, then only your voice for the flagged ones, each result kept with its phrase the moment it lands (*Deep clean on the server*, *Keep only your voice on the server* in the progress view, with a button to continue without waiting). From here on each phrase is the version it is set to.
 
 ### Stage 1: the browser encodes
 
@@ -398,7 +448,7 @@ The browser follows the job over server-sent events and falls back to polling if
 Once you press **Export**, the settings give way to a progress view:
 
 - **Time left**, in large type, with a note on where the figure comes from: _from the plan_ before anything has been measured, _settling on the measured speed_ while the first tenth of a stage runs, then _measured over the last few seconds_. Elapsed time, the share done and the bytes written sit beside it, over one bar for the whole export.
-- **The steps**: _Encode in the browser_, then _Compress with ffmpeg_ or _Package as HLS_ on the server when the plan has a server stage, then _Save_. Each shows its own percentage, its time left, and what it is doing right now: frames per second, speed against real time, bytes written, and for ffmpeg its CPU use.
+- **The steps**: _Deep clean on the server_ and _Keep only your voice on the server_ first when the studio runs, then _Encode in the browser_, then _Compress with ffmpeg_ or _Package as HLS_ on the server when the plan has a server stage, then _Save_. Each shows its own percentage, its time left, and what it is doing right now: frames per second, speed against real time, bytes written, and for ffmpeg its CPU use.
 - **This computer, live**: the whole machine's CPU use and memory, polled from the server once a second, plus the browser encoder's figures and the page's heap, so you can see what the export costs while it runs.
 - **Cancel export** at any stage; when it finishes, the saved path, its size and how long it took, with _Show in folder_ and _Back to settings_.
 
@@ -654,6 +704,8 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), its temporary files and whisper.cpp models (`models/`). |
 | `--whisper`           | `ONE_TAKE_WHISPER`      | found on `PATH`        | The whisper program for transcripts: `whisper-cli` (whisper.cpp) or `whisper` (openai-whisper).         |
 | `--whisper-model`     | `ONE_TAKE_WHISPER_MODEL` | `base.en` / first `ggml-*.bin` found | A model name for openai-whisper, a `ggml-*.bin` file for whisper.cpp.                    |
+| `--studio-python`     | `ONE_TAKE_STUDIO_PYTHON` | `<data dir>/studio/venv/bin/python` | A Python with the studio's packages (ClearerVoice-Studio), instead of the environment `npm run studio` makes. |
+| `--no-studio`         | `ONE_TAKE_STUDIO=0`     | off                    | Skip the studio check at start-up; its switches stay greyed out.                                        |
 | `--ffmpeg`            | `FFMPEG_PATH`           | found on `PATH`        | Path to the ffmpeg binary.                                                 |
 | `--ffprobe`           | `FFPROBE_PATH`          | found on `PATH`        | Path to ffprobe (reported in capabilities; used by the e2e test).          |
 | `--static`            | `ONE_TAKE_STATIC`       | `packages/client/dist` | Folder with the built client.                                              |
@@ -738,6 +790,14 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | `POST`   | `/api/library/:id/open`       | Opens the export with the default application (the video player, or the folder).                 |
 | `DELETE` | `/api/library/:id`            | Deletes the file or export folder (and its subtitle files) and forgets the record; `?files=0` only forgets it. Returns `{ record, deleted }`. |
 | `POST`   | `/api/transcribe?language=en&duration=5400` | 16 kHz mono WAV as `application/octet-stream`; answers `201` with a running transcription job. `language` is a code or `auto`. |
+| `POST`   | `/api/studio`                       | A studio job from its manifest (the clips, what each needs, the voice profile); answers `201` with the job, waiting for its uploads. |
+| `PUT`    | `/api/studio/:id/audio`             | Every clip's 16-bit PCM in order, as `application/octet-stream`.                                     |
+| `PUT`    | `/api/studio/:id/faces`             | Every clip's mouth crops (JPEG frames, each after its little-endian uint32 length), in order.        |
+| `POST`   | `/api/studio/:id/start`             | Checks the uploads against the manifest and queues the work.                                         |
+| `GET`    | `/api/studio/:id`                   | The job: state, progress, each clip's result and figures.                                            |
+| `GET`    | `/api/studio/:id/events`            | Server-sent events for the job until it finishes.                                                    |
+| `GET`    | `/api/studio/:id/clips/:clip/deep`  | A clip's deep clean (or `/voice`), as 16-bit PCM at the clip's rate, once the job says it is there.  |
+| `DELETE` | `/api/studio/:id`                   | Stops the job; results already finished stay fetchable.                                              |
 | `GET`    | `/api/transcribe/:id`         | The job: `state`, `progress` (0..1), `message`, and when done `words` (`[{ text, start, end }]`, seconds into the audio sent) and `language`. |
 | `GET`    | `/api/transcribe/:id/events`  | Server-sent events with the job as it changes.                                                   |
 | `DELETE` | `/api/transcribe/:id`         | Cancels it.                                                                                      |
@@ -855,6 +915,10 @@ Every error is `{ "error": { "code", "message", "details"? } }`.
 | 404    | `job_not_found`           | Unknown job, usually because the server restarted.                    |
 | 404    | `export_not_found`        | The export is not in the library (already deleted or forgotten).      |
 | 404    | `transcription_not_found` | Unknown transcription job, usually because the server restarted.      |
+| 400    | `studio_unavailable`    | The studio is not set up on the server, or the model a job needs is missing. |
+| 404    | `studio_not_found`      | Unknown studio job, usually because the server restarted.             |
+| 409    | `studio_started`        | An upload for a studio job that has already started.                  |
+| 409    | `studio_not_ready`      | A clip's result that is not there yet.                                |
 | 400    | `transcription_unavailable` | No whisper on the server, or whisper.cpp without a model.           |
 | 404    | `not_found`               | No such route.                                                        |
 | 409    | `not_uploading`           | Data or finish arrived for a job that is no longer uploading.         |
@@ -875,6 +939,7 @@ one-take/
 ├── eslint.config.js          typescript-eslint strictTypeChecked + stylisticTypeChecked, import order
 ├── vitest.config.ts          three test projects: shared, server, client
 ├── scripts/fetch-models.mjs  `npm run models`: fetches the speaker and face models into the client's public folder
+├── scripts/setup-studio.mjs  `npm run studio`: the studio's Python environment and its model checkpoints
 └── packages/
     ├── shared/               types and logic used by both sides (no DOM, no Node APIs)
     │   └── src/
@@ -902,6 +967,8 @@ one-take/
     │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs(), progress parsing, runFfmpeg()
     │       │   ├── library.ts    ExportLibrary: finished exports in exports.json, read back with what the disk says now, deleted safely
 │       │   ├── transcribe.ts detectTranscription() (whisper-cli or openai-whisper on the PATH), TranscriptionManager (runs it, parses its progress and JSON)
+│       │   ├── studio.ts     detectStudio() (the Python environment and the models), StudioWorker (the long-lived worker process), StudioManager (jobs: uploads cut into clips, the deep clean as one recording, each voice from the cleaned audio)
+│       ├── py/studio.py      the studio worker: ClearerVoice's models over JSON lines (the deep clean, a voice by its face or by the profile, the band merge back to 48 kHz, the second-voice measure)
 │       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts, the "only our files" folder check
     │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder self-tests, benchmarkEncoders()
     │       │   ├── load.ts       LoadMonitor: live CPU and memory for /api/system/load, ffmpeg process sampling
@@ -957,6 +1024,8 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | `npm run doctor`       | System check and resource map for a one-hour 1080p lecture, without starting the server.                    |
 | `npm run bench`        | `doctor --bench`: races the H.264 encoders on this machine (`--height 2160` for 4K).                        |
 | `npm run models`       | Fetches the speaker model and the face model (29 MB) into `packages/client/public/models`, checking each against its SHA-256. Optional: a client without them fetches them itself on first use. |
+| `npm run studio`       | Makes the studio's Python environment under the server's data folder and fetches its models (about 1.7 GB of checkpoints plus PyTorch); run once, then restart the server. |
+| `npm run e2e:studio`   | Builds, then checks the studio and the clip versions in headless Chrome: the raw copy in step with the filtered one, the editor's switch, an export with the deep clean and the voice step, the skip. Where this machine has no studio it checks the greyed-out state. |
 
 ### Tooling
 
@@ -1069,6 +1138,8 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Untick **Use the hardware encoder** or pick a smaller size.
 
+**The deep clean and Only my voice are greyed out.** The server found no studio. Run `npm run studio` once (it needs `uv` or a Python 3.10 to 3.13, and fetches about 1.7 GB of models), restart the server, and reopen the dialog; the note under the switches says what was found. A phrase whose voice could not be kept (the studio says your voice was not found in it) stays as it was.
+
 **The transcript switch is greyed out.** The server found no whisper. Install one (`brew install openai-whisper`, or `brew install whisper-cpp` plus a `ggml-*.bin` model in `~/.one-take/models`), restart the server, and reopen the dialog. The note under the switch says what was found and, for openai-whisper, that the first run downloads the model.
 
 **A filler the list found is a real word, or a real "um" was missed.** The detector works from the sound's shape, not from a vocabulary, so it will sometimes mistake a held, isolated vowel ("oh…", "so…") for a hesitation, and miss a filler that runs straight into the next word. Untick the line to keep a stretch, or pick a lower sensitivity; pick *Catch more* and go through the list to find the rest. A hesitation with a pause on both sides is the one it is surest of.
@@ -1083,7 +1154,7 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 ## Privacy
 
-Audio and the camera's picture never leave your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no request carries anything of yours anywhere. Speech is detected in the browser by plain arithmetic. The three models (the deep noise filter, the speaker model, the face model) run in the browser too; the first two parts come with the app and the other two are fetched once, from GitHub and from Google's model storage, checked and kept, unless `npm run models` has already put them in place. Your voice profile is 256 numbers in this browser's localStorage, and the verdicts are stored with the phrases. There is no analytics, no account, and no cloud.
+Audio and the camera's picture never leave your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no request carries anything of yours anywhere. Speech is detected in the browser by plain arithmetic. The three models (the deep noise filter, the speaker model, the face model) run in the browser too; the first two parts come with the app and the other two are fetched once, from GitHub and from Google's model storage, checked and kept, unless `npm run models` has already put them in place. Your voice profile is 256 numbers in this browser's localStorage, and the verdicts are stored with the phrases. The studio's models (the deep clean, the separation and the extraction) run on the local server, in a Python environment `npm run studio` makes; their checkpoints come from Hugging Face once, through that command alone, and the audio and the mouth films they work on are files in the server's data folder that are deleted when the job is done. There is no analytics, no account, and no cloud.
 
 ## License
 

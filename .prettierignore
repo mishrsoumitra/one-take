@@ -3,7 +3,9 @@ dist
 dist-types
 package-lock.json
 packages/e2e/out
+packages/e2e/studio-out
 packages/e2e/fixtures
 *.md
 .claude/
 packages/client/test/fixtures/*.json
+packages/e2e/camera-out

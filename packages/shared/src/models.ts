@@ -1,5 +1,5 @@
 /**
- * The model files One Take fetches once for the voice check and the lip check. The noise model
+ * The model files One Take fetches once for the voice check, the lip check and the camera cleanup. The noise model
  * (DeepFilterNet3) ships inside its npm package and needs no download.
  *
  * `npm run models` puts them in `packages/client/public/models`, where the client finds them first;
@@ -31,6 +31,13 @@ export const MODELS = {
     sha256: '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
     bytes: 3_758_596,
     what: 'the lip check (MediaPipe Face Landmarker)',
+  },
+  segmenter: {
+    name: 'selfie_segmenter.tflite',
+    url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite',
+    sha256: '191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b',
+    bytes: 249_537,
+    what: 'the camera cleanup (MediaPipe Image Segmenter, the selfie model)',
   },
 } as const satisfies Record<string, ModelFile>;
 

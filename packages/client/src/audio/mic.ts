@@ -1,4 +1,4 @@
-import { NoiseFilter } from '../core/denoise.js';
+import { frameSizeFor, NoiseFilter } from '../core/denoise.js';
 
 // eslint-disable-next-line import-x/default -- Vite's `?worker&url` import is the bundled worklet's URL
 import processorUrl from './capture-processor.ts?worker&url';
@@ -25,8 +25,29 @@ export interface MicStartOptions {
   /** Block length handed to the detector, in milliseconds. */
   blockMs: number;
   onBlock: (block: Float32Array) => void;
+  /**
+   * The same blocks before any filter (the tape, see `core/tape.ts`): block for block in step with
+   * `onBlock`, the filter's delay earlier in content. Without this, the raw stream is not captured.
+   */
+  onRawBlock?: (block: Float32Array) => void;
   /** The filter that is really running changed: the deep one came up, or gave way to the classic one. */
   onEngineChange?: (engine: NoiseFilterMode) => void;
+}
+
+/**
+ * How far behind the unfiltered microphone each filter's output runs, in samples: the deep filter's
+ * model looks 30 ms ahead and reframes 128-sample quanta into 480-sample frames (512 samples more,
+ * see its README); the classic filter is one of its frames late; no filter, nothing.
+ */
+export function filterDelaySamples(engine: NoiseFilterMode, sampleRate: number): number {
+  switch (engine) {
+    case 'deep':
+      return Math.round(0.03 * sampleRate) + 512;
+    case 'classic':
+      return frameSizeFor(sampleRate);
+    case 'off':
+      return 0;
+  }
 }
 
 export interface MicInfo {
@@ -58,6 +79,8 @@ export class MicCapture {
   /** The deep filter's node, once loaded; kept across microphone sessions. */
   private readonly deep = new DeepFilter();
   private deepNode: AudioWorkletNode | null = null;
+  /** The second capture node, on the unfiltered source, while the tape is wanted. */
+  private rawNode: AudioWorkletNode | null = null;
   private wanted: NoiseFilterMode = 'deep';
   private _engine: NoiseFilterMode = 'off';
   private onEngineChange: ((engine: NoiseFilterMode) => void) | null = null;
@@ -101,13 +124,17 @@ export class MicCapture {
     return this.deep.unavailable;
   }
 
+  /** Samples the filtered blocks run behind the raw ones right now (see {@link filterDelaySamples}). */
+  get delaySamples(): number {
+    return filterDelaySamples(this._engine, this.sampleRate);
+  }
+
   /**
-   * Loads the deep filter ahead of the first start, so that start does not pay for it. The load is
-   * a one-time cost of about a second, and while it runs the browser delivers no camera frames to
-   * the page when the lip check's worker is alive: paid at Start mic it takes the first second of
-   * picture off the first phrase; paid when the slides load or the camera opens it costs nothing
-   * visible. Needs a user gesture to have happened (the audio context must be allowed to run), which
-   * both of those moments guarantee. Does nothing when another filter is wanted or worklets are missing.
+   * Loads the deep filter ahead of the first start, so that start does not pay for it: the load is a
+   * one-time cost of about a second, during which the classic filter stands in. Paid when the slides
+   * are chosen or the camera opens (user gestures, so the audio context may run) rather than at Start
+   * mic, the first phrase gets the deep filter from its first block. Does nothing when another filter
+   * is wanted or worklets are missing.
    */
   async warm(mode: NoiseFilterMode): Promise<void> {
     if (mode !== 'deep' || typeof AudioWorkletNode === 'undefined') return;
@@ -198,6 +225,21 @@ export class MicCapture {
         });
         node.port.onmessage = (e: MessageEvent<Float32Array>) => options.onBlock(e.data);
         this.node = node;
+        // the tape: the same blocks straight off the source, connected in the same turn as the
+        // filtered chain below so both count from the same quantum
+        if (options.onRawBlock) {
+          const onRaw = options.onRawBlock;
+          const rawNode = new AudioWorkletNode(ctx, 'one-take-capture', {
+            numberOfInputs: 1,
+            numberOfOutputs: 0,
+            channelCount: 1,
+            channelCountMode: 'explicit',
+            processorOptions: { size, filter: false },
+          });
+          rawNode.port.onmessage = (e: MessageEvent<Float32Array>) => onRaw(e.data);
+          this.source.connect(rawNode);
+          this.rawNode = rawNode;
+        }
       } catch (error) {
         console.warn('AudioWorkletNode failed, falling back to ScriptProcessor', error);
         worklet = false;
@@ -207,15 +249,20 @@ export class MicCapture {
       /* eslint-disable @typescript-eslint/no-deprecated -- ScriptProcessor is the only fallback where AudioWorklet is missing */
       const node = ctx.createScriptProcessor(1024, 1, 1);
       let acc = new Float32Array(size);
+      let accRaw = new Float32Array(size);
       let n = 0;
       node.onaudioprocess = (ev) => {
         const raw = ev.inputBuffer.getChannelData(0);
         const data = this.fallbackFilter ? this.fallbackFilter.process(raw) : raw;
-        for (const sample of data) {
-          acc[n++] = sample;
+        for (let i = 0; i < data.length; i++) {
+          acc[n] = data[i] ?? 0;
+          accRaw[n] = raw[i] ?? 0;
+          n++;
           if (n === size) {
             options.onBlock(acc);
+            options.onRawBlock?.(accRaw);
             acc = new Float32Array(size);
+            accRaw = new Float32Array(size);
             n = 0;
           }
         }
@@ -269,6 +316,7 @@ export class MicCapture {
     } else {
       source.connect(node);
     }
+    if (this.rawNode) source.connect(this.rawNode);
     const classic = engine === 'classic';
     if ('port' in node)
       node.port.postMessage((classic ? 'filter-on' : 'filter-off') satisfies CaptureMessage);
@@ -296,6 +344,16 @@ export class MicCapture {
       this.node = null;
     }
     this.fallbackFilter = null;
+    if (this.rawNode) {
+      this.rawNode.port.postMessage('stop' satisfies CaptureMessage);
+      this.rawNode.port.onmessage = null;
+      try {
+        this.rawNode.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.rawNode = null;
+    }
     // the deep node stays loaded for the next session, with nothing feeding it
     this.deepNode?.disconnect();
     if (this.source) {

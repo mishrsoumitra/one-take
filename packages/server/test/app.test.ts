@@ -9,6 +9,7 @@ import { PptxConverter, presentationSupport, type ConverterService } from '../sr
 import { JobManager } from '../src/services/jobs.js';
 import { ExportLibrary } from '../src/services/library.js';
 import { LoadMonitor } from '../src/services/load.js';
+import { StudioManager } from '../src/services/studio.js';
 import { TranscriptionManager } from '../src/services/transcribe.js';
 
 let tmp: string;
@@ -45,12 +46,27 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       rendererMemoryMb: null,
       whisperPath: null,
       whisperModel: null,
+      studioPython: null,
+      studio: false,
     },
     jobs: new JobManager({ ffmpeg: null, library }),
     converter,
     load: new LoadMonitor(),
     library,
     transcription: new TranscriptionManager({ info: null, dataDir: path.join(tmp, 'data') }),
+    studio: new StudioManager({
+      info: {
+        python: null,
+        device: null,
+        models: { denoise: false, separate: false, extract: false },
+        speaker: false,
+        denoise: false,
+        voice: false,
+        note: 'off',
+      },
+      dataDir: path.join(tmp, 'data'),
+      staticDir: null,
+    }),
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
@@ -63,6 +79,7 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       presentations: converter.support(),
       system: null,
       transcription: null,
+      studio: null,
     }),
   });
 }

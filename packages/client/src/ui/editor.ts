@@ -7,6 +7,8 @@
  * the list of clips the editor shows is the lecture. Undo steps back through the changes made since
  * the editor was opened.
  */
+import { type StudioInfo } from '@one-take/shared';
+
 import { type Settings, type Slide } from '../app/types.js';
 import { type MicCapture, type NoiseFilterMode } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
@@ -36,6 +38,7 @@ import {
   type Segment,
   type Timeline,
 } from '../core/timeline.js';
+import { audioOf, VOICING_LABELS, type Voicing } from '../core/versions.js';
 import { OverlayTrack } from '../export/overlay.js';
 import { type CameraCapture } from '../video/camera.js';
 
@@ -44,7 +47,9 @@ import { clear, h, label, setLabel } from './dom.js';
 import { icon, setButtonIcon } from './icon.js';
 import { kbd, shortcut } from './kbd.js';
 import { LevelMeter } from './meter.js';
+import { SnippetPlayer } from './snippet.js';
 import { type Toast } from './toast.js';
+import { VoicingSwitch } from './voicing.js';
 
 export interface EditorDeps {
   slides: () => readonly Slide[];
@@ -64,6 +69,14 @@ export interface EditorDeps {
   /** Where the camera picture sits on the slide; the same layout as on the main screen. */
   cameraLayout: () => CameraLayout;
   onCameraLayout: (layout: CameraLayout, final: boolean) => void;
+  /** What the studio can do here, for the clip's sound switch. */
+  studio: () => StudioInfo | null;
+  /** Has the studio make one version of a clip; resolves with the clip carrying it. */
+  makeVersion: (
+    seg: Segment,
+    kind: 'deep' | 'voice',
+    onProgress: (message: string) => void,
+  ) => Promise<Segment>;
   /** The clips changed; the new list is the lecture from now on. */
   onChange: (segments: Segment[]) => void;
   onClose: () => void;
@@ -93,6 +106,9 @@ export class Editor {
   private overlay: OverlayTrack | null = null;
   private painting = false;
   private paintedSerial = -1;
+  /** The clip's sound switch: Original, Cleaned, Only my voice. */
+  private readonly voicing: VoicingSwitch;
+  private readonly snippet = new SnippetPlayer();
   private readonly e: {
     info: HTMLElement;
     screen: HTMLElement;
@@ -264,6 +280,13 @@ export class Editor {
       icon('reply'),
       label('Undo'),
     );
+    const voicing = new VoicingSwitch({
+      snippet: this.snippet,
+      studio: () => deps.studio(),
+      make: (seg, kind, onProgress) => this.makeVersion(seg, kind, onProgress),
+      onChoice: (seg, choice) => this.chooseVoicing(seg, choice),
+    });
+    this.voicing = voicing;
     const clip = h(
       'div',
       { class: 'clip', id: 'edClip' },
@@ -277,6 +300,7 @@ export class Editor {
       ),
       wave,
       waveHint,
+      voicing.el,
       h(
         'div',
         { class: 'actions inline' },
@@ -556,6 +580,7 @@ export class Editor {
     if (!this.isOpen) return;
     this.pause();
     this.closeTake();
+    this.voicing.stop();
     this.cam.hide();
     this.el.classList.remove('on');
     if (this.previouslyFocused instanceof HTMLElement) this.previouslyFocused.focus();
@@ -895,8 +920,10 @@ export class Editor {
     if (!seg) {
       e.btnPrev.disabled = true;
       e.btnNext.disabled = true;
+      this.voicing.render(null);
       return;
     }
+    this.voicing.render(seg);
     e.btnPrev.disabled = this.selected === 0;
     e.btnNext.disabled = this.selected >= this.list.length - 1;
     e.clipTitle.textContent = `Clip ${this.selected + 1} of ${this.list.length} · ${fmtSec(segmentDuration(seg))}`;
@@ -974,6 +1001,39 @@ export class Editor {
       keepInstead
         ? `Kept ${fmtSec(segmentDuration(next))} of clip ${n}`
         : `Cut ${fmtSec(removed)} out of clip ${n}`,
+    );
+  }
+
+  /** The clip plays and exports this version from now on; a change on the undo stack like any other. */
+  private chooseVoicing(seg: Segment, choice: Voicing): void {
+    const index = this.list.indexOf(seg);
+    if (index < 0) return;
+    this.pause();
+    this.commit(
+      replaceAt(this.list, index, 1, [{ ...seg, choice }]),
+      `Clip ${index + 1} plays ${VOICING_LABELS[choice].toLowerCase()}`,
+    );
+  }
+
+  /** The studio makes one version of a clip; the clip carrying it takes the old one's place (not undoable: nothing was lost). */
+  private async makeVersion(
+    seg: Segment,
+    kind: 'deep' | 'voice',
+    onProgress: (message: string) => void,
+  ): Promise<void> {
+    const next = await this.deps.makeVersion(seg, kind, onProgress);
+    const index = this.list.findIndex((s) => s.id === next.id);
+    if (index < 0) return; // the clip went meanwhile
+    if (this.list[index] !== seg) {
+      this.deps.toast.show('The clip changed while the studio worked on it; ask again.');
+      return;
+    }
+    this.pause();
+    this.list = replaceAt(this.list, index, 1, [next]);
+    this.deps.onChange(this.list.slice());
+    this.rebuild();
+    this.deps.toast.show(
+      kind === 'deep' ? `Clip ${index + 1} is deep cleaned` : `Clip ${index + 1}: only your voice is kept`,
     );
   }
 
@@ -1067,6 +1127,7 @@ export class Editor {
 
   private pause(): void {
     if (this.player.playing) this.player.stop();
+    this.voicing.stop();
     this.auditioning = false;
     this.stopAtSec = null;
     this.stopOverlay();
@@ -1180,7 +1241,8 @@ export class Editor {
       g.fillRect(a, 0, 1, hPx);
       g.fillRect(b - 1, 0, 1, hPx);
     }
-    const bars = peaks(seg.pcm, Math.max(1, Math.floor(w / 2)));
+    // the waveform of the version the clip plays
+    const bars = peaks(audioOf(seg), Math.max(1, Math.floor(w / 2)));
     const mid = hPx / 2;
     g.fillStyle = colour('--wave-bar', '#8b93a7');
     for (let i = 0; i < bars.length; i++) {

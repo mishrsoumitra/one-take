@@ -10,11 +10,13 @@ import { registerConvertRoutes } from './routes/convert.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
 import { registerLibraryRoutes } from './routes/library.js';
+import { registerStudioRoutes } from './routes/studio.js';
 import { registerTranscribeRoutes } from './routes/transcribe.js';
 import { type ConverterService } from './services/convert.js';
 import { type JobManager } from './services/jobs.js';
 import { type ExportLibrary } from './services/library.js';
 import { type LoadMonitor } from './services/load.js';
+import { type StudioManager } from './services/studio.js';
 import { type TranscriptionManager } from './services/transcribe.js';
 import { ApiError, errorMessage } from './util/errors.js';
 
@@ -29,6 +31,8 @@ export interface AppDependencies {
   library: ExportLibrary;
   /** Speech to text through the whisper the machine has, if any. */
   transcription: TranscriptionManager;
+  /** The heavy audio models, once `npm run studio` has set them up. */
+  studio: StudioManager;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
@@ -114,6 +118,7 @@ export function buildApp(deps: AppDependencies): FastifyInstance {
   registerExportRoutes(app, deps);
   registerLibraryRoutes(app, deps);
   registerTranscribeRoutes(app, deps);
+  registerStudioRoutes(app, deps);
   registerConvertRoutes(app, deps);
 
   if (config.staticDir) {

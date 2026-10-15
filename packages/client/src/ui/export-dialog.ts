@@ -48,6 +48,7 @@ import {
   type PerformanceMode,
   type ResourceLine,
   type ServerCapabilities,
+  type StudioClipResult,
   type SystemLoad,
 } from '@one-take/shared';
 
@@ -55,7 +56,14 @@ import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
 import { toTranscript } from '../core/captions.js';
 import { describeLayout, type CameraLayout } from '../core/overlay.js';
-import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
+import { type VoiceProfile } from '../core/speaker.js';
+import {
+  segmentDuration,
+  type PhraseOrder,
+  type Segment,
+  type Timeline,
+  type TimelineSettings,
+} from '../core/timeline.js';
 import { canRecordRealtime, recordRealtime } from '../export/fallback.js';
 import {
   needsPreparation,
@@ -75,11 +83,13 @@ import {
   type ExportResult,
   type ExportStep,
 } from '../export/runner.js';
+import { studioEstimate } from '../export/studio.js';
 
 import { clear, h, replaceChildren, syncRangeFill } from './dom.js';
 import { type FolderPicker } from './folder-picker.js';
 import { icon } from './icon.js';
 import { SnippetPlayer } from './snippet.js';
+import { SoundSection } from './sound-section.js';
 
 export interface ExportDialogDeps {
   api: ApiClient;
@@ -100,6 +110,12 @@ export interface ExportDialogDeps {
   onHardwarePreferenceChange: (on: boolean) => void;
   /** Where the camera picture sits on the slide and how big it is, as set on the main screen. */
   cameraLayout: () => CameraLayout;
+  /** The enrolled voice, for the studio to pick a voice without a face. */
+  profile: () => VoiceProfile | null;
+  /** A studio result landed for a phrase: kept with it. */
+  onVersion: (seg: Segment, kind: 'deep' | 'voice', pcm: Int16Array, result: StudioClipResult) => void;
+  /** The studio found two voices talking at once in a phrase. */
+  onTwoVoices: (seg: Segment, result: StudioClipResult) => void;
   /** Opens the list of exported videos. */
   onOpenLibrary: () => void;
   onExportingChange: (exporting: boolean) => void;
@@ -235,6 +251,12 @@ export class ExportDialog {
   private readonly snippet = new SnippetPlayer();
   /** Draw the camera picture over the slides (when any phrase has one). */
   private includeCamera = true;
+  /** The Sound section: the studio's switches and the flagged phrases. */
+  private readonly sound: SoundSection;
+  /** Aborting this skips the rest of the studio's work in the running export. */
+  private studioSkip: AbortController | null = null;
+  /** What the studio did in the last export, for the result panel. */
+  private studioNote: string | null = null;
   private readonly els: {
     sumTime: HTMLElement;
     sumSegs: HTMLElement;
@@ -305,6 +327,11 @@ export class ExportDialog {
     cameraSection: HTMLElement;
     cameraInclude: HTMLInputElement;
     cameraNote: HTMLElement;
+    cameraBackground: HTMLSelectElement;
+    cameraBackdrop: HTMLInputElement;
+    cameraExposure: HTMLInputElement;
+    /** Gives up on the studio's wait in the running export. */
+    skipStudio: HTMLButtonElement;
     modes: HTMLElement;
     modeInputs: Record<PerformanceMode, HTMLInputElement>;
     resources: HTMLElement;
@@ -751,6 +778,36 @@ export class ExportDialog {
       this.refresh();
     };
     e.cameraNote = h('div', { class: 'hint', id: 'cameraNote' });
+    // The camera cleanup: the background behind the speaker, the exposure and the colour.
+    e.cameraBackground = h('select', { id: 'cameraBackground' });
+    setOptions(
+      e.cameraBackground,
+      [
+        { value: 'keep', label: 'As the camera saw it' },
+        { value: 'blur', label: 'Blurred behind you' },
+        { value: 'replace', label: 'A plain colour behind you' },
+      ],
+      r.enhance.camera.background,
+    );
+    e.cameraBackground.onchange = () =>
+      this.update((q) => {
+        q.enhance.camera.background = e.cameraBackground
+          .value as ExportRequest['enhance']['camera']['background'];
+      });
+    e.cameraBackdrop = h('input', { type: 'color', id: 'cameraBackdrop', value: r.enhance.camera.backdrop });
+    e.cameraBackdrop.oninput = () =>
+      this.update((q) => {
+        q.enhance.camera.backdrop = e.cameraBackdrop.value;
+      });
+    e.cameraExposure = h('input', {
+      type: 'checkbox',
+      id: 'cameraExposure',
+      checked: r.enhance.camera.exposure,
+    });
+    e.cameraExposure.onchange = () =>
+      this.update((q) => {
+        q.enhance.camera.exposure = e.cameraExposure.checked;
+      });
     e.cameraSection = section(
       'Camera',
       row(
@@ -762,8 +819,24 @@ export class ExportDialog {
           e.cameraNote,
         ),
       ),
+      row(
+        'Background',
+        h('div', { class: 'stack' }, e.cameraBackground, e.cameraBackdrop),
+        'You are told from the background by a segmentation model (fetched once, 250 kB) and the rest is blurred or painted over, frame by frame, before the encode.',
+      ),
+      row(
+        'Picture',
+        check(e.cameraExposure, 'even out the exposure and take the colour cast out'),
+        'A stretch of the brightness, a gamma towards a middle grey and grey-world colour balance, within limits, followed slowly so the picture never flickers.',
+      ),
     );
     e.cameraSection.id = 'cameraSection';
+    // The Sound section: the studio's switches and the flagged phrases.
+    const sound = new SoundSection({
+      snippet: this.snippet,
+      onChange: (mutate) => this.update((q) => mutate(q.enhance.studio)),
+    });
+    this.sound = sound;
     e.modeInputs = {} as Record<PerformanceMode, HTMLInputElement>;
     e.modes = h(
       'div',
@@ -801,6 +874,22 @@ export class ExportDialog {
     e.bigBar = h('i');
     e.steps = h('ol', { class: 'steps', id: 'exportSteps' });
     e.status = h('div', { class: 'status', id: 'exportStatus' });
+    e.skipStudio = h(
+      'button',
+      {
+        class: 'ghost skip',
+        id: 'skipStudio',
+        hidden: true,
+        title:
+          'Stop waiting for the studio: what it has done so far goes in, the rest plays as recorded, and the export goes on',
+      },
+      icon('skip-next', 16),
+      h('span', { class: 'label' }, 'Continue without waiting for the studio'),
+    );
+    e.skipStudio.onclick = () => {
+      this.studioSkip?.abort();
+      e.skipStudio.hidden = true;
+    };
     e.cpuBar = h('i');
     e.cpuText = h('span', { class: 'val', id: 'cpuText' }, '…');
     e.memBar = h('i');
@@ -840,6 +929,7 @@ export class ExportDialog {
       h('div', { class: 'progress big', id: 'bar' }, e.bigBar),
       e.steps,
       e.status,
+      e.skipStudio,
       section(
         'This computer, live',
         h('div', { class: 'meters' }, e.cpuMeter, e.memMeter),
@@ -932,6 +1022,7 @@ export class ExportDialog {
             row('Key frame every', unit(e.keyInt, 's'), 'Smaller values seek faster and make bigger files.'),
           ),
           section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
+          section('Sound', sound.el),
           e.cameraSection,
           section(
             'Enhance',
@@ -1061,6 +1152,7 @@ export class ExportDialog {
   close(): void {
     if (this.running) return;
     this.snippet.stop();
+    this.sound.stop();
     this.overlay.classList.remove('on');
   }
 
@@ -1096,6 +1188,9 @@ export class ExportDialog {
     e.captionsBurn.checked = r.enhance.captions.burnIn;
     e.captionsSidecar.checked = r.enhance.captions.sidecar;
     e.captionsTranscript.checked = r.enhance.captions.transcript;
+    e.cameraBackground.value = r.enhance.camera.background;
+    e.cameraBackdrop.value = r.enhance.camera.backdrop;
+    e.cameraExposure.checked = r.enhance.camera.exposure;
     for (const mode of PERFORMANCE_MODES) e.modeInputs[mode].checked = r.performance.mode === mode;
   }
 
@@ -1390,6 +1485,7 @@ export class ExportDialog {
           }`
         : 'The video shows the slides alone.';
     }
+    e.cameraBackdrop.hidden = r.enhance.camera.background !== 'replace';
 
     // Destination
     const serverOk = server !== null;
@@ -1514,8 +1610,21 @@ export class ExportDialog {
           : 'Transcripts need the local server: start it with "npm start", or untick the transcript.',
       );
     }
-    // the final video's length, with the fillers cut and the pace changed
-    const durationSec = plannedDuration(tl, r.enhance, this.fillerRemovedSec());
+    // Sound: the studio's switches, with what they would do and cost, and the flagged phrases
+    this.sound.refresh({
+      settings: r.enhance.studio,
+      info: server?.studio ?? null,
+      server: server !== null,
+      segments: this.deps.segments(),
+      timeline: tl,
+      profile: this.deps.profile() !== null,
+    });
+    // the final video's length, with the fillers cut, the pace changed and the phrases left out gone
+    const left = this.deps
+      .segments()
+      .filter((seg) => this.sound.flagged.dropped.has(seg.id))
+      .reduce((sum, seg) => sum + segmentDuration(seg), 0);
+    const durationSec = Math.max(0, plannedDuration(tl, r.enhance, this.fillerRemovedSec()) - left);
     e.sumTime.textContent = formatDuration(durationSec);
     e.sumTime.title =
       Math.abs(durationSec - tl.total) > 0.05 ? `${formatDuration(tl.total)} as recorded` : '';
@@ -1714,6 +1823,12 @@ export class ExportDialog {
     );
     e.status.textContent = p.message;
     e.status.classList.toggle('error', p.message.startsWith('Export failed'));
+    // the studio's wait can be given up on while one of its steps runs
+    e.skipStudio.hidden =
+      outcome !== 'running' ||
+      this.studioSkip === null ||
+      this.studioSkip.signal.aborted ||
+      !p.steps.some((s) => (s.id === 'denoise' || s.id === 'voice') && s.state === 'active');
     this.renderFacts(p, outcome);
   }
 
@@ -1860,7 +1975,10 @@ export class ExportDialog {
         )
       : null;
     const transcribeSec = en.captions.enabled ? Math.max(3, Math.round(dur / 5)) : null;
+    const studio = studioEstimate(this.sound.plan, this.deps.serverCaps()?.studio ?? null);
     return {
+      denoiseSec: studio.denoiseSec,
+      voiceSec: studio.voiceSec,
       prepareSec,
       transcribeSec,
       encodeSec: find('Browser encodes'),
@@ -1890,6 +2008,9 @@ export class ExportDialog {
     this.setView('progress');
     this.renderProgress(this.simpleProgress('preparing', null, 'Preparing…'));
     this.startLoadPolling();
+    this.studioSkip = new AbortController();
+    this.studioNote = null;
+    this.sound.stop();
     try {
       const result = await runExport({
         request: this.request,
@@ -1904,6 +2025,19 @@ export class ExportDialog {
         estimates: this.estimates(),
         onProgress: (p) => this.renderProgress(p),
         camera: this.includeCamera ? this.deps.cameraLayout() : null,
+        studio: this.sound.active
+          ? {
+              plan: this.sound.plan,
+              profile: this.deps.profile(),
+              skip: this.studioSkip.signal,
+              onVersion: this.deps.onVersion,
+              onTwoVoices: this.deps.onTwoVoices,
+              onDone: (note) => {
+                this.studioNote = note;
+              },
+            }
+          : null,
+        dropped: new Set(this.sound.flagged.dropped),
       });
       this.showResult(result);
     } catch (error) {
@@ -1921,6 +2055,8 @@ export class ExportDialog {
       }
     } finally {
       this.running = null;
+      this.studioSkip = null;
+      e.skipStudio.hidden = true;
       this.stopLoadPolling();
       this.deps.onExportingChange(false);
       e.btnCancel.hidden = true;
@@ -1932,6 +2068,11 @@ export class ExportDialog {
 
   private cancel(): void {
     this.running?.abort();
+  }
+
+  /** The studio's line for the result panel, when it ran. */
+  private studioResult(): HTMLElement | null {
+    return this.studioNote ? h('div', { class: 'hint', id: 'studioResult' }, this.studioNote) : null;
   }
 
   /** What became of the transcript: the files next to the video, or downloads, and the text itself. */
@@ -2034,6 +2175,7 @@ export class ExportDialog {
             )
           : null,
         this.captionsResult(result),
+        this.studioResult(),
         result.job.command
           ? h(
               'details',
@@ -2048,6 +2190,7 @@ export class ExportDialog {
         e.result,
         h('div', null, 'Saved ', h('b', null, result.name), ` (${formatBytes(result.bytes)})`, took),
         this.captionsResult(result),
+        this.studioResult(),
       );
     } else {
       const size = formatBytes(result.blob.size);
@@ -2067,6 +2210,7 @@ export class ExportDialog {
           took,
         ),
         this.captionsResult(result),
+        this.studioResult(),
       );
     }
   }

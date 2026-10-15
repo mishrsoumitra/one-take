@@ -105,9 +105,9 @@ describe('takeToSegments', () => {
     let n = 0;
     const segs = takeToSegments(
       [
-        { pcm: new Int16Array(500), video: null },
-        { pcm: new Int16Array(0), video: null },
-        { pcm: new Int16Array(700), video: null },
+        { pcm: new Int16Array(500), raw: null, video: null },
+        { pcm: new Int16Array(0), raw: null, video: null },
+        { pcm: new Int16Array(700), raw: null, video: null },
       ],
       1000,
       4,

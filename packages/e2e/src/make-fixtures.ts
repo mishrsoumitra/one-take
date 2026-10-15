@@ -382,6 +382,66 @@ export function writeStressFixtures(
   return { pdf, wav, pages: titles.length, seconds };
 }
 
+/** A 16-bit mono WAV's samples as floats and its rate (the spoken fixtures under the client's tests). */
+function readWav16(file: string): { samples: Float64Array; rate: number } {
+  const buf = fs.readFileSync(file);
+  let at = 12;
+  let rate = 16000;
+  let channels = 1;
+  let data: Buffer | null = null;
+  while (at + 8 <= buf.length) {
+    const id = buf.toString('ascii', at, at + 4);
+    const size = buf.readUInt32LE(at + 4);
+    if (id === 'fmt ') {
+      channels = buf.readUInt16LE(at + 10);
+      rate = buf.readUInt32LE(at + 12);
+    } else if (id === 'data') {
+      data = buf.subarray(at + 8, at + 8 + size);
+      break;
+    }
+    at += 8 + size + (size % 2);
+  }
+  if (!data) throw new Error(`${file}: no data chunk`);
+  const n = Math.floor(data.length / 2 / channels);
+  const samples = new Float64Array(n);
+  for (let i = 0; i < n; i++) samples[i] = data.readInt16LE(i * 2 * channels) / 32768;
+  return { samples, rate };
+}
+
+/** `samples` at `from` Hz brought to the fixture rate by linear interpolation (plenty for a test voice). */
+function toFixtureRate(samples: Float64Array, from: number): Float64Array {
+  if (from === SAMPLE_RATE) return samples;
+  const n = Math.round((samples.length * SAMPLE_RATE) / from);
+  const out = new Float64Array(n);
+  const ratio = from / SAMPLE_RATE;
+  for (let i = 0; i < n; i++) {
+    const x = i * ratio;
+    const j = Math.floor(x);
+    const t = x - j;
+    const a = samples[j] ?? 0;
+    const b = samples[j + 1] ?? a;
+    out[i] = a + (b - a) * t;
+  }
+  return out;
+}
+
+/**
+ * Real speech for the studio check: the spoken test clips (a woman, a man, the woman again) with
+ * thinking pauses between them, so the raw copy's alignment, the flags and the models are tried on
+ * voices rather than on a tone, which the deep noise filter treats as noise.
+ */
+export function makeStudioWav(): Buffer {
+  const fixtures = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '../../client/test/fixtures',
+  );
+  const woman = readWav16(path.join(fixtures, 'voice-16k.wav'));
+  const man = readWav16(path.join(fixtures, 'voice-male-16k.wav'));
+  const w = toFixtureRate(woman.samples, woman.rate);
+  const m = toFixtureRate(man.samples, man.rate);
+  return wavFromPieces([silence(1.0), w, silence(1.8), m, silence(1.8), w, silence(1.5)]);
+}
+
 export async function writeFixtures(dir: string): Promise<{ pdf: string; pptx: string; wav: string }> {
   fs.mkdirSync(dir, { recursive: true });
   const pdf = path.join(dir, 'slides.pdf');

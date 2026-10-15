@@ -10,7 +10,10 @@ coverage/
 /e2e-out/
 /packages/e2e/out/
 /packages/e2e/stress-out/
+/packages/e2e/studio-out/
 /packages/e2e/fixtures/
 .claude/worktrees/
 /packages/e2e/camera-out/
 /packages/client/public/models/
+__pycache__/
+*.pyc

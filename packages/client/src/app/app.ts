@@ -9,13 +9,16 @@ import {
   type BrowserCapabilities,
   type ExportRequest,
   type ServerCapabilities,
+  type StudioClipResult,
 } from '@one-take/shared';
 
 import { ApiClient } from '../api/client.js';
 import { MicCapture, type NoiseFilterMode } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
+import { RAW_MAX_SHIFT } from '../audio/take.js';
+import { faceTrack } from '../core/faces.js';
 import { fmtSec, fmtTime } from '../core/format.js';
-import { judgeSpeaker } from '../core/identity.js';
+import { judgeSpeaker, type SpeakerVerdict } from '../core/identity.js';
 import {
   clampSize,
   cornerOf,
@@ -24,11 +27,12 @@ import {
   type CameraLayout,
   type Corner,
 } from '../core/overlay.js';
-import { floatBlocksToInt16 } from '../core/pcm.js';
+import { floatBlocksToInt16, int16ToFloat } from '../core/pcm.js';
 import { Recorder, type BlockRange, type CaptureMode } from '../core/recorder.js';
 import { cutPhrase } from '../core/silence.js';
 import { ENROLL_SEC, SPEAKER_MODEL, type VoiceProfile } from '../core/speaker.js';
 import { LIVE_KEEP, MicScorer } from '../core/speech.js';
+import { bestLag, takeRaw, Tape } from '../core/tape.js';
 import {
   buildTimeline,
   durationPerSlide,
@@ -38,10 +42,12 @@ import {
   type Segment,
   type Timeline,
 } from '../core/timeline.js';
+import { withVersion, type Voicing } from '../core/versions.js';
 import { VoiceDetector } from '../core/voice.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { OverlayTrack } from '../export/overlay.js';
 import { runExport } from '../export/runner.js';
+import { planStudio, runStudio } from '../export/studio.js';
 import { type FetchProgress } from '../models/fetch.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { VoiceCheck, type VoiceResult } from '../speaker/voice-check.js';
@@ -147,6 +153,8 @@ export class App {
   private feeding: number | null = null;
   /** When the latest block reached the page (absolute ms) and the stream's count then: places a phrase in time. */
   private clock: { at: number; seen: number } | null = null;
+  /** The microphone before the filter (see `core/tape.ts`), while the mic is on and phrases may still want it. */
+  private tape: Tape | null = null;
   /** The engines the user has been told about falling back, so each is said once per session. */
   private fallbackTold = false;
   private selfNoteShown = '';
@@ -193,6 +201,8 @@ export class App {
       (p) => this.onModelProgress('voice', p),
     );
     this.lips = new LipWatcher((p) => this.onModelProgress('face', p));
+    // the mouth crops for the studio's voice extraction come with the lip check, a frame at a time
+    this.lips.wantCrops = true;
     this.enroll = new Enroll(document.body, {
       listen: (onTick, signal) => this.listenForEnrollment(onTick, signal),
       enroll: (clip) => this.makeProfile(clip),
@@ -247,6 +257,9 @@ export class App {
         this.prefs = savePrefs({ hardwareEncoding: on });
       },
       cameraLayout: () => this.prefs.cameraLayout,
+      profile: () => this.profile,
+      onVersion: (seg, kind, pcm) => this.keepVersion(seg.id, kind, pcm),
+      onTwoVoices: (seg, result) => this.flagTwoVoices(seg.id, result),
       onOpenLibrary: () => this.library.open(),
       onExportingChange: (exporting) => {
         this.store.state.exporting = exporting;
@@ -277,6 +290,8 @@ export class App {
       camera: () => (this.camera.on ? this.camera : null),
       cameraLayout: () => this.prefs.cameraLayout,
       onCameraLayout: (layout, final) => this.setCameraLayout(layout, final),
+      studio: () => this.serverCaps?.studio ?? null,
+      makeVersion: (seg, kind, onProgress) => this.makeVersion(seg, kind, onProgress),
       onChange: (segments) => this.applyEdit(segments),
       onClose: () => {
         // the editor may have moved the playhead to another slide; show the one the user left on
@@ -1349,12 +1364,18 @@ export class App {
     );
     // the camera first, so the first phrase has its picture too; a camera that fails is reported and left off
     if (this.prefs.camera && this.camera.state === 'off') await this.openCamera();
+    this.tape = null;
     try {
       const info = await this.mic.start({
         deviceId: this.refs.micSelect.value || undefined,
         noiseFilter: this.prefs.noiseFilter,
         blockMs: BLOCK_MS,
         onBlock: (block) => this.onBlock(block),
+        // the same blocks before any filter: each phrase takes its stretch of the tape
+        onRawBlock: (block) => {
+          this.tape ??= new Tape(block.length);
+          this.tape.push(block);
+        },
         onEngineChange: (engine) => this.onEngineChange(engine),
       });
       this.micOpened = true;
@@ -1403,10 +1424,13 @@ export class App {
     this.mic.stop();
     // the camera takes no more frames; what it holds stays until the last phrase has its picture
     this.camera.pause();
-    // phrases still being reviewed are stored as the reviews come back
+    // phrases still being reviewed are stored as the reviews come back, and take their raw stretch
+    // off the tape, so the tape goes only once they are all in
     if (recorder) this.settling = this.settling.then(() => recorder.settled());
+    const tape = this.tape;
     void this.settling.then(() => {
       if (!this.store.state.armed) this.camera.stopRecording();
+      if (!this.store.state.armed && this.tape === tape) this.tape = null;
     });
     this.recorder = null;
     this.scorer = null;
@@ -1441,12 +1465,17 @@ export class App {
     scorer?.push(block, this.sampleRate);
     recorder.process(block, scorer?.prob ?? null);
     const { vad } = recorder;
-    if (this.camera.recording) {
-      // the camera runs on the mic's clock: this many blocks so far, and nothing before the earliest
-      // pending phrase (less the pre-roll a phrase about to start would reach back for) is needed
-      this.camera.tick(vad.seen, recorder.heldFrom - this.store.settings.prerollMs / BLOCK_MS - 50);
-    }
+    // the camera, the tape and the film run on the mic's clock: this many blocks so far, and nothing
+    // before the earliest pending phrase (less the pre-roll a phrase about to start would reach back
+    // for) is needed
+    const keepFrom = recorder.heldFrom - this.store.settings.prerollMs / BLOCK_MS - 50;
+    if (this.camera.recording) this.camera.tick(vad.seen, keepFrom);
+    this.tape?.prune(keepFrom);
     this.clock = { at: performance.timeOrigin + performance.now(), seen: vad.seen };
+    if (vad.seen % 100 === 0) {
+      const span = this.spanOf({ from: keepFrom, to: keepFrom });
+      if (span) this.lips.film.prune(span.from - 1000);
+    }
     // the phrase's audio goes to the voice check while a voice is going on, not through the hold
     if (this.feeding !== null && vad.speaking && vad.quietMs <= FEED_QUIET_MS) {
       this.voiceCheck.push(this.feeding, block);
@@ -1479,6 +1508,11 @@ export class App {
       // the camera's picture for exactly these blocks, when it was on
       video: this.camera.recording ? this.camera.take(at.from * BLOCK_MS, at.to * BLOCK_MS) : null,
     };
+    // the same blocks off the tape, as the microphone heard them, and the film of the mouth over them
+    const raw = this.rawOf(blocks, at);
+    if (raw) seg.raw = raw;
+    const faces = this.facesOf(at);
+    if (faces) seg.faces = faces;
     this.store.state.segments.push(seg);
     void this.db.putSegment(seg);
     this.saveMeta();
@@ -1486,6 +1520,121 @@ export class App {
     this.updateSlideStats();
     this.updateButtons();
     return seg;
+  }
+
+  /** The phrase as the microphone heard it, from the tape, lined up with the filtered blocks; null with no filter on. */
+  private rawOf(blocks: readonly Float32Array[], at: BlockRange): Int16Array | null {
+    const tape = this.tape;
+    if (!tape || this.mic.engine === 'off') return null;
+    let n = 0;
+    for (const b of blocks) n += b.length;
+    const filtered = new Float32Array(n);
+    let k = 0;
+    for (const b of blocks) {
+      filtered.set(b, k);
+      k += b.length;
+    }
+    const { samples, lag } = takeRaw(
+      tape,
+      filtered,
+      at,
+      this.mic.delaySamples,
+      RAW_MAX_SHIFT,
+      this.sampleRate,
+    );
+    if (lag.peak < 0.3) {
+      console.info(
+        `raw tape: no clear match for this phrase (correlation ${lag.peak.toFixed(2)}); the nominal delay was used`,
+      );
+    }
+    return floatBlocksToInt16([samples]);
+  }
+
+  /** The film of the speaker's mouth over the phrase, when the lip check saw it. */
+  private facesOf(at: BlockRange) {
+    const span = this.spanOf(at);
+    if (!span || this.lips.state !== 'watching') return null;
+    const frames = this.lips.film.between(span.from, span.to);
+    return frames ? faceTrack(frames) : null;
+  }
+
+  /** Puts a changed phrase (a new object with the same id) in place of the old one and saves it. */
+  private replaceSegment(next: Segment): boolean {
+    const s = this.store.state;
+    const index = s.segments.findIndex((seg) => seg.id === next.id);
+    if (index < 0) return false;
+    s.segments[index] = next;
+    void this.db.putSegment(next);
+    this.list.render(s.segments, s.slides, false);
+    return true;
+  }
+
+  /** A version from the studio landed for a phrase: kept with it, so it plays and exports from now on. */
+  keepVersion(id: string, kind: 'deep' | 'voice', pcm: Int16Array): void {
+    const seg = this.store.state.segments.find((x) => x.id === id);
+    if (seg?.pcm.length !== pcm.length) return;
+    this.replaceSegment(withVersion(seg, kind, pcm));
+  }
+
+  /** Which version a phrase plays and exports. */
+  setChoice(id: string, choice: Voicing): void {
+    const seg = this.store.state.segments.find((x) => x.id === id);
+    if (!seg || seg.choice === choice) return;
+    this.replaceSegment({ ...seg, choice });
+  }
+
+  /** The studio measured two voices talking at once in a phrase: it is marked, so the flagged list shows it. */
+  flagTwoVoices(id: string, result: StudioClipResult): void {
+    const seg = this.store.state.segments.find((x) => x.id === id);
+    if (!seg || seg.speaker?.verdict === 'other') return;
+    const reason = `Two voices overlap (another voice in ${Math.round((result.otherShare ?? 0) * 100)} % of it)`;
+    if (seg.speaker?.reasons.includes(reason)) return;
+    const speaker: SpeakerVerdict = {
+      verdict: 'unsure',
+      similarity: seg.speaker?.similarity ?? null,
+      lips: seg.speaker?.lips ?? null,
+      reasons: [...(seg.speaker?.reasons ?? []), reason],
+    };
+    this.replaceSegment({ ...seg, speaker });
+  }
+
+  /**
+   * Has the studio make one version of one phrase (the editor's buttons): the deep clean, or only the
+   * speaker's voice. Resolves with the phrase carrying the new version; the editor puts it in place.
+   */
+  async makeVersion(
+    seg: Segment,
+    kind: 'deep' | 'voice',
+    onProgress: (message: string) => void,
+  ): Promise<Segment> {
+    const info = this.serverCaps?.studio ?? null;
+    if (!this.serverCaps) throw new Error('the local server is not running (npm start)');
+    const plan = planStudio([kind === 'voice' ? { ...seg, choice: 'voice' } : seg], {
+      settings: { denoise: kind === 'deep', voice: kind === 'voice', findOverlap: false },
+      info,
+      redo: true,
+    });
+    if (plan.clips.length === 0) throw new Error(info?.note ?? 'the studio is not set up (npm run studio)');
+    const landed: { pcm: Int16Array | null } = { pcm: null };
+    const outcome = await runStudio({
+      api: this.api,
+      plan,
+      profile: this.profile,
+      signal: new AbortController().signal,
+      onProgress: (job) => {
+        const p = job.progress;
+        onProgress(`${p.message}${p.fraction !== null ? ` ${Math.round(p.fraction * 100)} %` : ''}`);
+      },
+      onResult: (_seg, made, pcm) => {
+        if (made === kind) landed.pcm = pcm;
+      },
+    });
+    if (!landed.pcm) {
+      const why =
+        outcome.failed[0]?.error ?? (outcome.stopped ? 'the studio was stopped' : 'nothing came back');
+      throw new Error(why);
+    }
+    return withVersion(seg, kind, landed.pcm);
   }
 
   deleteSegment(index: number): void {
@@ -1816,10 +1965,18 @@ export class App {
       const byId = new Map(segments.map((s) => [s.id, s]));
       const ordered = order.map((id) => byId.get(id)).filter((s): s is Segment => s !== undefined);
       for (const s of segments) if (!order.includes(s.id)) ordered.push(s);
-      this.store.state.segments = ordered.map((s) => ({
-        ...s,
-        pcm: s.pcm instanceof Int16Array ? s.pcm : new Int16Array(s.pcm as ArrayLike<number>),
-      }));
+      const int16 = (a: Int16Array | undefined) =>
+        a === undefined || a instanceof Int16Array ? a : new Int16Array(a);
+      this.store.state.segments = ordered.map((s) => {
+        const seg: Segment = { ...s, pcm: int16(s.pcm) ?? s.pcm };
+        const raw = int16(s.raw);
+        if (raw) seg.raw = raw;
+        const deep = int16(s.deep);
+        if (deep) seg.deep = deep;
+        const voice = int16(s.voice);
+        if (voice) seg.voice = voice;
+        return seg;
+      });
     }
     if (this.store.state.slides.length > 0) this.showSlide(meta?.current ?? 0);
     this.list.render(this.store.state.segments, this.store.state.slides, true);
@@ -1941,6 +2098,37 @@ export class App {
       editor: this.editor,
       serverCaps: () => this.serverCaps,
       browserCaps: () => this.browserCaps,
+      studio: () => this.serverCaps?.studio ?? null,
+      tape: () => this.tape,
+      /** How far a phrase's raw copy sits from its filtered one, by correlation: 0 when they line up. */
+      rawLag: (index: number) => {
+        const seg = this.store.state.segments[index];
+        if (!seg?.raw) return null;
+        const around = new Float32Array(seg.raw.length + 2 * RAW_MAX_SHIFT);
+        around.set(int16ToFloat(seg.raw), RAW_MAX_SHIFT);
+        return bestLag(int16ToFloat(seg.pcm), around, seg.sampleRate, RAW_MAX_SHIFT);
+      },
+      setChoice: (index: number, choice: Voicing) => {
+        const seg = this.store.state.segments[index];
+        if (seg) this.setChoice(seg.id, choice);
+      },
+      /** Marks a phrase as another voice, as the checks would (the tests have no second speaker). */
+      flag: (index: number, verdict: SpeakerVerdict['verdict']) => {
+        const seg = this.store.state.segments[index];
+        if (seg) {
+          this.replaceSegment({
+            ...seg,
+            speaker: { verdict, similarity: 0.2, lips: null, reasons: ['set by a test'] },
+          });
+        }
+      },
+      makeVersion: async (index: number, kind: 'deep' | 'voice') => {
+        const seg = this.store.state.segments[index];
+        if (!seg) throw new Error('no such phrase');
+        const next = await this.makeVersion(seg, kind, () => undefined);
+        this.replaceSegment(next);
+        return { deep: next.deep?.length ?? 0, voice: next.voice?.length ?? 0 };
+      },
       system: () => this.serverCaps?.system ?? null,
       refreshServer: () => this.refreshServer(),
       slides: () => this.store.state.slides,
@@ -1961,6 +2149,11 @@ export class App {
       normalizeExportRequest({ ...base, ...overrides }, this.serverCaps?.defaultDirectory ?? null),
     );
     const plan = planExport(request, this.serverCaps, this.browserCaps);
+    const studioPlan = planStudio(this.store.state.segments, {
+      settings: request.enhance.studio,
+      info: this.serverCaps?.studio ?? null,
+    });
+    let studioNote: string | null = null;
     const started = performance.now();
     let encodeMs = 0;
     // what the time left said along the way, so the tests can judge it against the real time
@@ -1980,6 +2173,15 @@ export class App {
       api: this.serverCaps ? this.api : null,
       signal: new AbortController().signal,
       camera: this.prefs.cameraLayout,
+      studio: {
+        plan: studioPlan,
+        profile: this.profile,
+        onVersion: (seg, kind, pcm) => this.keepVersion(seg.id, kind, pcm),
+        onTwoVoices: (seg, result) => this.flagTwoVoices(seg.id, result),
+        onDone: (note) => {
+          studioNote = note;
+        },
+      },
       onProgress: (p) => {
         if (p.stage === 'encoding') encodeMs = performance.now() - started;
         if (p.remainingSec !== null && p.stage !== 'done') {
@@ -1997,6 +2199,7 @@ export class App {
       encodeMs: Math.round(encodeMs),
       videoSeconds: this.timeline(request.order).total,
       eta,
+      studio: studioNote,
     };
     if (result.kind === 'blob') {
       const bytes = new Uint8Array(await result.blob.arrayBuffer());

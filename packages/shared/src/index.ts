@@ -10,3 +10,4 @@ export * from './resources.js';
 export * from './system.js';
 export * from './util.js';
 export * from './models.js';
+export * from './studio.js';

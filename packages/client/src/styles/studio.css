@@ -1,0 +1,86 @@
+/* ---------------------------------------------------------------- the studio
+   The editor's switch for a clip's sound (Original / Cleaned / Only my voice, each with a ▶), the
+   flagged phrases list in the export dialog (the same rows as the filler list, coloured by verdict),
+   and the Sound section's notes. */
+
+.editor .voicing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6px);
+  padding-top: var(--spacing-6px);
+  border-top: 1px dashed var(--line);
+}
+.editor .voicing[hidden] {
+  display: none;
+}
+.editor .voicing .picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-8px);
+}
+.editor .voicing .choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--corner-radius-8px);
+  padding: 2px 2px 2px 0;
+  background: var(--panel2);
+}
+.editor .voicing .pick {
+  min-height: 0;
+  padding: 4px var(--spacing-10px);
+  border: 0;
+  background: transparent;
+  font-size: var(--font-size-12px);
+  font-weight: var(--font-weight-medium);
+  color: var(--muted);
+  border-radius: var(--corner-radius-8px);
+}
+.editor .voicing .pick.on {
+  background: var(--accent);
+  color: var(--neutral-0);
+}
+.editor .voicing .play {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+.editor .voicing .play.on {
+  color: var(--accent-text);
+}
+.editor .voicing .make {
+  flex-wrap: wrap;
+  gap: var(--spacing-6px);
+}
+.editor .voicing .make .hint {
+  align-self: center;
+}
+
+/* the flagged phrases: a row per phrase, tinted by what the checks said */
+.export .flagged .flag.other .what {
+  color: var(--rec-text);
+}
+.export .flagged .flag.unsure .what {
+  color: var(--yellow-400, #e0b23a);
+}
+.export .flagged .flag .what {
+  font-variant-numeric: tabular-nums;
+}
+.export .subtitle {
+  display: block;
+  font-size: var(--font-size-12px);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: var(--spacing-4px);
+}
+#soundSection .check .hint {
+  display: inline;
+  margin-left: 2px;
+}
+
+/* the progress view: the button that gives up on the studio's wait */
+.export .skip {
+  margin-top: var(--spacing-6px);
+}

@@ -129,6 +129,33 @@ export class MicCapture {
     return filterDelaySamples(this._engine, this.sampleRate);
   }
 
+  /**
+   * Loads the deep filter ahead of the first start, so that start does not pay for it: the load is a
+   * one-time cost of about a second, during which the classic filter stands in. Paid when the slides
+   * are chosen or the camera opens (user gestures, so the audio context may run) rather than at Start
+   * mic, the first phrase gets the deep filter from its first block. Does nothing when another filter
+   * is wanted or worklets are missing.
+   */
+  async warm(mode: NoiseFilterMode): Promise<void> {
+    if (mode !== 'deep' || typeof AudioWorkletNode === 'undefined') return;
+    const ctx = await acquireAudio('warm');
+    try {
+      await this.loadDeep(ctx);
+    } finally {
+      releaseAudio('warm');
+    }
+  }
+
+  /** The deep filter's node for `ctx`, loaded on first use and kept; null when it cannot run here. */
+  private loadDeep(ctx: AudioContext): Promise<AudioWorkletNode | null> {
+    return this.deep.node(ctx, {
+      onOverload: () => {
+        this.deepNode = null;
+        if (this.node && this.wanted === 'deep') this.wire(null, 'classic');
+      },
+    });
+  }
+
   /** Chooses the noise filter; takes effect at once, mid-stream too, without reopening the microphone. */
   setNoiseFilter(mode: NoiseFilterMode): void {
     this.wanted = mode;
@@ -267,12 +294,7 @@ export class MicCapture {
     }
     if (!this.deepNode) {
       this.wire(null, 'classic');
-      const deepNode = await this.deep.node(ctx, {
-        onOverload: () => {
-          this.deepNode = null;
-          if (this.node && this.wanted === 'deep') this.wire(null, 'classic');
-        },
-      });
+      const deepNode = await this.loadDeep(ctx);
       if (gen !== this.generation || !this.node) return; // stopped or restarted meanwhile
       if (!deepNode) return; // the classic filter stays; `deepNote` says why
       this.deepNode = deepNode;

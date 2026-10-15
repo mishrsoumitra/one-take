@@ -42,6 +42,8 @@ export class VoiceCheck {
   private _state: VoiceCheckState = 'off';
   private _note: string | null = null;
   private _threads = 0;
+  /** Bumped by every `stop()`, so a load that was under way knows it is no longer wanted. */
+  private generation = 0;
   private readonly open = new Map<number, Open>();
   private readonly enrolling = new Map<
     number,
@@ -73,16 +75,41 @@ export class VoiceCheck {
   start(): Promise<boolean> {
     if (this._state === 'ready') return Promise.resolve(true);
     if (this._state === 'failed') return Promise.resolve(false);
-    this.starting ??= this.load().finally(() => {
-      this.starting = null;
+    if (this.starting) return this.starting;
+    const load = this.load().finally(() => {
+      if (this.starting === load) this.starting = null;
     });
-    return this.starting;
+    this.starting = load;
+    return load;
+  }
+
+  /**
+   * Stops the worker and forgets the model, even while it is still loading; a later `start()` loads
+   * it again. Anything waiting on a verdict gets none. Used when the enrollment is skipped, so a
+   * model that is no longer wanted does not go on loading (and stalling the camera) under the
+   * recording that follows.
+   */
+  stop(): void {
+    this.generation++;
+    this.starting = null;
+    this.worker?.terminate();
+    this.worker = null;
+    this._state = 'off';
+    this._note = null;
+    for (const open of this.open.values()) {
+      open.resolve?.({ similarity: null, embedding: null, seconds: 0, tailMs: 0 });
+    }
+    this.open.clear();
+    for (const done of this.enrolling.values()) done({ embedding: null, seconds: 0 });
+    this.enrolling.clear();
   }
 
   private async load(): Promise<boolean> {
+    const gen = this.generation;
     this._state = 'loading';
     try {
       const model = await loadModel(MODELS.speaker, this.onProgress);
+      if (gen !== this.generation) return false; // stopped while the model was fetched
       const worker = new Worker(new URL('../workers/speaker.worker.ts', import.meta.url), { type: 'module' });
       this.worker = worker;
       const ready = new Promise<void>((resolve, reject) => {
@@ -107,11 +134,13 @@ export class VoiceCheck {
       });
       worker.postMessage({ type: 'init', model } satisfies SpeakerRequest, [model]);
       await ready;
+      if (gen !== this.generation) return false; // stopped while the model loaded: the worker is gone
       worker.onmessage = (e: MessageEvent<SpeakerResponse>) => this.onMessage(e.data);
       worker.onerror = (e) => console.warn('voice worker', e.message);
       this._state = 'ready';
       return true;
     } catch (error) {
+      if (gen !== this.generation) return false; // stopped: not a failure
       this._state = 'failed';
       this._note = (error as Error).message;
       console.warn('the voice check is off:', error);

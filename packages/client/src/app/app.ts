@@ -591,6 +591,20 @@ export class App {
     await this.loadSlideSource(source);
     await this.db.putSlideSource(source);
     this.saveMeta();
+    // the mic is next: load what it will need now, after the gesture that chose the slides
+    this.warmChecks();
+  }
+
+  /**
+   * Loads what Start mic would otherwise load on the spot: the deep noise filter and, for a learned
+   * voice, the voice model. Each takes about a second the first time; loaded here (when the slides
+   * are chosen, the camera opens, or a session is resumed, all user gestures, so the audio context
+   * may run), the first phrase gets the deep filter and the voice check from its first block instead
+   * of the classic filter and no verdict for a second. Idempotent: each load happens once and is kept.
+   */
+  private warmChecks(): void {
+    void this.mic.warm(this.prefs.noiseFilter);
+    if (this.prefs.voiceCheck && this.profile) void this.voiceCheck.start();
   }
 
   /**
@@ -1002,7 +1016,10 @@ export class App {
       this.prefs = savePrefs({ voiceCheck: true });
       this.toast.show('Your voice is learned. A phrase in another voice will be marked in the timeline.');
     } else if (!this.profile) {
-      // skipped with nothing learned: not asked again; "Learn my voice" in the bottom bar is the way back
+      // skipped with nothing learned: not asked again; "Learn my voice" in the bottom bar is the way back.
+      // The model began loading when the dialog opened; it is not wanted now, so it stops rather than
+      // going on loading under the recording that follows
+      this.voiceCheck.stop();
       this.prefs = savePrefs({ voiceCheck: false });
       this.toast.show(
         'The voice check stays off. Click "Learn my voice" under the level meter when you want it.',
@@ -1162,6 +1179,8 @@ export class App {
     if (state === 'on') {
       // switched on while the mic is already running: phrases from here on get a picture
       if (this.store.state.armed && this.recorder) this.camera.record(BLOCK_MS);
+      // the checks' one-time loads need not wait for Start mic
+      this.warmChecks();
     } else if (state === 'error') {
       this.toast.show(error ?? 'The camera could not be opened.');
       this.prefs = savePrefs({ camera: false });
@@ -1939,6 +1958,8 @@ export class App {
     }
     if (meta?.segmentCounter) this.segmentCounter = meta.segmentCounter;
     if (files) await this.loadSlideSource(files);
+    // Resume was clicked: the checks can load now rather than at Start mic
+    this.warmChecks();
     if (segments.length > 0) {
       const order = meta?.order ?? [];
       const byId = new Map(segments.map((s) => [s.id, s]));

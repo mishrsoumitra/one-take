@@ -308,7 +308,16 @@ await at(13.0, () => Promise.resolve());
   const held = await ev<number>('__onetake.camera.heldBytes');
   console.log(`camera holds ${(held / 1024).toFixed(0)} KB while recording`);
   check(held > 0, 'frames are being kept');
-  console.log(`camera frames so far: ${JSON.stringify(await ev('__onetake.camera.stats'))}`);
+  const stats = await ev<{ firstMs: number; early: number; kept: number }>('__onetake.camera.stats');
+  console.log(`camera frames so far: ${JSON.stringify(stats)}`);
+  // In a fresh browser process the first Start mic stalls the camera's frames for about a second
+  // (the browser's first audio-input start; nothing the app loads), so the first frame kept lands
+  // around 1 s of mic time here and within a few blocks on every later start. Anything beyond two
+  // seconds is a regression in the app.
+  check(
+    stats.firstMs >= 0 && stats.firstMs < 2000,
+    `the first frame is kept within 2 s of Start mic (${stats.firstMs} ms; about 1 s is the browser's first audio start)`,
+  );
 }
 await page.screenshot('camera-recording.png');
 await ev('__onetake.stopMic()');

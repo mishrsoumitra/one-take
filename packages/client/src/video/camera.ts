@@ -8,7 +8,8 @@
  * whoever drives the microphone: `tick(seen, keepFrom)` after every block, which tells it what time
  * it is (so many blocks have gone by) and how far back frames may still be wanted, and
  * `take(fromMs, toMs)` when a phrase is stored, which cuts the frames for that stretch out of what
- * it has kept. Frames are stamped with the block clock as they arrive, less the few tens of
+ * it has kept. Frames are stamped with the microphone's time as they arrive (`core/block-clock.ts`
+ * reads it off the blocks, hold-ups in their delivery notwithstanding), less the few tens of
  * milliseconds a camera frame takes longer than the sound of the same moment to reach the page.
  *
  * Frames are encoded as they come (H.264 when the browser has it, else VP8) at a modest size and
@@ -19,6 +20,7 @@
  * Frames come from `MediaStreamTrackProcessor` where the browser has it (they keep coming when the
  * tab is in the background), otherwise from the live `<video>` element's frame callbacks.
  */
+import { BlockClock } from '../core/block-clock.js';
 import { pieceFromFrames, US, type ClipVideo, type EncodedFrame } from '../core/clip-video.js';
 
 /** The picture is stored this tall; the width follows the camera's own shape. */
@@ -70,9 +72,8 @@ function trackProcessor(): TrackProcessorCtor | null {
 /** One stretch of recording: the block clock and the frames kept on it. */
 interface Session {
   blockMs: number;
-  /** Blocks the microphone has delivered so far, and when the last one arrived. */
-  seen: number;
-  tickAt: number;
+  /** The microphone's time, read off the blocks as they arrive. */
+  clock: BlockClock;
   /** Still taking frames (false once paused: what is kept stays until the session ends). */
   encoding: boolean;
   frames: EncodedFrame[];
@@ -96,8 +97,11 @@ export class CameraCapture {
   private reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
   private fallbackVideo: HTMLVideoElement | null = null;
   private fallbackHandle = 0;
-  /** What became of the frames offered since `record()`: kept, or dropped and why. For the e2e and for tuning. */
-  readonly stats = { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0 };
+  /**
+   * What became of the frames offered since `record()`: kept, or dropped and why; how many
+   * recordings were started; and the microphone time of the first frame kept. For the e2e and for tuning.
+   */
+  readonly stats = { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0, sessions: 0, firstMs: -1 };
 
   constructor(private readonly callbacks: CameraCallbacks) {}
 
@@ -242,15 +246,15 @@ export class CameraCapture {
     if (!this.on || !this.codec || !this._info) return;
     this.session = {
       blockMs,
-      seen: 0,
-      tickAt: performance.now(),
+      clock: new BlockClock(blockMs),
       encoding: true,
       frames: [],
       lastUs: -1,
       lastKeyUs: -Infinity,
       count: 0,
     };
-    Object.assign(this.stats, { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0 });
+    Object.assign(this.stats, { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0, firstMs: -1 });
+    this.stats.sessions++;
     this.configureEncoder();
   }
 
@@ -258,8 +262,7 @@ export class CameraCapture {
   tick(seen: number, keepFrom: number): void {
     const s = this.session;
     if (!s) return;
-    s.seen = seen;
-    s.tickAt = performance.now();
+    s.clock.tick(seen, performance.now());
     this.prune(Math.max(0, keepFrom) * s.blockMs * 1000);
   }
 
@@ -368,9 +371,9 @@ export class CameraCapture {
     if (!s || !s.encoding || !encoder || !g || !canvas || !info) return;
     if (encoder.state !== 'configured') return;
     this.stats.offered++;
-    const now = performance.now();
-    const sinceTick = Math.min(s.blockMs, Math.max(0, now - s.tickAt));
-    const ms = s.seen * s.blockMs + sinceTick - CAMERA_LAG_MS;
+    // the microphone's time right now, whatever the main thread did with the last few blocks
+    const mic = s.clock.at(performance.now());
+    const ms = mic === null ? -1 : mic - CAMERA_LAG_MS;
     if (ms < 0) {
       this.stats.early++;
       return; // before the microphone's first block
@@ -406,6 +409,7 @@ export class CameraCapture {
       if (key) s.lastKeyUs = us;
       s.count++;
       this.stats.kept++;
+      if (this.stats.firstMs < 0) this.stats.firstMs = Math.round(ms);
     } catch (error) {
       console.warn('camera frame could not be encoded', error);
     } finally {

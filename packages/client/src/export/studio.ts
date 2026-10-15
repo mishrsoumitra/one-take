@@ -28,7 +28,7 @@ import {
 } from '@one-take/shared';
 
 import { type ApiClient } from '../api/client.js';
-import { type VoiceProfile } from '../core/speaker.js';
+import { VOICE_OTHER, type VoiceProfile } from '../core/speaker.js';
 import { segmentDuration, type Segment } from '../core/timeline.js';
 import { flagged } from '../core/versions.js';
 
@@ -191,6 +191,15 @@ export async function runStudio(options: StudioRunOptions): Promise<StudioOutcom
           const key = `${result.id}:${kind}`;
           if (!result[kind] || fetched.has(key)) continue;
           fetched.add(key);
+          // a voice picked by the profile that is nothing like it: the speaker is not in this phrase
+          if (
+            kind === 'voice' &&
+            result.method === 'profile' &&
+            (result.similarity?.[0] ?? 1) <= VOICE_OTHER
+          ) {
+            failed.push({ seg, error: 'your voice was not found in it' });
+            continue;
+          }
           fetches.push(
             api
               .studioResult(event.id, result.id, kind, signal)

@@ -19,6 +19,7 @@ import {
   formatSystemReport,
   withoutBrokenEncoders,
 } from './services/system.js';
+import { detectStudio, StudioManager } from './services/studio.js';
 import { detectTranscription, TranscriptionManager } from './services/transcribe.js';
 
 const MIN_NODE_MAJOR = 22;
@@ -44,11 +45,16 @@ async function main(): Promise<void> {
     verify: config.selfTest,
   });
   const ffmpeg = ffmpegFound ? withoutBrokenEncoders(ffmpegFound, system) : null;
-  const transcriptionInfo = await detectTranscription({
-    whisperPath: config.whisperPath,
-    whisperModel: config.whisperModel,
-    dataDir: config.dataDir,
-  });
+  const [transcriptionInfo, studioInfo] = await Promise.all([
+    detectTranscription({
+      whisperPath: config.whisperPath,
+      whisperModel: config.whisperModel,
+      dataDir: config.dataDir,
+    }),
+    config.studio
+      ? detectStudio({ dataDir: config.dataDir, pythonPath: config.studioPython, staticDir: config.staticDir })
+      : Promise.resolve(null),
+  ]);
 
   const capabilities: ServerCapabilities = {
     name: 'one-take-server',
@@ -62,12 +68,27 @@ async function main(): Promise<void> {
     presentations: presentationSupport,
     system,
     transcription: transcriptionInfo,
+    studio: studioInfo,
   };
 
   const load = new LoadMonitor();
   const transcription = new TranscriptionManager({
     info: transcriptionInfo,
     dataDir: config.dataDir,
+    log: (m) => app.log.info(m),
+  });
+  const studio = new StudioManager({
+    info: studioInfo ?? {
+      python: null,
+      device: null,
+      models: { denoise: false, separate: false, extract: false },
+      speaker: false,
+      denoise: false,
+      voice: false,
+      note: 'The studio is switched off (--no-studio).',
+    },
+    dataDir: config.dataDir,
+    staticDir: config.staticDir,
     log: (m) => app.log.info(m),
   });
   const library = new ExportLibrary(path.join(config.dataDir, 'exports.json'), {
@@ -93,11 +114,12 @@ async function main(): Promise<void> {
     load,
     library,
     transcription,
+    studio,
   });
 
   const shutdown = async (signal: string) => {
     app.log.info(`${signal} received, shutting down`);
-    await Promise.all([jobs.dispose(), converter.dispose(), transcription.dispose()]);
+    await Promise.all([jobs.dispose(), converter.dispose(), transcription.dispose(), studio.dispose()]);
     await app.close();
     process.exit(0);
   };
@@ -112,6 +134,7 @@ async function main(): Promise<void> {
     console.info(
       `  Speech   ${transcriptionInfo ? transcriptionInfo.note : 'no whisper found: transcripts and subtitles are off (brew install openai-whisper, or whisper-cpp)'}`,
     );
+    console.info(`  Studio   ${studioInfo ? studioInfo.note : 'switched off (--no-studio)'}`);
     console.info('');
   }
 

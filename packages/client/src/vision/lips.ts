@@ -9,6 +9,7 @@
  */
 import { MODELS } from '@one-take/shared';
 
+import { faceGrid, type FaceSample } from '../core/faces.js';
 import { LipTrack, type LipActivity, type LipSample } from '../core/lips.js';
 import { loadModel, type FetchProgress } from '../models/fetch.js';
 
@@ -32,8 +33,51 @@ function trackProcessor(): TrackProcessorCtor | null {
   return ctor ?? null;
 }
 
+/**
+ * The film of the speaker's mouth: the crops the worker cut, each with the moment it was seen, kept
+ * until the phrases that may want them are stored (`prune`), and laid on the studio's grid for a
+ * phrase's span (`between`).
+ */
+export class FaceFilm {
+  private samples: FaceSample[] = [];
+
+  get length(): number {
+    return this.samples.length;
+  }
+
+  /** Bytes of crops held right now. */
+  get bytes(): number {
+    let n = 0;
+    for (const s of this.samples) n += s.crop?.length ?? 0;
+    return n;
+  }
+
+  push(sample: FaceSample): void {
+    this.samples.push(sample);
+  }
+
+  /** Lets go of every frame seen before `t` (absolute ms). */
+  prune(t: number): void {
+    let drop = 0;
+    while (drop < this.samples.length && (this.samples[drop]?.t ?? Infinity) < t) drop++;
+    if (drop > 0) this.samples.splice(0, drop);
+  }
+
+  /** The crops for a phrase's span on the 25 fps grid, or null when the camera saw too little of it. */
+  between(from: number, to: number): Uint8Array[] | null {
+    return faceGrid(this.samples, from, to);
+  }
+
+  clear(): void {
+    this.samples = [];
+  }
+}
+
 export class LipWatcher {
   readonly track = new LipTrack();
+  /** The mouth crops, while they are wanted. */
+  readonly film = new FaceFilm();
+  private crops = false;
   private worker: Worker | null = null;
   private stream: MediaStream | null = null;
   private _state: LipWatcherState = 'off';
@@ -76,9 +120,13 @@ export class LipWatcher {
     }
   }
 
-  /** Opens the camera and starts watching; false (with `note` set) when that cannot be done here. */
-  async start(deviceId?: string): Promise<boolean> {
+  /**
+   * Opens the camera and starts watching; false (with `note` set) when that cannot be done here.
+   * With `crops`, every frame with a face also yields a mouth crop for the studio's film.
+   */
+  async start(deviceId?: string, crops = false): Promise<boolean> {
     this.stop();
+    this.crops = crops;
     const gen = ++this.generation;
     const Processor = trackProcessor();
     if (!Processor) {
@@ -138,13 +186,18 @@ export class LipWatcher {
         clearTimeout(timer);
         reject(new Error(e.message || 'the lip worker failed'));
       };
-      worker.postMessage({ type: 'init', model, wasmBase: WASM_BASE } satisfies LipsRequest, [model]);
+      worker.postMessage(
+        { type: 'init', model, wasmBase: WASM_BASE, crops: this.crops } satisfies LipsRequest,
+        [model],
+      );
     });
   }
 
   private onMessage(message: LipsResponse): void {
-    if (message.type === 'sample') this.track.push({ t: message.t, open: message.open });
-    else if (message.type === 'error') console.warn('lip worker:', message.message);
+    if (message.type === 'sample') {
+      this.track.push({ t: message.t, open: message.open });
+      if (this.crops) this.film.push({ t: message.t, crop: message.crop ? new Uint8Array(message.crop) : null });
+    } else if (message.type === 'error') console.warn('lip worker:', message.message);
   }
 
   private fail(note: string): void {
@@ -169,6 +222,7 @@ export class LipWatcher {
       this.stream = null;
     }
     this.track.clear();
+    this.film.clear();
     this._state = 'off';
     this._delegate = null;
   }

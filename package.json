@@ -30,7 +30,8 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
     "models": "npm run build:shared && node scripts/fetch-models.mjs",
     "doctor": "npm run build:shared && npm run build:server && node packages/server/dist/doctor.js",
-    "bench": "npm run doctor -- --bench"
+    "bench": "npm run doctor -- --bench",
+    "studio": "npm run build:shared && node scripts/setup-studio.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -26,6 +26,7 @@ import {
   SPEED_MAX,
   SPEED_MIN,
 } from './presets.js';
+import { type StudioInfo } from './studio.js';
 import { type SystemProfile } from './system.js';
 
 export const ContainerSchema = z.enum(CONTAINERS);
@@ -101,6 +102,26 @@ export const EnhanceSchema = z.object({
     sidecar: z.boolean(),
     /** Save the transcript as a `.txt` file next to the video. */
     transcript: z.boolean(),
+  }),
+  /**
+   * The studio: the heavy audio models the server runs over the recording as it came off the
+   * microphone, before any filter (see studio.ts). Each is a wait the user may skip.
+   */
+  studio: z.object({
+    /** The deep clean over the whole recording. */
+    denoise: z.boolean(),
+    /** Keep only the speaker's voice in the phrases flagged as another voice, and in any clip set to it. */
+    voice: z.boolean(),
+    /** Go over every phrase with the separation model to find where two people talk at once (slow). */
+    findOverlap: z.boolean(),
+  }),
+  /** The camera's picture, cleaned up before it is drawn into the frame. */
+  camera: z.object({
+    background: z.enum(['keep', 'blur', 'replace']),
+    /** The colour behind the speaker when the background is replaced. */
+    backdrop: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    /** Even out the exposure and take the colour cast out of the picture. */
+    exposure: z.boolean(),
   }),
 });
 export type Enhance = z.infer<typeof EnhanceSchema>;
@@ -418,6 +439,8 @@ export interface ServerCapabilities {
   system: SystemProfile | null;
   /** The speech recogniser for transcripts and subtitles, when one is installed. */
   transcription: TranscriptionInfo | null;
+  /** The heavy audio models for the export, once `npm run studio` has set them up. */
+  studio: StudioInfo | null;
 }
 
 export interface DirectoryEntry {

@@ -16,6 +16,7 @@ export default defineConfig(
       '.claude/**',
       'packages/e2e/out/**',
       'packages/e2e/stress-out/**',
+      'packages/e2e/camera-out/**',
       'packages/e2e/fixtures/**',
       'e2e-out/**',
     ],

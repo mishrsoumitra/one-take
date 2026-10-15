@@ -7,3 +7,4 @@ packages/e2e/fixtures
 *.md
 .claude/
 packages/client/test/fixtures/*.json
+packages/e2e/camera-out

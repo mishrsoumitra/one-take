@@ -1043,6 +1043,8 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **A phrase of mine is marked as another voice.** Hover the badge: it says what each check saw. *Voice unlike yours* with a low match means the profile does not fit how you sounded, a cold, another microphone, a very different room; click **Learn my voice** and read again. *Your lips were still* with your face in view means the camera did not see your mouth move while the voice went on: check the mirror in the corner of the stage shows your face straight on, in the light. A verdict changes nothing by itself, so the phrase is still there to listen to and keep.
 
+**The first phrase of a session has no picture for its first second.** The very first time the mic starts in a browser tab, the browser's audio input takes about a second to come up, and while it does no camera frame reaches the page, whatever is switched on; every later start in the same tab is immediate. If you begin talking within a second of pressing **Start mic**, that second of the first phrase shows the slide alone. Start the mic, let the status pill say *Listening*, then begin; or start and stop it once before the lecture.
+
 **The camera's mirror says no face in view.** Face the camera, and give it light from the front; a face in profile or in the dark is not found. If the mirror is missing, the **Camera** list is set to *Off (no lip check)*, the browser refused the camera, or this is not Chrome or Edge; the voice check then decides alone.
 
 **The enrollment says too little of my voice came through.** It needs eight seconds of voice out of the twenty, as the voice detector hears it. Read out loud the whole time, closer to the microphone, with the level meter crossing the white line, and try again.

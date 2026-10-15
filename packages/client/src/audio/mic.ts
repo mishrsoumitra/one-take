@@ -101,6 +101,34 @@ export class MicCapture {
     return this.deep.unavailable;
   }
 
+  /**
+   * Loads the deep filter ahead of the first start, so that start does not pay for it. The load is
+   * a one-time cost of about a second, and while it runs the browser delivers no camera frames to
+   * the page when the lip check's worker is alive: paid at Start mic it takes the first second of
+   * picture off the first phrase; paid when the slides load or the camera opens it costs nothing
+   * visible. Needs a user gesture to have happened (the audio context must be allowed to run), which
+   * both of those moments guarantee. Does nothing when another filter is wanted or worklets are missing.
+   */
+  async warm(mode: NoiseFilterMode): Promise<void> {
+    if (mode !== 'deep' || typeof AudioWorkletNode === 'undefined') return;
+    const ctx = await acquireAudio('warm');
+    try {
+      await this.loadDeep(ctx);
+    } finally {
+      releaseAudio('warm');
+    }
+  }
+
+  /** The deep filter's node for `ctx`, loaded on first use and kept; null when it cannot run here. */
+  private loadDeep(ctx: AudioContext): Promise<AudioWorkletNode | null> {
+    return this.deep.node(ctx, {
+      onOverload: () => {
+        this.deepNode = null;
+        if (this.node && this.wanted === 'deep') this.wire(null, 'classic');
+      },
+    });
+  }
+
   /** Chooses the noise filter; takes effect at once, mid-stream too, without reopening the microphone. */
   setNoiseFilter(mode: NoiseFilterMode): void {
     this.wanted = mode;
@@ -219,12 +247,7 @@ export class MicCapture {
     }
     if (!this.deepNode) {
       this.wire(null, 'classic');
-      const deepNode = await this.deep.node(ctx, {
-        onOverload: () => {
-          this.deepNode = null;
-          if (this.node && this.wanted === 'deep') this.wire(null, 'classic');
-        },
-      });
+      const deepNode = await this.loadDeep(ctx);
       if (gen !== this.generation || !this.node) return; // stopped or restarted meanwhile
       if (!deepNode) return; // the classic filter stays; `deepNote` says why
       this.deepNode = deepNode;

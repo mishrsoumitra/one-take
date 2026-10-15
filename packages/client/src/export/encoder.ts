@@ -63,8 +63,15 @@ export interface EncodeOptions {
   onProgress: (progress: EncodeProgress) => void;
   /** Subtitles to draw into the picture, in timeline order. */
   captions?: readonly Cue[];
-  /** The speaker's camera picture to draw over the slides, and where. */
-  camera?: { track: OverlayTrack; layout: CameraLayout } | null;
+  /**
+   * The speaker's camera picture to draw over the slides, and where; `clean` is the camera cleanup
+   * (background, exposure and colour, see `camera-clean.ts`), given each new frame before it is drawn.
+   */
+  camera?: {
+    track: OverlayTrack;
+    layout: CameraLayout;
+    clean?: (frame: VideoFrame) => Promise<CanvasImageSource>;
+  } | null;
 }
 
 export interface EncodeResult {
@@ -325,7 +332,8 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     g.drawImage(bmp, left, top);
     if (picture && camera) {
       const area = { x: left, y: top, width: bmp.width, height: bmp.height };
-      drawOverlay(g, picture.frame, overlayBox(camera.layout, area, picture.aspect));
+      const source = camera.clean ? await camera.clean(picture.frame) : picture.frame;
+      drawOverlay(g, source, overlayBox(camera.layout, area, picture.aspect));
     }
     if (caption) drawCaption(g, caption, width, height);
     slideFrame?.close();

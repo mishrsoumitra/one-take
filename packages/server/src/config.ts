@@ -30,6 +30,10 @@ export interface ServerConfig {
   whisperPath: string | null;
   /** The model: a name for openai-whisper (`base.en`), a ggml file for whisper.cpp. */
   whisperModel: string | null;
+  /** A Python with the studio's packages, instead of the environment `npm run studio` makes under the data folder. */
+  studioPython: string | null;
+  /** Skip the studio check at start-up (its switches stay greyed out). */
+  studio: boolean;
 }
 
 export const SERVER_VERSION = '1.0.0';
@@ -63,6 +67,8 @@ export function loadConfig(
       'renderer-memory': { type: 'string' },
       whisper: { type: 'string' },
       'whisper-model': { type: 'string' },
+      'studio-python': { type: 'string' },
+      'no-studio': { type: 'boolean' },
     },
     strict: true,
   });
@@ -103,5 +109,7 @@ export function loadConfig(
     rendererMemoryMb,
     whisperPath: values.whisper ?? env.ONE_TAKE_WHISPER ?? null,
     whisperModel: values['whisper-model'] ?? env.ONE_TAKE_WHISPER_MODEL ?? null,
+    studioPython: values['studio-python'] ?? env.ONE_TAKE_STUDIO_PYTHON ?? null,
+    studio: !(values['no-studio'] ?? env.ONE_TAKE_STUDIO === '0'),
   };
 }

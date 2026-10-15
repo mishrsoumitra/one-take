@@ -493,13 +493,19 @@ export function defaultExportRequest(serverDirectory: string | null): ExportRequ
   };
 }
 
-/** Nothing changed on the way out: normal pace, every filler kept, no transcript. */
+/**
+ * Nothing changed on the way out: normal pace, every filler kept, no transcript; the studio's two
+ * waits are on, since they only apply once `npm run studio` has set the models up, and the dialog
+ * says how long each will take.
+ */
 export function defaultEnhance(): Enhance {
   return {
     speed: 1,
     evenLoudness: false,
     fillers: { remove: false, sensitivity: 'medium' },
     captions: { enabled: false, language: 'auto', burnIn: false, sidecar: true, transcript: true },
+    studio: { denoise: true, voice: true, findOverlap: false },
+    camera: { background: 'keep', backdrop: '#1f2a44', exposure: true },
   };
 }
 
@@ -531,6 +537,8 @@ export function normalizeExportRequest(stored: unknown, serverDirectory: string 
       ...enhance,
       fillers: { ...defaults.enhance.fillers, ...enhance?.fillers },
       captions: { ...defaults.enhance.captions, ...enhance?.captions },
+      studio: { ...defaults.enhance.studio, ...enhance?.studio },
+      camera: { ...defaults.enhance.camera, ...enhance?.camera },
     },
     performance: {
       mode:

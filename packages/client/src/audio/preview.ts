@@ -1,5 +1,6 @@
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
+import { audioOf } from '../core/versions.js';
 
 import { acquireAudio, releaseAudio } from './context.js';
 
@@ -84,7 +85,14 @@ export class PreviewPlayer {
     while (this.nextIdx < tl.items.length) {
       const it = tl.items[this.nextIdx];
       if (!it || it.start >= now + 2) break;
-      const floats = segmentToFloat(it.seg.pcm, it.seg.sampleRate, it.seg.sampleRate, it.fadeIn, it.fadeOut);
+      // the version the clip is set to: Original, Cleaned or Only my voice (see versions.ts)
+      const floats = segmentToFloat(
+        audioOf(it.seg),
+        it.seg.sampleRate,
+        it.seg.sampleRate,
+        it.fadeIn,
+        it.fadeOut,
+      );
       const buffer = ctx.createBuffer(1, floats.length, it.seg.sampleRate);
       buffer.copyToChannel(floats, 0);
       const src = ctx.createBufferSource();

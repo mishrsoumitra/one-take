@@ -1,6 +1,8 @@
 /** The ordered list of phrases with the silence placed between them; shared by preview and export. */
 import { type ClipVideo } from './clip-video.js';
+import { type FaceTrack } from './faces.js';
 import { type SpeakerVerdict } from './identity.js';
+import { type Voicing } from './versions.js';
 
 export interface Segment {
   id: string;
@@ -16,6 +18,19 @@ export interface Segment {
   video?: ClipVideo | null;
   /** Whose voice it is, once the lip and voice checks have judged the phrase (see `identity.ts`). */
   speaker?: SpeakerVerdict;
+  /**
+   * The microphone before any filter, in step with `pcm` sample for sample (see `versions.ts`);
+   * absent when the filter was off, or for a phrase recorded by an older version.
+   */
+  raw?: Int16Array;
+  /** The studio's deep clean, in step with `pcm`. */
+  deep?: Int16Array;
+  /** Only the speaker's voice, from the studio, in step with `pcm`. */
+  voice?: Int16Array;
+  /** Which version plays and is exported; `chosenVoicing` says what the default is. */
+  choice?: Voicing;
+  /** The speaker's mouth over the phrase, for the studio's voice extraction. */
+  faces?: FaceTrack;
 }
 
 export interface TimelineItem {

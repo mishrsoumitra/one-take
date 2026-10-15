@@ -1,11 +1,14 @@
 import {
   type ApiErrorBody,
   type CreateExportJobRequest,
+  type CreateStudioJobRequest,
   type DirectoryListing,
   type ExportJob,
   type ExportRecord,
   type JobEvent,
   type ServerCapabilities,
+  type StudioEvent,
+  type StudioJob,
   type SystemLoad,
   type TranscriptionEvent,
   type TranscriptionJob,
@@ -152,6 +155,75 @@ export class ApiClient {
       onEvent,
       signal,
     );
+  }
+
+  /* ---------------------------------------------------------------- the studio */
+
+  /** A studio job from its manifest; the audio and the mouth crops follow as uploads. */
+  createStudio(request: CreateStudioJobRequest): Promise<StudioJob> {
+    return this.json<StudioJob>('POST', '/api/studio', request);
+  }
+
+  getStudio(id: string): Promise<StudioJob> {
+    return this.json<StudioJob>('GET', `/api/studio/${id}`);
+  }
+
+  /** Every clip's audio in order, as 16-bit PCM, in one upload. */
+  async uploadStudioAudio(id: string, pcm: Uint8Array, signal?: AbortSignal): Promise<StudioJob> {
+    return this.octets(`/api/studio/${id}/audio`, pcm, signal);
+  }
+
+  /** Every clip's mouth crops in order (the frames file), in one upload. */
+  async uploadStudioFaces(id: string, frames: Uint8Array, signal?: AbortSignal): Promise<StudioJob> {
+    return this.octets(`/api/studio/${id}/faces`, frames, signal);
+  }
+
+  startStudio(id: string): Promise<StudioJob> {
+    return this.json<StudioJob>('POST', `/api/studio/${id}/start`);
+  }
+
+  cancelStudio(id: string): Promise<StudioJob> {
+    return this.json<StudioJob>('DELETE', `/api/studio/${id}`);
+  }
+
+  /** Follows a studio job until it is done, over server-sent events with polling as the fallback. */
+  watchStudio(id: string, onEvent: (event: StudioEvent) => void, signal?: AbortSignal): Promise<StudioJob> {
+    return this.watch<StudioJob, StudioEvent>(
+      `/api/studio/${id}/events`,
+      () => this.getStudio(id),
+      (event) => event.job,
+      (job) => ({ type: 'job', job }),
+      onEvent,
+      signal,
+    );
+  }
+
+  /** One clip's result, as 16-bit PCM at the clip's own rate. */
+  async studioResult(
+    id: string,
+    clipId: string,
+    kind: 'deep' | 'voice',
+    signal?: AbortSignal,
+  ): Promise<Int16Array> {
+    const res = await fetch(`${this.base}/api/studio/${id}/clips/${encodeURIComponent(clipId)}/${kind}`, {
+      signal: signal ?? null,
+    });
+    if (!res.ok) {
+      await this.parse(res);
+      throw new ApiRequestError(res.status, 'http_error', `${res.status} ${res.statusText}`);
+    }
+    const bytes = await res.arrayBuffer();
+    return new Int16Array(bytes, 0, Math.floor(bytes.byteLength / 2));
+  }
+
+  private async octets(path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<StudioJob> {
+    const res = await fetch(`${this.base}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: bytes as BodyInit,
+      signal: signal ?? null,
+    });
+    return (await this.parse(res)) as StudioJob;
   }
 
   /** Sends a PowerPoint file to the server's renderer and gets the PDF back, with any notes it made. */

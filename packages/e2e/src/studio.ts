@@ -27,7 +27,7 @@ import {
   startServer,
   video,
 } from './harness.js';
-import { makePdf, makeWav } from './make-fixtures.js';
+import { makePdf, makeStudioWav } from './make-fixtures.js';
 
 const { values } = parseArgs({
   options: { out: { type: 'string' }, port: { type: 'string' } },
@@ -41,7 +41,7 @@ fs.mkdirSync(path.join(OUT, 'fixtures'), { recursive: true });
 const pdf = path.join(OUT, 'fixtures', 'slides.pdf');
 const wav = path.join(OUT, 'fixtures', 'speech.wav');
 fs.writeFileSync(pdf, makePdf(['One', 'Two', 'Three']));
-fs.writeFileSync(wav, makeWav());
+fs.writeFileSync(wav, makeStudioWav());
 const exportsDir = path.join(OUT, 'exports');
 fs.mkdirSync(exportsDir, { recursive: true });
 // the server keeps its data next to the test's output; the studio environment, when this machine has

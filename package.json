@@ -17,7 +17,7 @@
     "build:server": "tsc -b packages/server",
     "build:client": "npm run build --workspace @one-take/client",
     "dev": "npm run build:shared && concurrently -n shared,server,client -c blue,green,magenta \"tsc -b packages/shared --watch --preserveWatchOutput\" \"npm run dev --workspace @one-take/server\" \"npm run dev --workspace @one-take/client\"",
-    "start": "node packages/server/dist/index.js",
+    "start": "node scripts/start.mjs",
     "typecheck": "tsc -b packages/shared packages/server packages/client packages/e2e",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

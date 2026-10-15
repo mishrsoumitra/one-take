@@ -1065,7 +1065,7 @@ export class ExportDialog {
             h(
               'div',
               { class: 'hw', id: 'hwRow' },
-              check(e.hardware, 'Use the hardware encoder when this computer has one'),
+              check(e.hardware, 'Use the hardware encoder and decoder when this computer has one'),
               e.hardwareNote,
             ),
             e.modes,
@@ -1227,8 +1227,9 @@ export class ExportDialog {
   }
 
   /**
-   * What the switch stands for on this machine: the hardware encoders found on each side, what the
-   * current position means, and the measured speeds when they argue for the other position.
+   * What the switch stands for on this machine: the hardware encoders and decoders found on each
+   * side, what the current position means, and the measured speeds when they argue for the other
+   * position.
    */
   private hardwareNote(
     server: ServerCapabilities | null,
@@ -1236,31 +1237,31 @@ export class ExportDialog {
     on: boolean,
   ): { text: string; available: boolean } {
     const serverEncoders = server?.system?.ffmpeg?.encoders ?? [];
+    const serverDecoder = server?.system?.ffmpeg?.decoders[0] ?? null;
     const browserCodecs = hardwareCodecLabels(browser);
-    const available = serverEncoders.length > 0 || browserCodecs.length > 0;
+    const available = serverEncoders.length > 0 || browserCodecs.length > 0 || serverDecoder !== null;
     if (!available) {
       return {
         available,
-        text: `No hardware video encoder was found${browser.videoCodecs.length ? ` in ${browser.browser ?? 'this browser'}` : ''}${server ? ' or in ffmpeg' : ''}, so everything is encoded on the CPU.`,
+        text: `No hardware video encoder or decoder was found${browser.videoCodecs.length ? ` in ${browser.browser ?? 'this browser'}` : ''}${server ? ' or in ffmpeg' : ''}, so everything runs on the CPU.`,
       };
     }
+    const inFfmpeg = serverEncoders.length
+      ? `${serverEncoders.join(', ')} in ffmpeg${serverDecoder ? ` (decoding on ${serverDecoder})` : ''}`
+      : serverDecoder
+        ? `only decoding (${serverDecoder}) in ffmpeg`
+        : 'none in ffmpeg';
     const found = [
       browserCodecs.length
         ? `${browserCodecs.join(' and ')} in ${browser.browser ?? 'this browser'}`
         : `none in ${browser.browser ?? 'this browser'}`,
-      server
-        ? serverEncoders.length
-          ? `${serverEncoders.join(', ')} in ffmpeg`
-          : server.ffmpeg
-            ? 'none in ffmpeg'
-            : 'no ffmpeg'
-        : 'server offline',
+      server ? (server.ffmpeg ? inFfmpeg : 'no ffmpeg') : 'server offline',
     ];
     const parts = [`Found: ${found.join('; ')}.`];
     parts.push(
       on
-        ? 'It does the encoding and leaves the CPU free. Untick to encode on the CPU instead.'
-        : 'Off: the browser and ffmpeg encode on the CPU.',
+        ? 'It does the encoding, and the decoding in ffmpeg, and leaves the CPU free. Untick to run everything on the CPU instead.'
+        : 'Off: the browser and ffmpeg encode and decode on the CPU.',
     );
     // measured speeds, when they say the CPU would be quicker on slide video
     const measured: string[] = [];
@@ -1277,6 +1278,28 @@ export class ExportDialog {
     if (measured.length) {
       parts.push(
         `Measured on this machine, the CPU encoder was quicker on slide video (${measured.join('; ')}), because it skips unchanged blocks; ${on ? 'untick for the quickest export' : 'that is what runs now'}.`,
+      );
+    }
+    // the decoders' race: the CPU wins on its own on slide video; what matters is the pipeline
+    const decode = server?.system?.ffmpeg?.decodeBenchmark ?? null;
+    const softwareDecode = decode?.software ?? null;
+    const hardwareDecode = serverDecoder ? (decode?.[serverDecoder] ?? null) : null;
+    if (
+      serverDecoder &&
+      softwareDecode !== null &&
+      hardwareDecode !== null &&
+      softwareDecode > hardwareDecode * 1.15
+    ) {
+      const hardwareEncode = Math.max(
+        0,
+        ...Object.entries(race ?? {})
+          .filter(([e]) => e !== 'libx264')
+          .map(([, fps]) => fps),
+      );
+      parts.push(
+        hardwareEncode > 0
+          ? `The CPU decoder was quicker on its own too (software ${softwareDecode} against ${serverDecoder} ${hardwareDecode} fps in ffmpeg); next to the hardware encoder (${hardwareEncode} fps) the hardware decoder ${hardwareDecode >= hardwareEncode ? 'adds no time and leaves the CPU idle' : 'is the slower stage, so a compression waits on it'}.`
+          : `The CPU decoder was quicker on its own (software ${softwareDecode} against ${serverDecoder} ${hardwareDecode} fps in ffmpeg).`,
       );
     }
     return { available, text: parts.join(' ') };
@@ -1687,7 +1710,7 @@ export class ExportDialog {
     const stage2 = p
       ? p.video.mode === 'copy'
         ? `Server repackages it as ${CONTAINER_INFO[p.container].label} without re-encoding${p.container === 'hls' || p.container === 'dash' ? `, ${p.segmentSeconds} s segments` : ''}.`
-        : `Server re-encodes to ${p.video.codec.toUpperCase()} with ${pickServerVideoEncoder(server, p.video.codec, p.video.hardware) ?? 'ffmpeg'}, CRF ${p.video.crf} (${p.video.preset}${p.video.tune ? ', stillimage' : ''}${p.video.fps ? `, ${p.video.fps} fps` : ''}${p.video.height ? `, ${p.video.height}p` : ''})${p.ladder ? ` as an adaptive ladder (${p.ladder.map((x) => x.name).join(', ')})` : ''} and writes ${CONTAINER_INFO[p.container].label}.`
+        : `Server re-encodes to ${p.video.codec.toUpperCase()} with ${pickServerVideoEncoder(server, p.video.codec, p.video.hardware) ?? 'ffmpeg'}${p.video.hardware && server?.system?.ffmpeg?.decoders[0] ? ` (decoding on ${server.system.ffmpeg.decoders[0]})` : ''}, CRF ${p.video.crf} (${p.video.preset}${p.video.tune ? ', stillimage' : ''}${p.video.fps ? `, ${p.video.fps} fps` : ''}${p.video.height ? `, ${p.video.height}p` : ''})${p.ladder ? ` as an adaptive ladder (${p.ladder.map((x) => x.name).join(', ')})` : ''} and writes ${CONTAINER_INFO[p.container].label}.`
       : plan.destination === 'server'
         ? 'Server stores the file as is.'
         : 'The file is written by the browser.';

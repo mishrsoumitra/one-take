@@ -1,10 +1,11 @@
 /**
- * Getting a model file's bytes. Three places are tried in turn: the app's own `/models` folder
- * (`npm run models` fills it), the browser's cache storage (a copy kept from an earlier fetch), and
- * the file's publisher, after which the copy goes into the cache storage so the machine is never
- * asked again. Whichever way it came, the bytes are checked against the catalogue's SHA-256, so a
- * server that answers a missing file with the app's page, or a download cut short, is never
- * mistaken for a model.
+ * Getting a model file's bytes. Three places are tried in turn: the app's own `/models` path (the
+ * server serves a copy from wherever one is, and fetches a missing one from its publisher itself,
+ * which a browser page cannot always do: GitHub's release downloads carry no CORS header), the
+ * browser's cache storage (a copy kept from an earlier fetch), and the file's publisher directly,
+ * after which the copy goes into the cache storage so the machine is never asked again. Whichever way
+ * it came, the bytes are checked against the catalogue's SHA-256, so a server that answers a missing
+ * file with the app's page, or a download cut short, is never mistaken for a model.
  */
 import { MODELS_PATH, type ModelFile } from '@one-take/shared';
 
@@ -48,28 +49,50 @@ async function read(
   return out.buffer;
 }
 
+/** The message in a `{ error: { message } }` answer, when the body is one. */
+async function errorIn(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { error?: { message?: unknown } };
+    return typeof body.error?.message === 'string' ? body.error.message : null;
+  } catch {
+    return null;
+  }
+}
+
+type Fetched = { bytes: ArrayBuffer } | { reason: string };
+
 async function fromUrl(
   url: string,
   model: ModelFile,
   source: FetchProgress['source'],
   onProgress?: (p: FetchProgress) => void,
-): Promise<ArrayBuffer | null> {
+): Promise<Fetched> {
+  const where = source === 'local' ? 'the One Take server' : new URL(url).host;
   let response: Response;
   try {
     response = await fetch(url);
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      reason:
+        source === 'local'
+          ? 'the One Take server is not answering'
+          : `${where} refused the request from this page (${error instanceof Error ? error.message : String(error)}); the server can fetch it where a page cannot`,
+    };
   }
-  if (!response.ok) return null;
+  if (!response.ok) {
+    const message = await errorIn(response);
+    return { reason: message ?? `${where} answered ${response.status}` };
+  }
   const length = Number(response.headers.get('content-length') ?? model.bytes);
   // the app's page answering for a missing file is small and never the right length
-  if (source === 'local' && length !== model.bytes) return null;
+  if (source === 'local' && length !== model.bytes)
+    return { reason: 'the One Take server has no copy of it' };
   const bytes = await read(response, length, source, onProgress);
   if (bytes.byteLength !== model.bytes || (await sha256(bytes)) !== model.sha256) {
     console.warn(`${model.name} from ${url} is not the expected file; ignoring it`);
-    return null;
+    return { reason: `what ${where} sent was not the model (checksum mismatch)` };
   }
-  return bytes;
+  return { bytes };
 }
 
 async function cache(): Promise<Cache | null> {
@@ -85,8 +108,10 @@ export async function loadModel(
   model: ModelFile,
   onProgress?: (p: FetchProgress) => void,
 ): Promise<ArrayBuffer> {
+  const reasons: string[] = [];
   const local = await fromUrl(`${MODELS_PATH}/${model.name}`, model, 'local', onProgress);
-  if (local) return local;
+  if ('bytes' in local) return local.bytes;
+  reasons.push(local.reason);
   const store = await cache();
   const cached = await store?.match(model.url).catch(() => undefined);
   if (cached) {
@@ -95,15 +120,19 @@ export async function loadModel(
     await store?.delete(model.url).catch(() => false);
   }
   const remote = await fromUrl(model.url, model, 'remote', onProgress);
-  if (!remote) {
+  if ('reason' in remote) {
+    reasons.push(remote.reason);
     throw new Error(
-      `${model.name} (for ${model.what}) could not be fetched. Run "npm run models" with the machine online, or check its connection.`,
+      `${model.name} (for ${model.what}) could not be fetched: ${reasons.join('; ')}. Run "npm run models" once with the machine online, then reload the page.`,
     );
   }
   await store
-    ?.put(model.url, new Response(remote, { headers: { 'Content-Length': String(remote.byteLength) } }))
+    ?.put(
+      model.url,
+      new Response(remote.bytes, { headers: { 'Content-Length': String(remote.bytes.byteLength) } }),
+    )
     .catch(() => {
       /* the copy simply is not kept */
     });
-  return remote;
+  return remote.bytes;
 }

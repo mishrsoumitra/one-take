@@ -35,6 +35,7 @@ import {
   type StudioModelKind,
 } from '@one-take/shared';
 
+import { modelSearchDirs } from '../config.js';
 import { ApiError, errorMessage } from '../util/errors.js';
 
 export interface StudioConfig {
@@ -73,10 +74,16 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-/** Where the speaker model is, for picking a voice by profile: the studio's folder, else the client's. */
+/**
+ * Where the speaker model is, for picking a voice by profile: the studio's folder, else wherever the
+ * server serves the client's copy from (the built client, `packages/client/public/models`, the data
+ * folder's `models`, which is where the server's own download of it lands).
+ */
 async function findSpeakerModel(config: StudioConfig): Promise<string | null> {
-  const candidates = [path.join(modelsDir(config.dataDir), MODELS.speaker.name)];
-  if (config.staticDir) candidates.push(path.join(config.staticDir, 'models', MODELS.speaker.name));
+  const candidates = [
+    path.join(modelsDir(config.dataDir), MODELS.speaker.name),
+    ...modelSearchDirs(config.dataDir, config.staticDir).map((dir) => path.join(dir, MODELS.speaker.name)),
+  ];
   for (const c of candidates) if (await exists(c)) return c;
   return null;
 }

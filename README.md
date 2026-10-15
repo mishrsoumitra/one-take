@@ -55,7 +55,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Adaptive streaming.** HLS or DASH ladders (1080p / 720p / 480p / 360p) with a master playlist.
 - **Save anywhere.** A folder picker browses the computer running the server. Files never leave the machine.
 - **Built for long lectures.** Streaming writes, encoder back-pressure, free-space checks, crash-safe fragments, cancel at any stage, and no in-memory assembly. See [Large exports](#large-exports).
-- **Uses your hardware encoder.** The dedicated video encoder (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, until you untick **Use the hardware encoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders, each one self-tested) and measured encoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
+- **Uses your hardware encoder and decoder.** The dedicated video engine (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, and ffmpeg's decoding of the upload it compresses (`-hwaccel`), until you untick **Use the hardware encoder and decoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders and decoders, each one self-tested) and measured encoder and decoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
 - **Your exports in one list.** Every video saved to a folder on this computer is listed under **Exports** in the top bar, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
 - **Faster, cleaner, with subtitles.** At export time the lecture can be played at 1.25×, 1.5× or 2× with the voice keeping its pitch (a time-stretch in plain code, no library), the volume evened out from phrase to phrase, and the "um"s and "uh"s cut: a filler is found by its shape in the spectrum, a held, flat, central vowel standing between two pauses, with a list to listen to each one before it goes. With whisper installed, the server transcribes the speech and the export gets subtitles drawn into the picture, `.srt` and `.vtt` files next to the video, and a `.txt` transcript. The audio never leaves the machine.
 - **A studio for the export.** Once `npm run studio` has set it up, the local server runs heavy models over the recording as the microphone heard it, before any filter: MossFormer2's deep clean over the whole recording, and AV-MossFormer2's target speaker extraction to keep only your voice in the phrases where another voice was heard (the camera's film of your mouth tells it which voice is yours; without a face, the separation model and your voice profile do). Every clip then has three versions, **Original**, **Cleaned** and **Only my voice**, to hear and choose in the editor, and the flagged phrases get a review list like the filler list. Each wait can be skipped. The camera's picture can get a blurred or plain background and even exposure and colour before it goes into the frame.
@@ -71,6 +71,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 | ffmpeg (optional)          | HLS, DASH, compression, the faststart MP4 remux and transcoding. Without it you still get MP4, MOV, MKV and WebM written directly by the browser.                           |
 | ffprobe (optional)         | Only the end-to-end test needs it.                                                                                                                                          |
 | A microphone               | A headset or USB microphone gives the cleanest cut. The built-in laptop mic works too; you may need to raise the speech threshold.                                         |
+| An internet connection, once | The speaker model and the face model (29 MB together) are fetched once, by `npm run models` or by the server the first time the app asks for them. After that nothing is fetched. |
 | Python 3.10 to 3.13, or uv (optional) | The studio: the deep clean and keeping only your voice at export time, set up once with `npm run studio` (about 1.7 GB of models). Without it those switches are greyed out. |
 
 Install ffmpeg with your package manager:
@@ -88,12 +89,23 @@ The server looks for `ffmpeg` on your `PATH` and in the usual places (`/opt/home
 ```sh
 git clone https://github.com/mishrsoumitra/one-take.git
 cd one-take
-npm install
-npm run build
 npm start          # http://127.0.0.1:4317
 ```
 
+`npm start` is the only command you need. Every time it runs it does whatever is still to be done, says so, and then starts the server:
+
+1. **Installs the dependencies** when `node_modules` is missing or older than `package-lock.json` (`npm ci`).
+2. **Builds** the shared code, the server and the client when a source, a config or a dependency changed since the last build (a few seconds; nothing when nothing changed).
+3. **Fetches the models** for the voice check, the lip check and the camera cleanup (29 MB, once, while online) into `packages/client/public/models`, checking each against its SHA-256. Files already there are left alone. Offline, this is only a note: the server fetches a missing model itself the first time the app asks for it.
+4. **Starts the server.** Everything after `--` goes to it: `npm start -- --port 4317 --dir ~/Movies/One\ Take`.
+
 Open the address in Chrome, load a PDF, a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) or a set of images, click **Start mic** and talk. Keynote and Google Slides: export as PDF or `.pptx` first.
+
+The steps are also there one by one, for when you want just one of them: `npm install`, `npm run build`, `npm run models`, and `node packages/server/dist/index.js` for the server alone.
+
+**The models.** The first time you start the mic, One Take learns your voice (you read a short passage for twenty seconds) so that it can mark phrases that were somebody else's, and with a camera on it watches your lips. The two models that do this, WeSpeaker's speaker model (25 MB, from sherpa-onnx's GitHub release) and MediaPipe's Face Landmarker (4 MB, from Google), are not in the repository: `npm start` (or `npm run models`) fetches them into `packages/client/public/models`, checks each against its SHA-256, and the server serves them from there, whether they arrived before or after the build. If the machine was offline then, the server fetches a missing model itself the first time the app asks for one, into `~/.one-take/models`, provided it is online at that moment; a message such as `Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched` means neither place had it and the download failed, so run `npm start` (or `npm run models`) again while online and reload the page. Everything the models work on stays on your machine: the recording of your voice becomes 256 numbers in this browser's localStorage, and nothing is uploaded.
+
+Optional, for the export's deep clean and *Only my voice*: `npm run studio` once (about 1.7 GB of models and a Python environment of its own; see [The studio](#the-studio-deep-clean-and-only-your-voice)), then start the server again. It is the one thing `npm start` does not do by itself, because of its size and its need for Python.
 
 Server options, if you need them:
 
@@ -198,7 +210,7 @@ Click **Export video**. In the dialog you choose:
 - **File name**, **Container**, **Resolution**, **Frame rate**, **Quality**, **Video codec**, **Audio** codec and bitrate, **Key frame every**, and **Order**.
 - **Compression (server, ffmpeg)** and, for HLS and DASH, **Segment length**, **Segment type** and **Adaptive bitrate**.
 - **Sound**: the studio's deep clean and only-your-voice switches with what each will cost on this computer, the check for a second voice, and the list of flagged phrases to listen to, keep or leave out. See [The studio](#the-studio-deep-clean-and-only-your-voice).
-- Under **This computer**: what the machine has, the **Use the hardware encoder** switch (on by default; untick it to encode on the CPU, and the choice is remembered in this browser) and the performance mode.
+- Under **This computer**: what the machine has, the **Use the hardware encoder and decoder** switch (on by default; untick it to encode and decode on the CPU, and the choice is remembered in this browser) and the performance mode.
 - Under **Camera** (shown when any phrase has a picture): whether to **show the camera picture over the slides**, where it will be, and a reminder to pick 24 or 30 fps so the speaker moves smoothly (slides alone look the same at 15 fps).
 - Under **Enhance**: the playback **Speed**, **even out the volume**, **cut filler words** with a list of what was found, and **transcribe the speech and add subtitles**. See [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles).
 
@@ -302,7 +314,7 @@ Turn on **Compress** to have the server re-encode the video with ffmpeg. The bro
 | Max bitrate           | 100–200 000 kbit/s or empty                                     | Caps the bitrate (with a buffer of twice that) for streaming-friendly output.               |
 | Scale to height       | 16–7680 or empty                                                | Scales while re-encoding, keeping the aspect ratio.                                         |
 
-Which encoder does the work follows the **Use the hardware encoder** switch under *This computer* (see [System check and performance mode](#system-check-and-performance-mode)): VideoToolbox, NVENC, QSV or VAAPI when ffmpeg has one and the switch is on, otherwise x264, x265, libvpx or SVT-AV1. The *Smallest file* mode always uses the software encoders, because a hardware encoder makes a larger file at the same quality whatever preset it is given. The plan names the encoder before you start, and the ffmpeg command that ran is kept on the job (`command` in the API) so you can see exactly what happened.
+Which encoder does the work follows the **Use the hardware encoder and decoder** switch under *This computer* (see [System check and performance mode](#system-check-and-performance-mode)): VideoToolbox, NVENC, QSV or VAAPI when ffmpeg has one and the switch is on, otherwise x264, x265, libvpx or SVT-AV1. With the switch on the upload is decoded on the same engine (`-hwaccel videotoolbox`, `cuda`, `qsv`, `d3d11va`, `dxva2` or `vaapi`, whichever passed the start-up self-test). The *Smallest file* mode always uses the software encoders, because a hardware encoder makes a larger file at the same quality whatever preset it is given. The plan names the encoder (and the decoder) before you start, and the ffmpeg command that ran is kept on the job (`command` in the API) so you can see exactly what happened.
 
 ### Streaming (HLS and DASH)
 
@@ -511,39 +523,43 @@ One Take 1.0.0: system check
   Memory   96 GB total, 69 GB available now
   GPU      Apple M2 Max, 38 cores, shared memory
   Disk     412 GB free in /Users/me/Movies/One Take
-  ffmpeg   8.1.2 at /opt/homebrew/bin/ffmpeg
+  ffmpeg   9.0.2 at /opt/homebrew/bin/ffmpeg
            hardware encoders: h264_videotoolbox, hevc_videotoolbox
-           fastest for slides at 1080p: libx264 (libx264 910 fps, h264_videotoolbox 400 fps); decoding in software; hwaccels listed: videotoolbox
+           hardware decoders: videotoolbox (decodes the upload whenever the hardware switch is on; a codec it cannot take falls back to the CPU)
+           races at 1080p on slide-like video: encode libx264 910 fps, h264_videotoolbox 400 fps; decode software 2000 fps, videotoolbox 300 fps (measured 14/10/2026, kept in the data folder for a week)
   Node     v24.14.0
   Mode     gpu: GPU encoding available; up to 2 ffmpeg re-encodes at a time
   Renderer 32.0 GB heap for PowerPoint conversion
+  Speech   whisper-cli found: transcripts and subtitles are on
+  Studio   The studio runs on the GPU (torch 2.9.0); the deep clean and keeping only your voice are ready.
+  Models   all in /Users/me/one-take/packages/client/public/models
 ```
 
 - CPU model, core count and the performance/efficiency split (Apple silicon), total and available memory, the GPU (`system_profiler` on macOS, `nvidia-smi`/`lspci` on Linux, PowerShell on Windows) and free disk space where exports go.
-- Every hardware encoder ffmpeg lists (`*_videotoolbox`, `*_nvenc`, `*_qsv`, `*_vaapi`) is **self-tested** with a third of a second of synthetic video. One that is compiled in but has no device behind it is dropped, so the export dialog never offers an encoder that would fail. `--no-self-test` skips this (about 0.2 s per encoder).
+- Every hardware encoder ffmpeg lists (`*_videotoolbox`, `*_nvenc`, `*_qsv`, `*_vaapi`) is **self-tested** with a third of a second of synthetic video. One that is compiled in but has no device behind it is dropped, so the export dialog never offers an encoder that would fail. Every hardware **decoder** it lists (`videotoolbox`, `cuda`, `qsv`, `d3d11va`, `dxva2`, `vaapi`) is tested the same way, on a third of a second of H.264 made for the purpose: ffmpeg falls back to the CPU with only a warning when a method has no device behind it, so the test reads that warning and drops the method. `--no-self-test` skips both (about 0.2 s per encoder or decoder).
 - The **tier** follows: `gpu` when a hardware encoder works, `cpu-fast` with eight or more cores, `cpu`, or `constrained` (under 4 cores or 8 GB). It decides how many ffmpeg re-encodes may run at once (software encoders already use every core, so a second job would only slow both down).
-- Once the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner. The result is shown under the hardware switch in the export dialog as information; it does not move the switch. On an M2 Max x264 wins: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). The hardware encoder stays the default all the same, because it leaves the CPU free; untick the switch on such a machine for the quickest export. `--no-benchmark` skips the race.
-- Decoding stays on the CPU. The upload is slide video, and software decoding of eleven minutes of it took 1.5 s where `-hwaccel videotoolbox` took 33 s.
+- Three seconds after the server is up it **races the H.264 encoders** it has (each verified hardware encoder against `libx264 veryfast`) on six seconds of slide-like 1080p video, about a second each, and records the winner, then **races the decoders** (the CPU against each verified hardware decoder) on the same clip. The figures are printed when they are in, shown under the hardware switch in the export dialog as information, and kept in `benchmark.json` in the data folder for a week, so the next start prints them at once instead of racing again (a new ffmpeg, or a week, runs the races afresh). They do not move the switch. On an M2 Max x264 wins the encoding: slide video is mostly unchanged blocks, which x264 skips almost for free (910 fps) while the VideoToolbox encoder runs every frame through a fixed pipeline (400 fps). The hardware encoder stays the default all the same, because it leaves the CPU free; untick the switch on such a machine for the quickest export. `--no-benchmark` skips the races.
+- **Decoding follows the switch too.** With it on, ffmpeg decodes the upload on the hardware (`-hwaccel videotoolbox` on a Mac, `cuda`, `qsv`, `d3d11va`, `dxva2` or `vaapi` elsewhere, the first one that passed the self-test). On its own the CPU decoder is quicker on slide video (on an M2 Max, six seconds of 1080p decode in 0.09 s on the CPU and 0.59 s on VideoToolbox), but a compression never decodes on its own: next to the hardware encoder the hardware decoder adds no wall time (0.70 s against 0.67 s for the decode-and-encode of the same clip) and cuts the CPU time by two thirds, which is what the switch is for. A codec the hardware cannot take falls back to the CPU inside ffmpeg. The browser's camera clips (360p, a few hundred kbit/s) are left to WebCodecs' own choice of decoder and encoder: forcing the hardware there was tried and dropped, because the hardware encoder at that bitrate made a visibly softer picture and the hardware decoder gained nothing on frames that small.
 - The PowerPoint renderer runs in a worker with a heap limit of half the machine's memory (`--renderer-memory 4096` to change it); a deck that needs more fails with a clear message instead of taking the server down.
 
-**`npm run doctor`** runs the same check without starting the server and prints which process needs which resource for a one-hour 1080p lecture: recording, slide rendering, PowerPoint conversion, and every export stage (browser encode, upload, packaging, compression) with its memory, whether it runs on the GPU or the CPU, and a rough time. `npm run bench` (`doctor --bench`, `--height 2160` for 4K) runs the encoder race in the open, adds `libx264 medium` and `libx265 veryfast` for comparison, and says which encoder is really the fastest on this machine.
+**`npm run doctor`** runs the same check without starting the server and prints which process needs which resource for a one-hour 1080p lecture: recording, slide rendering, PowerPoint conversion, and every export stage (browser encode, upload, packaging, compression) with its memory, whether it runs on the GPU or the CPU, and a rough time. `npm run bench` (`doctor --bench`, `--height 2160` for 4K) runs the encoder and decoder races in the open, adds `libx264 medium` and `libx265 veryfast` for comparison, says which encoder is really the fastest on this machine, and whether the hardware decoder keeps up with the hardware encoder.
 
 **In the browser** the app probes WebCodecs once: which codecs it can encode, for each whether `prefer-hardware` is accepted at 1080p and at 4K and whether `prefer-software` is accepted at all (Chrome has no software HEVC encoder, for instance), plus thread count, visible memory and the GPU name (WebGPU or WebGL). It then races the GPU and the software H.264 encoder on 150 frames of a 1080p slide (about half a second; the answer is kept for a week in `localStorage`). The export dialog's *This computer* section shows both sides.
 
-**The hardware switch.** *Use the hardware encoder when this computer has one* sits under the system line and is on by default. The line under it lists what was found on each side (for example `AVC up to 4K and HEVC up to 4K in Chrome 141; h264_videotoolbox, hevc_videotoolbox in ffmpeg`) and, where the races found the CPU quicker on slide video, says so with the figures.
+**The hardware switch.** *Use the hardware encoder and decoder when this computer has one* sits under the system line and is on by default. The line under it lists what was found on each side (for example `AVC up to 4K and HEVC up to 4K in Chrome 141; h264_videotoolbox, hevc_videotoolbox in ffmpeg (decoding on videotoolbox)`) and, where the races found the CPU quicker on slide video, says so with the figures, including whether the hardware decoder keeps up with the hardware encoder.
 
-- **On:** the browser asks WebCodecs for the hardware encoder for every codec and size the probe accepted (an unsupported request fails instead of falling back, so it is never asked blindly), codecs the hardware can take come first when the codec is *Automatic*, and ffmpeg uses `h264_videotoolbox`, `hevc_videotoolbox`, `*_nvenc`, `*_qsv` or `*_vaapi` for compression, transcoding and adaptive ladders. A size the hardware refuses (above 4K on most of them) goes to the CPU with a warning.
-- **Off:** the browser asks for the software encoder (`prefer-software`), skips codecs it only has in hardware when the codec is *Automatic* (asked for by name, such a codec is transcoded by ffmpeg on the CPU instead), and ffmpeg uses `libx264`, `libx265`, `libvpx-vp9` or `libsvtav1`.
+- **On:** the browser asks WebCodecs for the hardware encoder for every codec and size the probe accepted (an unsupported request fails instead of falling back, so it is never asked blindly), codecs the hardware can take come first when the codec is *Automatic*, ffmpeg uses `h264_videotoolbox`, `hevc_videotoolbox`, `*_nvenc`, `*_qsv` or `*_vaapi` for compression, transcoding and adaptive ladders, and decodes the upload with the verified `-hwaccel` method. A size the hardware refuses (above 4K on most of them) goes to the CPU with a warning.
+- **Off:** the browser asks for the software encoder (`prefer-software`), skips codecs it only has in hardware when the codec is *Automatic* (asked for by name, such a codec is transcoded by ffmpeg on the CPU instead), and ffmpeg uses `libx264`, `libx265`, `libvpx-vp9` or `libsvtav1` and decodes on the CPU.
 
-The switch is a browser preference, like the theme: it applies to every project and is remembered until you change it. A machine without any hardware encoder shows it greyed out. Decoding stays on the CPU in either position (see above: software decoding of slide video is twenty times faster than the GPU path).
+The switch is a browser preference, like the theme: it applies to every project and is remembered until you change it. A machine without any hardware encoder or decoder shows it greyed out.
 
 **Performance mode** (in the export dialog, saved with the project) picks presets around the switch:
 
 | Mode | Browser stage | Server compression |
 | --- | --- | --- |
-| **Fastest** (default) | the hardware encoder when the switch is on and the probe accepted it; otherwise the software encoder in `realtime` latency mode | the hardware encoder when the switch is on; otherwise `libx264`/`libx265`, `veryfast` preset |
-| **Balanced** | the same encoder choice, browser default latency | the same encoder choice, `medium` preset |
-| **Smallest file** | the same encoder choice, `quality` latency | always the software encoders, `slow` preset, `stillimage` tune for x264 (no hardware encoder makes a smaller file) |
+| **Fastest** (default) | the hardware encoder when the switch is on and the probe accepted it; otherwise the software encoder in `realtime` latency mode | the hardware encoder and decoder when the switch is on; otherwise `libx264`/`libx265`, `veryfast` preset, decoding on the CPU |
+| **Balanced** | the same encoder choice, browser default latency | the same encoder and decoder choice, `medium` preset |
+| **Smallest file** | the same encoder choice, `quality` latency | always the software encoders and the CPU decoder, `slow` preset, `stillimage` tune for x264 (no hardware encoder makes a smaller file) |
 
 The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encoder drops from 374 to 166 fps in `realtime` mode, while Chrome's software H.264 encoder runs at about 400 fps in either, so `realtime` is reserved for software codecs. A mode only sets the starting point; every field stays editable. The *Plan* section then names the encoder each stage will use and lists the resource map for the chosen settings (GPU/CPU/disk per stage, memory, rough time), and warns when the export would take more than 40 % of the machine's memory, when the CPU ends up with a codec the hardware could have taken, or when the job will take over half an hour.
 
@@ -650,7 +666,7 @@ When the two agree, that is the verdict. When one has nothing to say, the other 
 ### What it needs, and what it costs
 
 - **Chrome or Edge** for the lip check (`MediaStreamTrackProcessor` hands the camera's frames to the worker). The voice check and the deep filter run wherever AudioWorklet and WebAssembly do.
-- **Three models.** DeepFilterNet3 (8 MB) and its runtime (15 MB) come with the app. The speaker model (25 MB) and the face model (4 MB) are fetched once: `npm run models` puts them in `packages/client/public/models` for the app to serve, and a client without them fetches each from its publisher the first time it is needed, says so, checks it against its SHA-256 and keeps it in the browser's cache storage, so a machine is only ever asked once. Nothing is ever uploaded.
+- **Three models.** DeepFilterNet3 (8 MB) and its runtime (15 MB) come with the app. The speaker model (25 MB) and the face model (4 MB) are fetched once: `npm run models` puts them in `packages/client/public/models`, and the server serves them from there (or from the built client, its own data folder or the studio's folder, wherever a copy with the right SHA-256 is). A model that is nowhere is fetched by the server itself from its publisher the first time the app asks, into `~/.one-take/models`, checked and kept, so a machine is only ever asked once. The server does the fetching rather than the browser because GitHub's release downloads, where the speaker model is published, carry no CORS header and a page is refused them; a client with no server at all still tries its cache storage and the publisher directly. Nothing is ever uploaded.
 - **Time.** The face model answers in a few milliseconds a frame on the GPU; the speaker model takes about 70 ms per second of speech on one CPU thread in Python and a few times that in WebAssembly, which the windows hide. In the headless check on an M2 Max every verdict landed 125 to 550 ms after the phrase ended.
 - **What it cannot do.** The checks tell your voice from a different one; a voice very like yours, or your own voice played back from a speaker, can pass. A face turned well away from the camera, or in the dark, is "no face in view", and the voice check decides alone. The voice profile is made once; if your voice changes a lot (a cold, a different microphone, a different room), click **Learn my voice** and read again.
 
@@ -686,8 +702,8 @@ The server (`packages/server`) is a small [Fastify](https://fastify.dev) app. It
 ### Starting it
 
 ```sh
-npm start                                  # after npm run build
-node packages/server/dist/index.js         # the same
+npm start                                  # installs, builds and fetches the models when needed, then starts
+node packages/server/dist/index.js         # the server alone, after npm run build
 ```
 
 On start it prints the system check (see [System check and performance mode](#system-check-and-performance-mode)), then logs the address, the ffmpeg it found (or that HLS, DASH and compression are disabled), where the client is served from, and the default output folder, which it creates if needed.
@@ -701,7 +717,7 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--host`              | `ONE_TAKE_HOST`         | `127.0.0.1`            | Address to listen on.                                                      |
 | `--port`, `-p`        | `ONE_TAKE_PORT`         | `4317`                 | Port.                                                                      |
 | `--dir`, `-d`         | `ONE_TAKE_DIR`          | `~/Movies/One Take`    | Suggested output folder. Created on start.                                 |
-| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), its temporary files and whisper.cpp models (`models/`). |
+| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), the races' figures (`benchmark.json`), its temporary files, whisper.cpp models and the client models it fetched itself (`models/`), and the studio (`studio/`). |
 | `--whisper`           | `ONE_TAKE_WHISPER`      | found on `PATH`        | The whisper program for transcripts: `whisper-cli` (whisper.cpp) or `whisper` (openai-whisper).         |
 | `--whisper-model`     | `ONE_TAKE_WHISPER_MODEL` | `base.en` / first `ggml-*.bin` found | A model name for openai-whisper, a `ggml-*.bin` file for whisper.cpp.                    |
 | `--studio-python`     | `ONE_TAKE_STUDIO_PYTHON` | `<data dir>/studio/venv/bin/python` | A Python with the studio's packages (ClearerVoice-Studio), instead of the environment `npm run studio` makes. |
@@ -714,8 +730,8 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--allow-remote`      | `ONE_TAKE_ALLOW_REMOTE=1` | off                  | Accept requests from other machines. See Security.                         |
 | `--fonts`             | `ONE_TAKE_FONTS`        | none                   | Extra font folders (separated by `:`) for drawing PowerPoint slides, searched before the system fonts. |
 | `--renderer-memory`   | `ONE_TAKE_RENDERER_MEMORY_MB` | half of RAM      | Heap limit in MB for the PowerPoint renderer worker.                       |
-| `--no-self-test`      | `ONE_TAKE_SELF_TEST=0`  | off                    | Skip the start-up test of each hardware encoder.                           |
-| `--no-benchmark`      | `ONE_TAKE_BENCHMARK=0`  | off                    | Skip the H.264 encoder race after start-up.                                |
+| `--no-self-test`      | `ONE_TAKE_SELF_TEST=0`  | off                    | Skip the start-up test of each hardware encoder and decoder.               |
+| `--no-benchmark`      | `ONE_TAKE_BENCHMARK=0`  | off                    | Skip the encoder and decoder races after start-up (and ignore remembered figures). |
 
 ### Where files go
 
@@ -732,6 +748,8 @@ Jobs live in memory. The last 50 finished jobs stay in the job list; a server re
 Subtitle and transcript files asked for in the export dialog are written next to the result with its name (`lecture (2).srt` for `lecture (2).mp4`; inside the folder for HLS and DASH) once it is done.
 
 Finished exports are also written to `exports.json` in the data folder (`~/.one-take` by default; `--data-dir` to change it): path, size, format, duration, codecs, the ffmpeg encoder that made each one, and its subtitle files. That file feeds the **Exports** list in the app and survives restarts; the videos themselves stay where they were saved. Deleting from the list removes the file (or the HLS/DASH folder, provided it still holds nothing but the export) and the entry; an entry whose file has gone can be dropped on its own. The file is written whole and renamed into place, and a damaged one is set aside rather than stopping the server.
+
+The data folder also holds `benchmark.json` (the encoder and decoder races' figures, with the ffmpeg they are for and when they were measured; a week old or for another ffmpeg, they are measured again) and `models/`, where a client model the server had to fetch itself lands (see [Quick start](#quick-start)).
 
 ### Security
 
@@ -770,7 +788,8 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | -------- | ----------------------------- | ------------------------------------------------------------------------------------------------ |
 | `GET`    | `/api/health`                 | `{ ok, name, version }`.                                                                         |
 | `GET`    | `/api/capabilities`           | Server version, platform, home and default folders, ffmpeg info (path, version, encoders, muxers), ffprobe path, and shortcut folders for the picker. |
-| `GET`    | `/api/system`                 | The system check: CPU, memory, GPU, disk, verified hardware encoders, benchmark winner and tier.  |
+| `GET`    | `/api/system`                 | The system check: CPU, memory, GPU, disk, verified hardware encoders and decoders, the races' figures and tier. |
+| `GET`    | `/models/:name`               | A client model file (the speaker model, the face model, the selfie segmenter) from wherever a verified copy is, fetched from its publisher first when there is none. `404` for a name not in the catalogue, `502 model_unavailable` with the reason when it is nowhere and cannot be fetched. |
 | `GET`    | `/api/system/load`            | How busy the machine is right now: whole-machine CPU use since the previous call, memory, and the server process. The export view polls it once a second. |
 | `POST`   | `/api/convert?name=deck.pptx` | A PowerPoint file as `application/octet-stream`; answers with `application/pdf`. Renderer notes come in the `x-one-take-warnings` header. |
 | `GET`    | `/api/fs/list?path=&files=1`  | Lists a folder: entries, parent, whether it exists and is writable, and free bytes. `files=1` includes files. Defaults to the home folder. |
@@ -958,19 +977,20 @@ one-take/
     ├── server/               Fastify server (Node 22+)
     │   └── src/
     │       ├── index.ts          entry: config, system check, ffmpeg detection, start, graceful shutdown
-    │       ├── doctor.ts         `npm run doctor` / `npm run bench`: system check and encoder race without the server
-    │       ├── config.ts         flags and environment variables
+    │       ├── doctor.ts         `npm run doctor` / `npm run bench`: system check and the encoder and decoder races without the server
+    │       ├── config.ts         flags and environment variables, where model files are looked for
     │       ├── app.ts            app factory: loopback checks, error handler, static client, routes
-    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete), transcribe (WAV in, words out)
+    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete), transcribe (WAV in, words out), models (a client model file, found or fetched)
     │       ├── services/
-    │       │   ├── jobs.ts       JobManager: positioned writes, finish, process, cancel, cleanup
-    │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs(), progress parsing, runFfmpeg()
+    │       │   ├── jobs.ts       JobManager: positioned writes, finish, process (with the hardware decoder when the switch is on), cancel, cleanup
+    │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs() (-hwaccel included), the test clip, encoder and decoder self-tests and timings, progress parsing, runFfmpeg()
+    │       │   ├── models.ts     ModelStore: a client model's verified copy from the built client, public/models, the data folder or the studio, fetched from its publisher when nowhere
     │       │   ├── library.ts    ExportLibrary: finished exports in exports.json, read back with what the disk says now, deleted safely
 │       │   ├── transcribe.ts detectTranscription() (whisper-cli or openai-whisper on the PATH), TranscriptionManager (runs it, parses its progress and JSON)
 │       │   ├── studio.ts     detectStudio() (the Python environment and the models), StudioWorker (the long-lived worker process), StudioManager (jobs: uploads cut into clips, the deep clean as one recording, each voice from the cleaned audio)
 │       ├── py/studio.py      the studio worker: ClearerVoice's models over JSON lines (the deep clean, a voice by its face or by the profile, the band merge back to 48 kHz, the second-voice measure)
 │       │   ├── filesystem.ts listing, mkdir, free space, unique names, shortcuts, the "only our files" folder check
-    │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder self-tests, benchmarkEncoders()
+    │       │   ├── system.ts     detectSystem(): CPU/RAM/GPU/disk, hardware encoder and decoder self-tests, benchmarkEncoders(), benchmarkDecoders(), the remembered races (benchmark.json)
     │       │   ├── load.ts       LoadMonitor: live CPU and memory for /api/system/load, ffmpeg process sampling
     │       │   ├── convert.ts    PptxConverter: runs the renderer in a worker thread with a heap limit
     │       │   └── pptx/         PowerPoint → PDF: html (text runs → paragraphs), layout (line breaking), fonts, geometry, render (pdfkit), worker
@@ -984,7 +1004,7 @@ one-take/
     │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the classic noise filter), fbank.ts (Kaldi's log mel filterbank for the speaker model), speaker.ts (the voice check's arithmetic: cosine, mean vector, the bars, the windows), lips.ts (mouth opening from landmarks, lip activity over a span), identity.ts (the verdict table and its reasons), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert; the picture follows), clip-video.ts (a phrase's camera picture as pieces of encoded frames: slicing, joining, speed), overlay.ts (where the picture sits on the slide: corners, anywhere, size), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb), prefs (localStorage), the voice profile
-    │       ├── models/           fetch.ts: a model's bytes from /models, the cache storage or its publisher, checked
+    │       ├── models/           fetch.ts: a model's bytes from the server's /models (which fetches a missing one itself), the cache storage or its publisher, checked; the reasons when none had it
     │       ├── speaker/          voice-check.ts: the speaker model in its worker, fed each live phrase, compared with the profile
     │       ├── vision/           lips.ts: the camera into the lip worker, the samples kept for each phrase's span
     │       ├── workers/          speaker.worker.ts (onnxruntime-web, windows of a phrase), lips.worker.ts (MediaPipe Face Landmarker on the camera's frames)
@@ -1013,7 +1033,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `npm run dev`          | Builds `shared` once, then watches it, runs the server with `tsx watch` on 4317, and Vite on 5173 with `/api` proxied. |
 | `npm run build`        | Builds `shared`, `server` and `client` in order.                                                           |
-| `npm start`            | Runs the built server, which serves the built client.                                                      |
+| `npm start`            | Everything, then the server: installs the dependencies when `node_modules` is missing or behind the lockfile, builds when a source changed, fetches the models when any is missing, and runs the server (arguments after `--` go to it). `node packages/server/dist/index.js` is the server alone. |
 | `npm run typecheck`    | `tsc -b` across all four packages.                                                                         |
 | `npm run lint`         | ESLint. `npm run lint:fix` fixes what it can.                                                              |
 | `npm run format`       | Prettier. `npm run format:check` only checks.                                                              |
@@ -1023,7 +1043,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | `npm run check`        | Typecheck, lint, format check and unit tests. Run this before you commit.                                  |
 | `npm run doctor`       | System check and resource map for a one-hour 1080p lecture, without starting the server.                    |
 | `npm run bench`        | `doctor --bench`: races the H.264 encoders on this machine (`--height 2160` for 4K).                        |
-| `npm run models`       | Fetches the speaker model and the face model (29 MB) into `packages/client/public/models`, checking each against its SHA-256. Optional: a client without them fetches them itself on first use. |
+| `npm run models`       | Fetches the speaker model, the face model and the selfie segmenter (29 MB) into `packages/client/public/models`, checking each against its SHA-256; the server serves them from there, before or after the build. Optional when the machine is online at the first mic start: the server fetches a missing one itself into `~/.one-take/models`. |
 | `npm run studio`       | Makes the studio's Python environment under the server's data folder and fetches its models (about 1.7 GB of checkpoints plus PyTorch); run once, then restart the server. |
 | `npm run e2e:studio`   | Builds, then checks the studio and the clip versions in headless Chrome: the raw copy in step with the filtered one, the editor's switch, an export with the deep clean and the voice step, the skip. Where this machine has no studio it checks the greyed-out state. |
 
@@ -1134,9 +1154,13 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **A PowerPoint slide looks a little different.** Fonts the machine lacks are replaced by a stand-in with the same weight and style, which shifts line breaks. Pass the real fonts with `--fonts`. 3-D effects, soft shadows, embedded video, SmartArt animation and GIF or SVG pictures are approximated or skipped; the browser console lists what the renderer changed. For a pixel-exact result, export the deck as PDF.
 
-**The export runs on the CPU although this machine has a hardware encoder.** Open the export dialog and look under **This computer**: **Use the hardware encoder** must be ticked (it is, unless it was unticked once; the choice is remembered per browser), and the line under it lists the encoders found in the browser and in ffmpeg. On an Apple-silicon Mac that line may add that the CPU encoder measured faster on slides; that is information, not a decision. The *Smallest file* mode keeps ffmpeg on the software encoders by design.
+**"Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched."** The voice check's model is on neither the server nor in the browser's cache, and it could not be downloaded: the message says what was tried (the server not running, the server unable to reach GitHub, the publisher refusing the page). Run `npm run models` (or `npm start` again) while the machine is online, then reload the page; no rebuild is needed, the server serves the files straight from `packages/client/public/models`. The server's start-up line `Models` says where each model was found. (Before this release the only working path was `npm run models` run *before* `npm run build`, because the browser was refused the download by GitHub's CORS rules; the server now fetches it instead.)
 
-**Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Untick **Use the hardware encoder** or pick a smaller size.
+**The export runs on the CPU although this machine has a hardware encoder.** Open the export dialog and look under **This computer**: **Use the hardware encoder and decoder** must be ticked (it is, unless it was unticked once; the choice is remembered per browser), and the line under it lists the encoders and decoders found in the browser and in ffmpeg. On an Apple-silicon Mac that line may add that the CPU encoder measured faster on slides; that is information, not a decision. The *Smallest file* mode keeps ffmpeg on the software encoders by design.
+
+**The system check says the hardware decoder failed a test decode.** ffmpeg lists the method but could not set it up (no device, a missing driver, a virtual machine); the CPU decodes and nothing else changes. `npm run doctor` repeats the test.
+
+**Hardware encoder refused above 4K.** Many hardware encoders cap at 4096×2304. Untick **Use the hardware encoder and decoder** or pick a smaller size.
 
 **The deep clean and Only my voice are greyed out.** The server found no studio. Run `npm run studio` once (it needs `uv` or a Python 3.10 to 3.13, and fetches about 1.7 GB of models), restart the server, and reopen the dialog; the note under the switches says what was found. A phrase whose voice could not be kept (the studio says your voice was not found in it) stays as it was.
 
@@ -1154,7 +1178,7 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 ## Privacy
 
-Audio and the camera's picture never leave your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no request carries anything of yours anywhere. Speech is detected in the browser by plain arithmetic. The three models (the deep noise filter, the speaker model, the face model) run in the browser too; the first two parts come with the app and the other two are fetched once, from GitHub and from Google's model storage, checked and kept, unless `npm run models` has already put them in place. Your voice profile is 256 numbers in this browser's localStorage, and the verdicts are stored with the phrases. The studio's models (the deep clean, the separation and the extraction) run on the local server, in a Python environment `npm run studio` makes; their checkpoints come from Hugging Face once, through that command alone, and the audio and the mouth films they work on are files in the server's data folder that are deleted when the job is done. There is no analytics, no account, and no cloud.
+Audio and the camera's picture never leave your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no request carries anything of yours anywhere. Speech is detected in the browser by plain arithmetic. The three models (the deep noise filter, the speaker model, the face model) run in the browser too; the first comes with the app and the other two are fetched once, from GitHub and from Google's model storage, by `npm run models` or by the local server the first time the app asks for them, checked against their SHA-256 and kept on this machine. That download is the only request the app ever makes beyond your own computer, and it carries nothing of yours. Your voice profile is 256 numbers in this browser's localStorage, and the verdicts are stored with the phrases. The studio's models (the deep clean, the separation and the extraction) run on the local server, in a Python environment `npm run studio` makes; their checkpoints come from Hugging Face once, through that command alone, and the audio and the mouth films they work on are files in the server's data folder that are deleted when the job is done. There is no analytics, no account, and no cloud.
 
 ## License
 

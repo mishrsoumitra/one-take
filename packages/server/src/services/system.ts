@@ -27,7 +27,15 @@ import {
   type SystemProfile,
 } from '@one-take/shared';
 
-import { benchmarkEncoder, detectHwaccels, selfTestEncoder } from './ffmpeg.js';
+import {
+  benchmarkDecoder,
+  benchmarkEncoder,
+  detectHwaccels,
+  makeTestClip,
+  preferredHwaccels,
+  selfTestDecoder,
+  selfTestEncoder,
+} from './ffmpeg.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -282,6 +290,11 @@ export function listedHardwareEncoders(info: FfmpegInfo): string[] {
   return out;
 }
 
+/**
+ * Which hardware encoders and decoders really work: every listed one is tried on a third of a second
+ * of synthetic video (the decoders on an H.264 clip made for the purpose, since ffmpeg falls back to
+ * the CPU with only a warning when a method has no device behind it).
+ */
 export async function detectFfmpegAcceleration(
   info: FfmpegInfo,
   verify: boolean,
@@ -296,7 +309,39 @@ export async function detectFfmpegAcceleration(
   ]);
   const encoders = listed.filter((_, i) => results[i] === true);
   const brokenEncoders = listed.filter((_, i) => results[i] !== true);
-  return { encoders, brokenEncoders, hwaccels, benchmark: null, fastestEncoder: null };
+  const candidates = preferredHwaccels(hwaccels);
+  let decoders = candidates;
+  let brokenDecoders: string[] = [];
+  if (verify && candidates.length > 0) {
+    const clip = await makeTestClip(info.path, info.encoders, {
+      height: 144,
+      fps: 10,
+      seconds: 0.3,
+      timeoutMs,
+    });
+    // without an H.264 encoder there is nothing to test with: the list stands, ffmpeg falls back on its own
+    if (clip) {
+      try {
+        const ok = await Promise.all(
+          candidates.map((h) => selfTestDecoder(info.path, h, clip.path, timeoutMs)),
+        );
+        decoders = candidates.filter((_, i) => ok[i] === true);
+        brokenDecoders = candidates.filter((_, i) => ok[i] !== true);
+      } finally {
+        await fs.rm(clip.path, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+  return {
+    encoders,
+    brokenEncoders,
+    hwaccels,
+    decoders,
+    brokenDecoders,
+    benchmark: null,
+    fastestEncoder: null,
+    decodeBenchmark: null,
+  };
 }
 
 export interface EncoderBenchmark {
@@ -304,6 +349,131 @@ export interface EncoderBenchmark {
   results: Record<string, number>;
   /** The H.264 encoder that was fastest, or null when nothing could be measured. */
   fastestEncoder: string | null;
+}
+
+export interface DecoderBenchmark {
+  /** Frames per second for `software` and each verified hardware decoder; a failed one is left out. */
+  results: Record<string, number>;
+}
+
+/**
+ * Races the CPU decoder against each verified hardware decoder on the same slide-like clip the encoder
+ * race uses. The figures are information for the user: decoding follows the hardware switch whatever
+ * they say (see buildFfmpegArgs for why the hardware decoder is worth it next to a hardware encoder).
+ */
+export async function benchmarkDecoders(
+  ffmpeg: FfmpegInfo,
+  profile: Pick<SystemProfile, 'ffmpeg'>,
+  options: { height?: number; seconds?: number; log?: (message: string) => void } = {},
+): Promise<DecoderBenchmark> {
+  const results: Record<string, number> = {};
+  const clip = await makeTestClip(ffmpeg.path, ffmpeg.encoders, {
+    height: options.height ?? 1080,
+    seconds: options.seconds ?? 6,
+  });
+  if (!clip) return { results };
+  try {
+    for (const method of [null, ...(profile.ffmpeg?.decoders ?? [])]) {
+      const fps = await benchmarkDecoder(ffmpeg.path, clip, method);
+      const key = method ?? 'software';
+      if (fps !== null) results[key] = Math.round(fps);
+      options.log?.(`decode ${key}: ${fps !== null ? `${Math.round(fps)} fps` : 'failed'}`);
+    }
+  } finally {
+    await fs.rm(clip.path, { force: true }).catch(() => undefined);
+  }
+  return { results };
+}
+
+/** The two races' results, as kept in the data folder between starts. */
+export interface RememberedBenchmark {
+  /** The ffmpeg the figures are for; another binary or version runs the races again. */
+  ffmpeg: { path: string; version: string };
+  /** When they were measured. */
+  at: string;
+  encoders: Record<string, number>;
+  fastestEncoder: string | null;
+  decoders: Record<string, number>;
+}
+
+/** Figures older than this are measured again (a driver or a macOS update can change them). */
+export const BENCHMARK_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/** The remembered races for this ffmpeg, or null when there are none, they are for another one, or they are stale. */
+export async function readRememberedBenchmark(
+  file: string,
+  ffmpeg: FfmpegInfo,
+): Promise<RememberedBenchmark | null> {
+  const isFigures = (v: unknown): v is Record<string, number> =>
+    typeof v === 'object' && v !== null && Object.values(v).every((n) => typeof n === 'number');
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as {
+      ffmpeg?: { path?: unknown; version?: unknown };
+      at?: unknown;
+      encoders?: unknown;
+      fastestEncoder?: unknown;
+      decoders?: unknown;
+    };
+    if (
+      parsed.ffmpeg?.path !== ffmpeg.path ||
+      parsed.ffmpeg.version !== ffmpeg.version ||
+      typeof parsed.at !== 'string' ||
+      !isFigures(parsed.encoders) ||
+      !isFigures(parsed.decoders)
+    ) {
+      return null;
+    }
+    const age = Date.now() - Date.parse(parsed.at);
+    if (!Number.isFinite(age) || age < 0 || age > BENCHMARK_MAX_AGE_MS) return null;
+    return {
+      ffmpeg: { path: ffmpeg.path, version: ffmpeg.version },
+      at: parsed.at,
+      encoders: parsed.encoders,
+      fastestEncoder: typeof parsed.fastestEncoder === 'string' ? parsed.fastestEncoder : null,
+      decoders: parsed.decoders,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Writes the races' results whole and renames them into place. */
+export async function rememberBenchmark(file: string, data: RememberedBenchmark): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const partial = `${file}.${process.pid}.tmp`;
+  await fs.writeFile(partial, JSON.stringify(data, null, 2));
+  await fs.rename(partial, file);
+}
+
+/** Puts the races' results into the profile the browser is served. */
+export function applyBenchmark(
+  profile: SystemProfile,
+  data: Pick<RememberedBenchmark, 'encoders' | 'fastestEncoder' | 'decoders'>,
+): void {
+  if (!profile.ffmpeg) return;
+  profile.ffmpeg.benchmark = data.encoders;
+  profile.ffmpeg.fastestEncoder = data.fastestEncoder;
+  profile.ffmpeg.decodeBenchmark = data.decoders;
+}
+
+/** The races' figures in one line, or null when they have not run. */
+export function formatRaces(accel: FfmpegAcceleration): string | null {
+  const parts: string[] = [];
+  if (accel.benchmark && Object.keys(accel.benchmark).length > 0) {
+    parts.push(
+      `encode ${Object.entries(accel.benchmark)
+        .map(([e, fps]) => `${e} ${fps} fps`)
+        .join(', ')}`,
+    );
+  }
+  if (accel.decodeBenchmark && Object.keys(accel.decodeBenchmark).length > 0) {
+    parts.push(
+      `decode ${Object.entries(accel.decodeBenchmark)
+        .map(([d, fps]) => `${d} ${fps} fps`)
+        .join(', ')}`,
+    );
+  }
+  return parts.length ? `races at 1080p on slide-like video: ${parts.join('; ')}` : null;
 }
 
 /**
@@ -380,8 +550,23 @@ export async function detectSystem(options: DetectSystemOptions): Promise<System
 /* Report                                                              */
 /* ------------------------------------------------------------------ */
 
+export interface ReportOptions {
+  /**
+   * What is to become of the races when the profile holds no figures yet: the server runs them
+   * shortly after start-up (`pending`), was told not to (`off`), or this is the doctor, which runs
+   * them only with `--bench` (`doctor`).
+   */
+  races?: 'pending' | 'off' | 'doctor';
+  /** When the figures in the profile were measured, if they were read back from an earlier start. */
+  rememberedAt?: string | null;
+}
+
 /** The pre-flight report as lines for the console. */
-export function formatSystemReport(profile: SystemProfile, ffmpeg: FfmpegInfo | null): string[] {
+export function formatSystemReport(
+  profile: SystemProfile,
+  ffmpeg: FfmpegInfo | null,
+  options: ReportOptions = {},
+): string[] {
   const { cpu, memory, gpu, disk } = profile;
   const lines: string[] = [];
   const cores =
@@ -404,14 +589,26 @@ export function formatSystemReport(profile: SystemProfile, ffmpeg: FfmpegInfo | 
     lines.push(
       `         hardware encoders: ${f.encoders.length ? f.encoders.join(', ') : 'none'}${f.brokenEncoders.length ? ` (failed self-test: ${f.brokenEncoders.join(', ')})` : ''}`,
     );
+    const decoding = f.decoders.length
+      ? `${f.decoders.join(', ')} (decodes the upload whenever the hardware switch is on; a codec it cannot take falls back to the CPU)`
+      : f.brokenDecoders.length
+        ? `none: ${f.brokenDecoders.join(', ')} listed but failed a test decode, so the CPU decodes`
+        : `none listed by ffmpeg, so the CPU decodes${f.hwaccels.length ? ` (${f.hwaccels.join(', ')} are not video decoders)` : ''}`;
+    lines.push(`         hardware decoders: ${decoding}`);
+    const races = formatRaces(f);
+    const when = options.rememberedAt
+      ? ` (measured ${new Date(options.rememberedAt).toLocaleDateString()}, kept in the data folder for a week)`
+      : '';
     lines.push(
       `         ${
-        f.fastestEncoder
-          ? `fastest for slides at 1080p: ${f.fastestEncoder} (${Object.entries(f.benchmark ?? {})
-              .map(([e, fps]) => `${e} ${fps} fps`)
-              .join(', ')})`
-          : 'encoder benchmark: not run yet'
-      }; decoding in software; hwaccels listed: ${f.hwaccels.join(', ') || 'none'}`,
+        races
+          ? `${races}${when}`
+          : options.races === 'off'
+            ? 'races: off (--no-benchmark); encoding and decoding follow the hardware switch all the same'
+            : options.races === 'doctor'
+              ? 'races: not run (npm run bench runs them; the server runs them 3 s after it starts and keeps the figures)'
+              : 'races: start 3 s after the server is up (each encoder and decoder on six seconds of 1080p slide-like video, about a second apiece); the figures are printed when they are in and kept for a week'
+      }`,
     );
   } else {
     lines.push('ffmpeg   not found (HLS, DASH, compression and faststart MP4 are off)');

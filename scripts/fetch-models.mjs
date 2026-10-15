@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * Fetches the model files for the voice check and the lip check into packages/client/public/models,
- * checking each against its SHA-256. Files already there and intact are left alone.
+ * Fetches the model files for the voice check, the lip check and the camera cleanup into
+ * packages/client/public/models, checking each against its SHA-256. Files already there and intact
+ * are left alone. The server serves them from that folder directly (no rebuild needed), and a model
+ * that is not there when the app first asks is fetched by the server itself into ~/.one-take/models;
+ * this script is for doing it ahead of time, in one go, while the machine is online.
  *
  *   npm run models
  */
@@ -55,7 +58,9 @@ for (const model of Object.values(MODELS)) {
   }
 }
 if (failed) {
-  console.error('\nSome models could not be fetched. The app will try to fetch them itself on first use.');
+  console.error(
+    '\nSome models could not be fetched. Check the connection and run "npm run models" again; the server also fetches a missing model itself the first time the app asks for it.',
+  );
   process.exit(1);
 }
-console.log(`\nModels are in ${dir}`);
+console.log(`\nModels are in ${dir}; the server serves them from there (no rebuild needed).`);

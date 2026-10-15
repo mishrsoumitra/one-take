@@ -94,6 +94,8 @@ export class JobManager {
   private readonly encodeSlots: Semaphore;
   private readonly processLoad: ((pid: number) => Promise<ProcessLoad | null>) | null;
   private readonly library: ExportLibrary | null;
+  /** The verified hardware decoders, best first: the first one decodes uploads when the switch is on. */
+  private readonly decoders: string[];
 
   constructor(options: JobManagerOptions) {
     this.ffmpeg = options.ffmpeg;
@@ -102,6 +104,12 @@ export class JobManager {
     this.encodeSlots = new Semaphore(Math.max(1, options.system?.maxEncodeJobs ?? 1));
     this.processLoad = options.processLoad ?? null;
     this.library = options.library ?? null;
+    this.decoders = options.system?.ffmpeg?.decoders ?? [];
+  }
+
+  /** The hardware decoder a re-encode with the switch on uses, null when there is none. */
+  get hardwareDecoder(): string | null {
+    return this.decoders[0] ?? null;
   }
 
   /** How many re-encodes may run at the same time. */
@@ -319,9 +327,15 @@ export class JobManager {
           },
           internal.tempOutputPath,
           this.ffmpeg,
+          { hwaccel: this.hardwareDecoder },
         );
         job.command = formatCommand(this.ffmpeg.path, plan.args);
         internal.encoder = plan.videoEncoder;
+        if (plan.videoEncoder) {
+          this.log(
+            `job ${job.id}: ${plan.videoEncoder} encodes${plan.videoDecoder ? `, ${plan.videoDecoder} decodes` : ', the CPU decodes'}`,
+          );
+        }
         const reencode = spec.video.mode === 'encode';
         if (reencode && !this.encodeSlots.tryAcquire()) {
           job.progress = progressOf({

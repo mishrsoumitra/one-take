@@ -28,8 +28,10 @@ export interface Prefs {
   /** Compare each phrase's voice with the enrolled profile. */
   voiceCheck: boolean;
   /**
-   * Use the dedicated hardware video encoder (Apple's media engine, NVENC, Quick Sync) wherever this
-   * computer has one, in the browser and in ffmpeg. On until the user says no.
+   * Use the dedicated hardware video engine (Apple's media engine, NVENC, Quick Sync) wherever this
+   * computer has one: for encoding in the browser and in ffmpeg, and for ffmpeg's decoding of the
+   * upload (`-hwaccel`). On until the user says no. The camera clips are left to WebCodecs' own
+   * choice: forcing the hardware there softened the 360p picture for no gain.
    */
   hardwareEncoding: boolean;
   /** Record the camera along with the voice: the switch under the level meter. */

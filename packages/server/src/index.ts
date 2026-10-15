@@ -3,26 +3,52 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { type ServerCapabilities } from '@one-take/shared';
+import { MODELS, type ServerCapabilities } from '@one-take/shared';
 
 import { buildApp } from './app.js';
-import { loadConfig, SERVER_VERSION } from './config.js';
+import { loadConfig, modelCacheDir, SERVER_VERSION } from './config.js';
 import { PptxConverter, presentationSupport } from './services/convert.js';
 import { detectFfmpeg, detectFfprobe } from './services/ffmpeg.js';
 import { shortcutDirectories } from './services/filesystem.js';
 import { JobManager } from './services/jobs.js';
 import { ExportLibrary } from './services/library.js';
 import { LoadMonitor } from './services/load.js';
+import { ModelStore } from './services/models.js';
 import { detectStudio, StudioManager } from './services/studio.js';
 import {
+  applyBenchmark,
+  benchmarkDecoders,
   benchmarkEncoders,
   detectSystem,
+  formatRaces,
   formatSystemReport,
+  readRememberedBenchmark,
+  rememberBenchmark,
   withoutBrokenEncoders,
 } from './services/system.js';
 import { detectTranscription, TranscriptionManager } from './services/transcribe.js';
 
 const MIN_NODE_MAJOR = 22;
+
+/** The system-check line for the client's model files: which are here, and what happens about the rest. */
+async function describeModels(models: ModelStore): Promise<string> {
+  const where = await models.locations();
+  const here = where.filter((l) => l.path !== null);
+  const missing = where.filter((l) => l.path === null);
+  const folders = [...new Set(here.map((l) => path.dirname(l.path ?? '')))];
+  const parts: string[] = [];
+  if (here.length) {
+    parts.push(
+      `${here.length === where.length ? 'all' : here.map((l) => l.model.name).join(', ')} in ${folders.join(', ')}`,
+    );
+  }
+  if (missing.length) {
+    parts.push(
+      `${missing.map((l) => l.model.name).join(', ')} not here: fetched into ${models.cacheDir} when the app first asks (or run "npm run models")`,
+    );
+  }
+  return parts.join('; ');
+}
 
 async function main(): Promise<void> {
   const nodeMajor = Number(process.versions.node.split('.')[0]);
@@ -45,6 +71,11 @@ async function main(): Promise<void> {
     verify: config.selfTest,
   });
   const ffmpeg = ffmpegFound ? withoutBrokenEncoders(ffmpegFound, system) : null;
+  // The races' figures from an earlier start on the same ffmpeg, so the start-up line and the export
+  // dialog have them at once and the machine is not raced on every start.
+  const benchmarkFile = path.join(config.dataDir, 'benchmark.json');
+  const remembered = ffmpeg && config.benchmark ? await readRememberedBenchmark(benchmarkFile, ffmpeg) : null;
+  if (remembered) applyBenchmark(system, remembered);
   const [transcriptionInfo, studioInfo] = await Promise.all([
     detectTranscription({
       whisperPath: config.whisperPath,
@@ -110,6 +141,12 @@ async function main(): Promise<void> {
     memoryLimitMb: config.rendererMemoryMb ?? undefined,
     log: (m) => app.log.info(m),
   });
+  const models = new ModelStore({
+    catalogue: MODELS,
+    dirs: config.modelDirs,
+    cacheDir: modelCacheDir(config.dataDir),
+    log: (m) => app.log.info(m),
+  });
   const app = buildApp({
     config,
     jobs,
@@ -119,6 +156,7 @@ async function main(): Promise<void> {
     library,
     transcription,
     studio,
+    models,
   });
 
   const shutdown = async (signal: string) => {
@@ -133,12 +171,17 @@ async function main(): Promise<void> {
   const quiet = ['warn', 'error', 'fatal', 'silent'].includes(config.logLevel);
   if (!quiet) {
     console.info(`One Take ${SERVER_VERSION}: system check`);
-    for (const line of formatSystemReport(system, ffmpeg)) console.info(`  ${line}`);
+    const report = formatSystemReport(system, ffmpeg, {
+      races: config.benchmark ? 'pending' : 'off',
+      rememberedAt: remembered?.at ?? null,
+    });
+    for (const line of report) console.info(`  ${line}`);
     console.info(`  Renderer ${(converter.memoryLimit / 1024).toFixed(1)} GB heap for PowerPoint conversion`);
     console.info(
       `  Speech   ${transcriptionInfo ? transcriptionInfo.note : 'no whisper found: transcripts and subtitles are off (brew install openai-whisper, or whisper-cpp)'}`,
     );
     console.info(`  Studio   ${studioInfo ? studioInfo.note : 'switched off (--no-studio)'}`);
+    console.info(`  Models   ${await describeModels(models)}`);
     console.info('');
   }
 
@@ -161,26 +204,34 @@ async function main(): Promise<void> {
   app.log.info(`default output folder: ${config.defaultDirectory}`);
   app.log.info(`finished exports are listed in ${library.filePath}`);
 
-  // The encoder race runs a few seconds after the server answers, so start-up stays quick and the race
-  // rarely overlaps the browser's own encoder test on first load; the profile is updated in place and
-  // the next /api/capabilities call sees the winner.
-  if (ffmpeg && system.ffmpeg && config.benchmark) {
-    const race = () =>
-      void benchmarkEncoders(ffmpeg, system, { log: (m) => app.log.info(m) }).then((result) => {
-        if (!system.ffmpeg) return;
-        system.ffmpeg.benchmark = result.results;
-        system.ffmpeg.fastestEncoder = result.fastestEncoder;
-        app.log.info(
-          result.fastestEncoder
-            ? `fastest H.264 encoder for slides at 1080p: ${result.fastestEncoder} (${Object.entries(
-                result.results,
-              )
-                .map(([e, fps]) => `${e} ${fps} fps`)
-                .join(', ')})`
-            : 'encoder benchmark could not run',
-        );
-      });
-    setTimeout(race, 3000).unref();
+  // The races (each encoder, then the CPU against each hardware decoder) run a few seconds after the
+  // server answers, so start-up stays quick and they rarely overlap the browser's own encoder test on
+  // first load; the profile is updated in place, the next /api/capabilities call sees the figures, and
+  // they are kept in the data folder so the next start has them at once. They inform; the hardware
+  // switch decides.
+  if (ffmpeg && system.ffmpeg && config.benchmark && !remembered) {
+    const race = async () => {
+      const encoders = await benchmarkEncoders(ffmpeg, system, { log: (m) => app.log.info(m) });
+      const decoders = await benchmarkDecoders(ffmpeg, system, { log: (m) => app.log.info(m) });
+      if (!system.ffmpeg) return;
+      const data = {
+        ffmpeg: { path: ffmpeg.path, version: ffmpeg.version },
+        at: new Date().toISOString(),
+        encoders: encoders.results,
+        fastestEncoder: encoders.fastestEncoder,
+        decoders: decoders.results,
+      };
+      applyBenchmark(system, data);
+      const line = formatRaces(system.ffmpeg) ?? 'races: nothing could be measured';
+      app.log.info(line);
+      if (!quiet) console.info(`  ${line}; kept in ${benchmarkFile}`);
+      await rememberBenchmark(benchmarkFile, data).catch((error: unknown) =>
+        app.log.warn(
+          `the races' figures could not be kept: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    };
+    setTimeout(() => void race().catch((error: unknown) => app.log.warn(String(error))), 3000).unref();
   }
 }
 

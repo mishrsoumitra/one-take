@@ -35,10 +35,12 @@ import { SERVER_VERSION } from './config.js';
 import { defaultRendererMemoryMb, presentationSupport } from './services/convert.js';
 import { benchmarkEncoder, detectFfmpeg, type BenchmarkResult } from './services/ffmpeg.js';
 import {
+  benchmarkDecoders,
   benchmarkEncoders,
   detectSystem,
   formatSystemReport,
   withoutBrokenEncoders,
+  type DecoderBenchmark,
   type EncoderBenchmark,
 } from './services/system.js';
 
@@ -114,13 +116,20 @@ function referenceLines(
   return out;
 }
 
-/** The start-up race (verified hardware encoders against libx264 veryfast) plus a few for comparison. */
+/**
+ * The start-up races (verified hardware encoders against libx264 veryfast; the CPU decoder against
+ * each verified hardware decoder) plus a few encoders for comparison.
+ */
 async function bench(
   ffmpeg: FfmpegInfo,
   system: SystemProfile,
   height: number,
-): Promise<{ race: EncoderBenchmark; extra: BenchmarkResult[] }> {
+): Promise<{ race: EncoderBenchmark; decode: DecoderBenchmark; extra: BenchmarkResult[] }> {
   const race = await benchmarkEncoders(ffmpeg, system, {
+    height,
+    log: (m) => console.info(`  ${m}`),
+  });
+  const decode = await benchmarkDecoders(ffmpeg, system, {
     height,
     log: (m) => console.info(`  ${m}`),
   });
@@ -136,7 +145,7 @@ async function bench(
     console.info(`  benchmark ${label}: ${r ? `${Math.round(r.fps)} fps` : 'failed'}`);
     if (r) extra.push({ ...r, encoder: label });
   }
-  return { race, extra };
+  return { race, decode, extra };
 }
 
 async function main(): Promise<number> {
@@ -158,7 +167,7 @@ async function main(): Promise<number> {
   }
 
   console.info(`One Take ${SERVER_VERSION}: system check\n`);
-  for (const line of formatSystemReport(system, ffmpeg)) console.info(`  ${line}`);
+  for (const line of formatSystemReport(system, ffmpeg, { races: 'doctor' })) console.info(`  ${line}`);
   console.info(
     `  Renderer ${(defaultRendererMemoryMb() / 1024).toFixed(1)} GB heap for PowerPoint conversion`,
   );
@@ -241,20 +250,40 @@ async function main(): Promise<number> {
     } else {
       const height = Number(values.height ?? 1080);
       console.info(
-        `\n  Encoder race, ${height}p slide-like video, 6 s at 30 fps, start-up included (the server runs the same race after it starts):\n`,
+        `\n  Encoder and decoder races, ${height}p slide-like video, 6 s at 30 fps, start-up included (the server runs the same races after it starts):\n`,
       );
-      const { race } = await bench(ffmpeg, system, height);
+      const { race, decode } = await bench(ffmpeg, system, height);
       if (race.fastestEncoder) {
         const hardware = isHardwareEncoder(race.fastestEncoder);
         console.info(
           `\n  Fastest H.264 encoder here: ${race.fastestEncoder} at ${race.results[race.fastestEncoder] ?? 0} fps (${((race.results[race.fastestEncoder] ?? 0) / 15).toFixed(0)}× real time at 15 fps). ${
             hardware
               ? 'The hardware encoder is used by default.'
-              : 'The hardware encoder is still used by default, because it leaves the CPU free; untick "Use the hardware encoder" in the export dialog to use the faster software encoder instead.'
+              : 'The hardware encoder is still used by default, because it leaves the CPU free; untick "Use the hardware encoder and decoder" in the export dialog to use the faster software encoder instead.'
           }`,
         );
       } else {
         console.info('\n  No encoder could be measured.');
+      }
+      const software = decode.results.software ?? null;
+      const hwDecoder = system.ffmpeg?.decoders[0] ?? null;
+      const hwFps = hwDecoder ? (decode.results[hwDecoder] ?? null) : null;
+      if (hwDecoder && hwFps !== null && software !== null) {
+        const hwEncodeFps = Math.max(
+          0,
+          ...Object.entries(race.results)
+            .filter(([e]) => isHardwareEncoder(e))
+            .map(([, fps]) => fps),
+        );
+        console.info(
+          `  Decoding: ${hwDecoder} at ${hwFps} fps against the CPU's ${software} fps on this video on its own. ${
+            hwFps >= hwEncodeFps
+              ? `Next to the hardware encoder (${hwEncodeFps} fps) it adds no time and leaves the CPU idle, so it decodes whenever the switch is on.`
+              : `It is slower than the hardware encoder (${hwEncodeFps} fps), so a compression with the switch on waits on it; untick the switch for the quickest export.`
+          }`,
+        );
+      } else if (!hwDecoder) {
+        console.info('  Decoding: no working hardware decoder here; the CPU decodes.');
       }
     }
   }

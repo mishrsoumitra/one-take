@@ -13,6 +13,12 @@ export interface ServerConfig {
   defaultDirectory: string;
   /** Where the server keeps its own small files: the list of finished exports. */
   dataDir: string;
+  /**
+   * Folders a client model file (the voice check, the lip check) may be in, searched in order: the built
+   * client, `packages/client/public/models` (where `npm run models` puts them), the data folder's
+   * `models`, the studio's `models`. A model in none of them is fetched into the data folder.
+   */
+  modelDirs: string[];
   ffmpegPath: string | null;
   ffprobePath: string | null;
   /** Extra folders with fonts for drawing PowerPoint slides, searched before the system font folders. */
@@ -42,6 +48,24 @@ function builtClientDir(): string | null {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [path.resolve(here, '../../client/dist'), path.resolve(here, '../../../client/dist')];
   return candidates.find((dir) => existsSync(path.join(dir, 'index.html'))) ?? null;
+}
+
+/** `packages/client/public/models` next to this server, whether or not it exists yet. */
+function clientModelsDir(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, '../../client/public/models');
+}
+
+/** Where the server's own fetched models go. */
+export function modelCacheDir(dataDir: string): string {
+  return path.join(dataDir, 'models');
+}
+
+/** The folders a client model file is looked for in, in order (see `ServerConfig.modelDirs`). */
+export function modelSearchDirs(dataDir: string, staticDir: string | null): string[] {
+  const dirs = staticDir ? [path.join(path.resolve(staticDir), 'models')] : [];
+  dirs.push(clientModelsDir(), modelCacheDir(dataDir), path.join(dataDir, 'studio', 'models'));
+  return [...new Set(dirs)];
 }
 
 export function loadConfig(
@@ -93,12 +117,14 @@ export function loadConfig(
   const dataDir = path.resolve(
     values['data-dir'] ?? env.ONE_TAKE_DATA_DIR ?? path.join(os.homedir(), '.one-take'),
   );
+  const staticDir = values['no-static'] ? null : (values.static ?? env.ONE_TAKE_STATIC ?? builtClientDir());
   return {
     host: values.host ?? env.ONE_TAKE_HOST ?? '127.0.0.1',
     port,
-    staticDir: values['no-static'] ? null : (values.static ?? env.ONE_TAKE_STATIC ?? builtClientDir()),
+    staticDir,
     defaultDirectory,
     dataDir,
+    modelDirs: modelSearchDirs(dataDir, staticDir),
     ffmpegPath: values.ffmpeg ?? env.FFMPEG_PATH ?? null,
     ffprobePath: values.ffprobe ?? env.FFPROBE_PATH ?? null,
     fontDirectories,

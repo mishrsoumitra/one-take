@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,26 +10,46 @@ import { PptxConverter, presentationSupport, type ConverterService } from '../sr
 import { JobManager } from '../src/services/jobs.js';
 import { ExportLibrary } from '../src/services/library.js';
 import { LoadMonitor } from '../src/services/load.js';
+import { ModelStore } from '../src/services/models.js';
 import { StudioManager } from '../src/services/studio.js';
 import { TranscriptionManager } from '../src/services/transcribe.js';
 
 let tmp: string;
 let staticDir: string;
+let modelsDir: string;
+
+/** A model file of the tests' own, so the route is tried without the real 26 MB one. */
+const TINY_BYTES = Buffer.from('a tiny model, for the app test');
+const TINY = {
+  name: 'tiny.onnx',
+  url: 'https://models.example.test/tiny.onnx',
+  sha256: createHash('sha256').update(TINY_BYTES).digest('hex'),
+  bytes: TINY_BYTES.length,
+  what: 'the app test',
+};
 
 beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'one-take-app-'));
   staticDir = path.join(tmp, 'static');
+  modelsDir = path.join(tmp, 'models');
   await fs.mkdir(path.join(staticDir, 'assets'), { recursive: true });
   await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html><title>One Take</title>');
   await fs.writeFile(path.join(staticDir, 'assets', 'app.js'), 'console.log(1)');
+  await fs.mkdir(modelsDir, { recursive: true });
+  await fs.writeFile(path.join(modelsDir, TINY.name), TINY_BYTES);
 });
 
 afterAll(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
-function makeApp(allowRemote = false, converter: ConverterService = new PptxConverter({ inline: true })) {
+function makeApp(
+  allowRemote = false,
+  converter: ConverterService = new PptxConverter({ inline: true }),
+  options: { modelDirs?: string[] } = {},
+) {
   const library = new ExportLibrary(path.join(tmp, 'data', 'exports.json'));
+  const modelDirs = options.modelDirs ?? [modelsDir];
   return buildApp({
     config: {
       host: '127.0.0.1',
@@ -36,6 +57,7 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       staticDir,
       defaultDirectory: tmp,
       dataDir: path.join(tmp, 'data'),
+      modelDirs,
       ffmpegPath: null,
       ffprobePath: null,
       fontDirectories: [],
@@ -66,6 +88,12 @@ function makeApp(allowRemote = false, converter: ConverterService = new PptxConv
       },
       dataDir: path.join(tmp, 'data'),
       staticDir: null,
+    }),
+    models: new ModelStore({
+      catalogue: { tiny: TINY },
+      dirs: modelDirs,
+      cacheDir: path.join(tmp, 'data', 'models'),
+      fetch: () => Promise.reject(new TypeError('fetch failed (the test is offline)')),
     }),
     capabilities: () => ({
       name: 'one-take-server',
@@ -437,5 +465,47 @@ describe('app', () => {
     const api404 = await app.inject({ method: 'GET', url: '/api/nothing', headers: { host: 'localhost' } });
     expect(api404.statusCode).toBe(404);
     await app.close();
+  });
+
+  it('serves the model files ahead of the client, and says why one cannot be had', async () => {
+    const app = makeApp();
+    const model = await app.inject({
+      method: 'GET',
+      url: `/models/${TINY.name}`,
+      headers: { host: 'localhost' },
+    });
+    expect(model.statusCode).toBe(200);
+    expect(model.headers['content-type']).toBe('application/octet-stream');
+    expect(model.headers['content-length']).toBe(String(TINY.bytes));
+    expect(model.headers.etag).toBe(`"${TINY.sha256}"`);
+    expect(model.rawPayload).toEqual(TINY_BYTES);
+    const again = await app.inject({
+      method: 'GET',
+      url: `/models/${TINY.name}`,
+      headers: { host: 'localhost', 'if-none-match': `"${TINY.sha256}"` },
+    });
+    expect(again.statusCode).toBe(304);
+    // a name that is no model is a 404 like any other missing file, not the app's page
+    const other = await app.inject({
+      method: 'GET',
+      url: '/models/other.onnx',
+      headers: { host: 'localhost' },
+    });
+    expect(other.statusCode).toBe(404);
+    await app.close();
+
+    // nowhere on the machine and the publisher out of reach: the reason comes back for the client to show
+    const offline = makeApp(false, undefined, { modelDirs: [path.join(tmp, 'empty')] });
+    const res = await offline.inject({
+      method: 'GET',
+      url: `/models/${TINY.name}`,
+      headers: { host: 'localhost' },
+    });
+    expect(res.statusCode).toBe(502);
+    const body = res.json<{ error: { code: string; message: string } }>();
+    expect(body).toMatchObject({ error: { code: 'model_unavailable' } });
+    expect(body.error.message).toMatch(/could not reach models.example.test/);
+    expect(body.error.message).toMatch(/npm run models/);
+    await offline.close();
   });
 });

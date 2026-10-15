@@ -36,15 +36,30 @@ export interface FfmpegAcceleration {
   encoders: string[];
   /** Listed hardware encoders that failed the self-test (no device, missing driver). */
   brokenEncoders: string[];
-  /** Output of `ffmpeg -hwaccels`, for information. Decoding stays in software: a slide video decodes at thousands of frames per second there, and a GPU decoder was measured 20× slower on it. */
+  /** Output of `ffmpeg -hwaccels`: every hardware decoding method ffmpeg was built with, tested or not. */
   hwaccels: string[];
   /**
+   * Hardware decoders (`-hwaccel` methods such as `videotoolbox`, `cuda`, `qsv`) that decoded a short
+   * H.264 clip in the self-test, in the order the planner prefers them. The first one decodes the
+   * upload whenever the hardware switch is on; a codec it cannot take falls back to the CPU inside ffmpeg.
+   */
+  decoders: string[];
+  /** Listed methods that failed the self-test (no device behind them, or ffmpeg fell back to software). */
+  brokenDecoders: string[];
+  /**
    * Frames per second each candidate encoder managed on six seconds of slide-like 1080p video, measured
-   * shortly after start-up (`libx264` means its `veryfast` preset). Null until the benchmark has run.
+   * shortly after start-up (`libx264` means its `veryfast` preset), or remembered from an earlier start
+   * on the same ffmpeg. Null until the race has run.
    */
   benchmark: Record<string, number> | null;
-  /** The H.264 encoder that won the benchmark; null until it has run. Decides "hardware" in the fastest mode. */
+  /** The H.264 encoder that won the race; null until it has run. Information for the user, never a decision. */
   fastestEncoder: string | null;
+  /**
+   * Frames per second the CPU (`software`) and each working hardware decoder managed on the same clip.
+   * On slide video the CPU is far quicker on its own (unchanged blocks cost it nothing), but next to a
+   * hardware encoder the hardware decoder adds no time and leaves the CPU idle. Null until the race has run.
+   */
+  decodeBenchmark: Record<string, number> | null;
 }
 
 export const PERFORMANCE_TIERS = ['gpu', 'cpu-fast', 'cpu', 'constrained'] as const;
@@ -128,6 +143,11 @@ export function systemNotes(profile: Omit<SystemProfile, 'notes' | 'detectedAt'>
         `ffmpeg lists ${ffmpeg.brokenEncoders.join(', ')} but ${ffmpeg.brokenEncoders.length === 1 ? 'it' : 'they'} failed a test encode; ${ffmpeg.brokenEncoders.length === 1 ? 'it is' : 'they are'} not offered.`,
       );
     }
+    if (ffmpeg.brokenDecoders.length > 0) {
+      notes.push(
+        `ffmpeg lists ${ffmpeg.brokenDecoders.join(', ')} for hardware decoding but ${ffmpeg.brokenDecoders.length === 1 ? 'it' : 'they'} failed a test decode; the CPU decodes.`,
+      );
+    }
   }
   if (gpu.name === null) notes.push('GPU not identified; hardware encoders are still used when they work.');
   if (disk.freeBytes !== null && disk.freeBytes < 10 * GB) {
@@ -156,8 +176,10 @@ export function describeSystem(profile: SystemProfile): string {
       ? `hardware encoders ${ffmpeg.encoders.join(', ')}`
       : 'software encoders only'
     : 'no ffmpeg';
+  const decText =
+    ffmpeg && ffmpeg.decoders.length > 0 ? `, hardware decoding ${ffmpeg.decoders.join(', ')}` : '';
   const fastest = ffmpeg?.fastestEncoder
     ? `; fastest for slides at 1080p: ${ffmpeg.fastestEncoder}${ffmpeg.benchmark?.[ffmpeg.fastestEncoder] ? ` (${Math.round(ffmpeg.benchmark[ffmpeg.fastestEncoder] ?? 0)} fps)` : ''}`
     : '';
-  return `${cpu.model}, ${coreText}, ${formatGb(memory.totalBytes)} RAM, ${gpuText}; ${encText}${fastest}`;
+  return `${cpu.model}, ${coreText}, ${formatGb(memory.totalBytes)} RAM, ${gpuText}; ${encText}${decText}${fastest}`;
 }

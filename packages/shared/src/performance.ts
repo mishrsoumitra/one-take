@@ -4,10 +4,11 @@
  * anything runs and the choices are unit-tested.
  *
  * Two things are decided:
- * - the **hardware switch**: whether the dedicated video encoder (Apple's media engine through
- *   VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the work wherever one exists, in the
- *   browser through WebCodecs and on the server through ffmpeg. It is on by default and stays on until
- *   the user turns it off; a machine without one simply encodes on the CPU;
+ * - the **hardware switch**: whether the dedicated video engine (Apple's media engine through
+ *   VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the work wherever one exists: encoding
+ *   in the browser through WebCodecs and on the server through ffmpeg, and ffmpeg's decoding of the
+ *   upload it re-encodes (`-hwaccel`). It is on by default and stays on until the user turns it off;
+ *   a machine without one simply uses the CPU;
  * - the **mode**: how hard to push for speed against file size, which picks the ffmpeg preset, the
  *   `stillimage` tune and the browser's latency mode.
  */

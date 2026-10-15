@@ -1,15 +1,22 @@
+import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 
 import { type FfmpegInfo } from '@one-take/shared';
 import { describe, expect, it } from 'vitest';
 
 import { detectFfmpeg, parseHwaccels } from '../src/services/ffmpeg.js';
 import {
+  applyBenchmark,
+  BENCHMARK_MAX_AGE_MS,
+  benchmarkDecoders,
   benchmarkEncoders,
   detectFfmpegAcceleration,
   detectSystem,
   formatSystemReport,
   freeDisk,
+  readRememberedBenchmark,
+  rememberBenchmark,
   listedHardwareEncoders,
   parseLspci,
   parseMeminfo,
@@ -118,8 +125,11 @@ describe('hardware encoders', () => {
         ...profile.ffmpeg!,
         encoders: ['h264_nvenc'],
         brokenEncoders: ['hevc_nvenc', 'h264_videotoolbox'],
+        decoders: [],
+        brokenDecoders: [],
         benchmark: null,
         fastestEncoder: null,
+        decodeBenchmark: null,
       },
     };
     expect(withoutBrokenEncoders(info, broken).encoders).toEqual(['libx264', 'h264_nvenc', 'aac']);
@@ -170,9 +180,87 @@ describe('detectSystem', () => {
   });
 });
 
+describe('remembered races', () => {
+  const ffmpegInfo: FfmpegInfo = { path: '/usr/bin/ffmpeg', version: '9.0', encoders: [], muxers: [] };
+
+  it('keeps the figures for the same ffmpeg for a week and forgets them otherwise', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'one-take-bench-'));
+    const file = path.join(dir, 'benchmark.json');
+    expect(await readRememberedBenchmark(file, ffmpegInfo)).toBeNull();
+    const data = {
+      ffmpeg: { path: ffmpegInfo.path, version: ffmpegInfo.version },
+      at: new Date().toISOString(),
+      encoders: { libx264: 910, h264_videotoolbox: 400 },
+      fastestEncoder: 'libx264',
+      decoders: { software: 2000, videotoolbox: 300 },
+    };
+    await rememberBenchmark(file, data);
+    expect(await readRememberedBenchmark(file, ffmpegInfo)).toEqual(data);
+    expect(await fs.readdir(dir)).toEqual(['benchmark.json']);
+    // another ffmpeg: measured again
+    expect(await readRememberedBenchmark(file, { ...ffmpegInfo, version: '9.1' })).toBeNull();
+    // stale: measured again
+    await rememberBenchmark(file, {
+      ...data,
+      at: new Date(Date.now() - BENCHMARK_MAX_AGE_MS - 1000).toISOString(),
+    });
+    expect(await readRememberedBenchmark(file, ffmpegInfo)).toBeNull();
+    // damaged: measured again
+    await fs.writeFile(file, '{not json');
+    expect(await readRememberedBenchmark(file, ffmpegInfo)).toBeNull();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('puts the figures into the profile and the report', async () => {
+    const profile = await detectSystem({
+      ffmpeg: info,
+      outputDirectory: os.tmpdir(),
+      verify: false,
+      platform: 'linux',
+      exec: () => Promise.resolve(null),
+    });
+    expect(profile.ffmpeg?.decodeBenchmark).toBeNull();
+    const pending = formatSystemReport(profile, info, { races: 'pending' }).join('\n');
+    expect(pending).toMatch(/races: start 3 s after the server is up/);
+    expect(pending).not.toMatch(/not run yet/);
+    expect(formatSystemReport(profile, info, { races: 'off' }).join('\n')).toMatch(/--no-benchmark/);
+    applyBenchmark(profile, {
+      encoders: { libx264: 910, h264_nvenc: 400 },
+      fastestEncoder: 'libx264',
+      decoders: { software: 2000, cuda: 300 },
+    });
+    expect(profile.ffmpeg?.benchmark).toEqual({ libx264: 910, h264_nvenc: 400 });
+    expect(profile.ffmpeg?.decodeBenchmark).toEqual({ software: 2000, cuda: 300 });
+    const report = formatSystemReport(profile, info, { rememberedAt: new Date().toISOString() }).join('\n');
+    expect(report).toMatch(
+      /encode libx264 910 fps, h264_nvenc 400 fps; decode software 2000 fps, cuda 300 fps/,
+    );
+    expect(report).toMatch(/kept in the data folder for a week/);
+    expect(report).toMatch(/hardware decoders: /);
+  });
+});
+
 const ffmpeg = await detectFfmpeg(process.env.FFMPEG_PATH ?? null);
 
 describe.skipIf(ffmpeg === null)('with the real ffmpeg', () => {
+  it('self-tests the hardware decoders it lists and races them against the CPU', async () => {
+    if (!ffmpeg) return;
+    const accel = await detectFfmpegAcceleration(ffmpeg, true, 20_000);
+    expect(accel.decodeBenchmark).toBeNull();
+    for (const d of accel.decoders) expect(accel.hwaccels).toContain(d);
+    expect(accel.decoders.some((d) => accel.brokenDecoders.includes(d))).toBe(false);
+    if (process.platform === 'darwin' && accel.hwaccels.includes('videotoolbox')) {
+      expect(accel.decoders).toContain('videotoolbox');
+    }
+    const result = await benchmarkDecoders(ffmpeg, { ffmpeg: accel }, { height: 360, seconds: 2 });
+    if (!ffmpeg.encoders.some((e) => e.startsWith('h264_') || e === 'libx264' || e === 'libopenh264')) {
+      expect(result.results).toEqual({});
+      return;
+    }
+    expect(result.results.software).toBeGreaterThan(0);
+    for (const d of accel.decoders) expect(result.results[d]).toBeGreaterThan(0);
+  }, 90_000);
+
   it('self-tests the hardware encoders it lists', async () => {
     if (!ffmpeg) return;
     const accel = await detectFfmpegAcceleration(ffmpeg, true, 20_000);

@@ -287,6 +287,66 @@ describe('buildFfmpegArgs', () => {
     const plan = buildFfmpegArgs(encode, input, '/out/l.mp4', info);
     expect(plan.args).not.toContain('-hwaccel');
     expect(plan.args).toContain('h264_videotoolbox');
+    expect(plan.videoDecoder).toBeNull();
+  });
+
+  it('decodes on the hardware when the switch is on and a verified method is given', () => {
+    const encode = spec({
+      video: {
+        mode: 'encode',
+        codec: 'h264',
+        crf: 23,
+        preset: 'veryfast',
+        tune: null,
+        fps: null,
+        height: null,
+        maxBitrateKbps: null,
+        keyFrameIntervalSec: 4,
+        hardware: true,
+      },
+    });
+    const plan = buildFfmpegArgs(encode, input, '/out/l.mp4', info, { hwaccel: 'videotoolbox' });
+    expect(plan.videoDecoder).toBe('videotoolbox');
+    // before the input, so it applies to the decode
+    expect(plan.args.indexOf('-hwaccel')).toBeLessThan(plan.args.indexOf('-i'));
+    expect(plan.args[plan.args.indexOf('-hwaccel') + 1]).toBe('videotoolbox');
+    expect(plan.args).toContain('h264_videotoolbox');
+
+    // the switch off: the CPU decodes and encodes
+    const cpu = buildFfmpegArgs(
+      spec({ video: { ...encode.video, hardware: false } as typeof encode.video }),
+      input,
+      '/out/l.mp4',
+      info,
+      { hwaccel: 'videotoolbox' },
+    );
+    expect(cpu.args).not.toContain('-hwaccel');
+    expect(cpu.videoDecoder).toBeNull();
+    expect(cpu.args).toContain('libx264');
+
+    // a stream copy decodes nothing
+    const copy = buildFfmpegArgs(spec({}), input, '/out/l.mp4', info, { hwaccel: 'videotoolbox' });
+    expect(copy.args).not.toContain('-hwaccel');
+    expect(copy.videoDecoder).toBeNull();
+
+    // an adaptive ladder decodes the one input once, on the hardware
+    const ladder = buildFfmpegArgs(
+      spec({
+        container: 'hls',
+        video: encode.video,
+        audio: { mode: 'encode', codec: 'aac', bitrateKbps: 128 },
+        ladder: [
+          { name: '1080p', height: 1080, videoBitrateKbps: 4000, audioBitrateKbps: 128 },
+          { name: '720p', height: 720, videoBitrateKbps: 2000, audioBitrateKbps: 128 },
+        ],
+      }),
+      input,
+      '/out/l',
+      info,
+      { hwaccel: 'videotoolbox' },
+    );
+    expect(ladder.args.filter((a) => a === '-hwaccel')).toHaveLength(1);
+    expect(ladder.videoDecoder).toBe('videotoolbox');
   });
 
   it('throws when the encoder is missing', () => {

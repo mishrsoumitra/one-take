@@ -3,7 +3,10 @@
  * processing spec, and running it with progress reporting.
  */
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -105,6 +108,150 @@ export async function detectHwaccels(ffmpegPath: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * The `-hwaccel` methods that decode video on a dedicated engine, in the order the planner prefers
+ * them: Apple's media engine, NVIDIA, Intel Quick Sync, the two Windows ones, VAAPI on Linux. The rest
+ * of what `-hwaccels` can list (opencl, vulkan, drm) are not decoders a lecture upload would use.
+ */
+export const HWACCEL_ORDER = ['videotoolbox', 'cuda', 'qsv', 'd3d11va', 'dxva2', 'vaapi'] as const;
+
+/** The listed methods worth trying, in planner order. */
+export function preferredHwaccels(listed: string[]): string[] {
+  return HWACCEL_ORDER.filter((h) => listed.includes(h));
+}
+
+/** H.264 encoders that can make a test clip, quickest to start first. */
+const CLIP_ENCODERS = [
+  'libx264',
+  'h264_videotoolbox',
+  'h264_nvenc',
+  'h264_qsv',
+  'h264_vaapi',
+  'h264_amf',
+  'libopenh264',
+];
+
+export interface TestClip {
+  path: string;
+  frames: number;
+}
+
+/**
+ * Writes `seconds` of synthetic slide-like 16:9 H.264 video at `height` (one new picture a second,
+ * repeated to `fps`, the same picture the encoder race uses) to a temporary file, for the decoder
+ * self-test and the decoder race. Null when ffmpeg has no H.264 encoder to make it with. The caller
+ * removes the file.
+ */
+export async function makeTestClip(
+  ffmpegPath: string,
+  encoders: string[],
+  options: { height?: number; fps?: number; seconds?: number; timeoutMs?: number } = {},
+): Promise<TestClip | null> {
+  const encoder = CLIP_ENCODERS.find((e) => encoders.includes(e));
+  if (!encoder) return null;
+  const height = options.height ?? 1080;
+  const width = Math.round((height * 16) / 9 / 2) * 2;
+  const fps = options.fps ?? 30;
+  const seconds = options.seconds ?? 6;
+  const file = path.join(os.tmpdir(), `one-take-clip-${process.pid}-${randomUUID()}.mp4`);
+  const args = [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    `testsrc2=size=${width}x${height}:rate=1`,
+    '-t',
+    String(seconds),
+    '-vf',
+    `fps=${fps}`,
+    '-pix_fmt',
+    'yuv420p',
+    '-c:v',
+    encoder,
+    '-g',
+    String(fps * 4),
+  ];
+  if (encoder === 'libx264') args.push('-preset', 'ultrafast');
+  args.push(file);
+  try {
+    await execFileAsync(ffmpegPath, args, { timeout: options.timeoutMs ?? 120_000, windowsHide: true });
+  } catch {
+    await fs.rm(file, { force: true }).catch(() => undefined);
+    return null;
+  }
+  return { path: file, frames: Math.round(fps * seconds) };
+}
+
+/**
+ * What ffmpeg prints, at warning level, when a `-hwaccel` could not be set up and it decoded on the
+ * CPU instead (exit code 0 all the same): a method compiled in with no device behind it, or one that
+ * cannot take the codec. For the planner that is as good as broken.
+ */
+const HWACCEL_FALLBACK =
+  /Failed setup for format|hwaccel initiali[sz]ation returned error|Device creation failed|Failed to create .*device/i;
+
+/**
+ * Decodes the test clip with `-hwaccel method` and says whether the hardware really did it, rather
+ * than ffmpeg falling back to the CPU with a warning.
+ */
+export async function selfTestDecoder(
+  ffmpegPath: string,
+  hwaccel: string,
+  clip: string,
+  timeoutMs = 8000,
+): Promise<boolean> {
+  try {
+    const { stderr } = await execFileAsync(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'warning',
+        '-nostdin',
+        '-hwaccel',
+        hwaccel,
+        '-i',
+        clip,
+        '-f',
+        'null',
+        '-',
+      ],
+      { timeout: timeoutMs, windowsHide: true },
+    );
+    return !HWACCEL_FALLBACK.test(stderr);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Times a decode of the test clip on the CPU (`hwaccel` null) or with `-hwaccel`, start-up included:
+ * frames per second of wall time, or null when it fails or the hardware fell back to the CPU.
+ */
+export async function benchmarkDecoder(
+  ffmpegPath: string,
+  clip: TestClip,
+  hwaccel: string | null,
+  timeoutMs = 120_000,
+): Promise<number | null> {
+  const args = ['-hide_banner', '-loglevel', 'warning', '-nostdin'];
+  if (hwaccel) args.push('-hwaccel', hwaccel);
+  args.push('-i', clip.path, '-f', 'null', '-');
+  const started = performance.now();
+  try {
+    const { stderr } = await execFileAsync(ffmpegPath, args, { timeout: timeoutMs, windowsHide: true });
+    if (hwaccel && HWACCEL_FALLBACK.test(stderr)) return null;
+  } catch {
+    return null;
+  }
+  const wall = (performance.now() - started) / 1000;
+  return wall > 0 ? clip.frames / wall : 0;
 }
 
 /**
@@ -225,6 +372,16 @@ export interface FfmpegPlan {
   mainFile: string;
   /** The video encoder that does the work (`libx264`, `h264_videotoolbox`), null for a stream copy. */
   videoEncoder: string | null;
+  /** The `-hwaccel` method decoding the upload (`videotoolbox`, `cuda`), null when the CPU decodes or nothing is decoded. */
+  videoDecoder: string | null;
+}
+
+export interface BuildOptions {
+  /**
+   * A verified hardware decoding method to put before the input when the spec re-encodes with the
+   * hardware switch on. A codec the method cannot take makes ffmpeg fall back to the CPU by itself.
+   */
+  hwaccel?: string | null;
 }
 
 export function pickVideoEncoder(
@@ -439,32 +596,29 @@ function containerArgs(spec: ProcessingSpec, outputName: string): { args: string
  * Builds the ffmpeg command for a processing spec. `outputPath` is the temporary file (single-file
  * containers) or the temporary folder (HLS/DASH) the result is written into.
  *
- * Decoding is left to the CPU on purpose: the upload is slide video, whose P-frames are nearly empty,
- * and software decoding ran at thousands of frames per second where `-hwaccel videotoolbox` managed a
- * few hundred (measured on an M2 Max: 1.5 s against 33 s for eleven minutes of 1080p).
+ * Decoding follows the hardware switch like encoding does: with the switch on and a verified
+ * `-hwaccel` method at hand (`options.hwaccel`), the dedicated engine decodes the upload. On slide
+ * video the CPU decoder is quicker on its own (unchanged blocks cost it next to nothing: measured on an
+ * M2 Max, six seconds of 1080p decoded in 0.09 s against 0.59 s on VideoToolbox), but next to a
+ * hardware encoder the hardware decoder adds no wall time (0.70 s against 0.67 s for decode plus
+ * encode) and cuts the CPU time by two thirds, which is what the switch is for. A stream copy decodes
+ * nothing, so it gets no `-hwaccel`.
  */
 export function buildFfmpegArgs(
   spec: ProcessingSpec,
   input: FfmpegInputInfo,
   outputPath: string,
   info: FfmpegInfo,
+  options: BuildOptions = {},
 ): FfmpegPlan {
   const isDir = spec.container === 'hls' || spec.container === 'dash';
   const cwd = isDir ? outputPath : path.dirname(outputPath);
   const outputName = isDir ? '' : path.basename(outputPath);
-  const args = [
-    '-hide_banner',
-    '-nostdin',
-    '-y',
-    '-loglevel',
-    'error',
-    '-nostats',
-    '-progress',
-    'pipe:1',
-    '-i',
-    input.path,
-  ];
+  const args = ['-hide_banner', '-nostdin', '-y', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1'];
   const v = spec.video;
+  const videoDecoder = v.mode === 'encode' && v.hardware && options.hwaccel ? options.hwaccel : null;
+  if (videoDecoder) args.push('-hwaccel', videoDecoder);
+  args.push('-i', input.path);
   const outFps = v.mode === 'encode' && v.fps !== null ? v.fps : input.fps;
   const gop = Math.max(
     1,
@@ -531,6 +685,7 @@ export function buildFfmpegArgs(
     cwd,
     mainFile: isDir ? path.join(outputPath, container.mainFile) : outputPath,
     videoEncoder,
+    videoDecoder,
   };
 }
 

@@ -61,6 +61,8 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       '/api': { target: `http://127.0.0.1:${API_PORT}`, changeOrigin: false },
+      // the server finds the model files (public/models included) and fetches a missing one itself
+      '/models': { target: `http://127.0.0.1:${API_PORT}`, changeOrigin: false },
     },
   },
   build: {

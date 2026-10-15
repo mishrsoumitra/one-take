@@ -2,9 +2,12 @@
  * The model files One Take fetches once for the voice check, the lip check and the camera cleanup. The noise model
  * (DeepFilterNet3) ships inside its npm package and needs no download.
  *
- * `npm run models` puts them in `packages/client/public/models`, where the client finds them first;
- * a client without them fetches each from `url` on first use and keeps it in the browser's cache
- * storage, so a machine is only ever asked once. Either way the bytes are checked against `sha256`.
+ * The client asks its server for each at `/models/<name>`. The server serves a copy from wherever
+ * one is (`npm run models` puts them in `packages/client/public/models`; the built client, the data
+ * folder and the studio's folder are looked in too) and fetches a missing one from `url` itself into
+ * `~/.one-take/models`, which matters because a browser page is refused the speaker model: GitHub's
+ * release downloads carry no CORS header. A client with no server falls back to the browser's cache
+ * storage and then to `url` directly. Either way the bytes are checked against `sha256`.
  */
 export interface ModelFile {
   /** The file name, under `/models` on the client. */

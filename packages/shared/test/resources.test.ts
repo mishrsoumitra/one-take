@@ -35,8 +35,11 @@ function profile(overrides: Partial<SystemProfile> = {}): SystemProfile {
       encoders: ['h264_videotoolbox', 'hevc_videotoolbox'],
       brokenEncoders: [],
       hwaccels: ['videotoolbox'],
+      decoders: ['videotoolbox'],
+      brokenDecoders: [],
       benchmark: null,
       fastestEncoder: null,
+      decodeBenchmark: null,
     },
     tier: 'gpu',
     maxEncodeJobs: 2,
@@ -211,8 +214,11 @@ describe('system helpers', () => {
         encoders: [],
         brokenEncoders: ['h264_nvenc'],
         hwaccels: [],
+        decoders: [],
+        brokenDecoders: [],
         benchmark: null,
         fastestEncoder: null,
+        decodeBenchmark: null,
       },
     });
     expect(systemNotes(broken).join('\n')).toMatch(/h264_nvenc but it failed/);

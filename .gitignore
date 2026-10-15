@@ -12,3 +12,4 @@ coverage/
 /packages/e2e/stress-out/
 /packages/e2e/fixtures/
 .claude/worktrees/
+/packages/client/public/models/

@@ -48,6 +48,14 @@ export interface PhraseResult {
   loudMs: number;
   /** The phrase continues one that was split by a slide change. */
   continuation: boolean;
+  /** Where the phrase ends in the stream: the index of the block after its last one (see {@link VoiceActivityDetector.seen}). */
+  endBlock: number;
+}
+
+/** What a slide change splits off: the blocks spoken so far and where they end in the stream. */
+export interface SplitResult {
+  blocks: Float32Array[];
+  endBlock: number;
 }
 
 export interface VadCallbacks {
@@ -68,6 +76,7 @@ export class VoiceActivityDetector {
   private curLoud = 0;
   private continuation = false;
   private _speaking = false;
+  private _seen = 0;
   /** When false (muted, preview, export, talk key up), blocks only feed the level and noise readings. */
   gate = true;
 
@@ -96,6 +105,15 @@ export class VoiceActivityDetector {
     return this.quietRun * this.blockMs;
   }
 
+  /**
+   * Blocks taken so far, gate open or closed: the stream's clock. A phrase's `endBlock` counts in
+   * these, so `endBlock - blocks.length` is where it started, and a block's time is its index times
+   * `blockMs` from the stream's start.
+   */
+  get seen(): number {
+    return this._seen;
+  }
+
   /** How long a phrase stays open with nothing heard: the hangover, but never under {@link LIVE_HOLD_MS}. */
   get holdMs(): number {
     return Math.max(this.settings.hangoverMs, LIVE_HOLD_MS);
@@ -117,6 +135,7 @@ export class VoiceActivityDetector {
     this.curLoud = 0;
     this.continuation = false;
     this._speaking = false;
+    this._seen = 0;
   }
 
   /**
@@ -124,6 +143,7 @@ export class VoiceActivityDetector {
    * alone.
    */
   process(block: Float32Array, speech: number | null = null): void {
+    this._seen++;
     const db = rmsDb(block);
     this.level = db;
     this.voice = speech;
@@ -169,7 +189,7 @@ export class VoiceActivityDetector {
    * had already gone quiet (the phrase simply ends), or nothing was said since the previous split (the
    * phrase carries on, still joined to the part before).
    */
-  split(): Float32Array[] | null {
+  split(): SplitResult | null {
     if (!this._speaking) return null;
     if (this.quietRun * this.blockMs > this.settings.tailMs) {
       this.end();
@@ -186,7 +206,7 @@ export class VoiceActivityDetector {
     this.cur = [];
     this.continuation = true;
     this.curLoud = 0;
-    return blocks;
+    return { blocks, endBlock: this._seen };
   }
 
   /** Drop the phrase being spoken right now (the speaker flubbed it). */
@@ -218,7 +238,7 @@ export class VoiceActivityDetector {
     // A continuation is kept however short it is, as long as something was actually said on the new
     // slide; a slide change right at the end of a sentence must not leave a silent stub behind.
     const keep = loudMs >= this.settings.minSpeechMs || (continuation && loudMs > 0);
-    this.callbacks.onSpeechEnd(keep ? { blocks, loudMs, continuation } : null);
+    this.callbacks.onSpeechEnd(keep ? { blocks, loudMs, continuation, endBlock: this._seen - drop } : null);
   }
 
   private start(): void {

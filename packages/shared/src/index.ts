@@ -9,3 +9,4 @@ export * from './presets.js';
 export * from './resources.js';
 export * from './system.js';
 export * from './util.js';
+export * from './models.js';

@@ -82,6 +82,11 @@ export default defineConfig(
     ...tseslint.disableTypeChecked,
   },
   {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node } },
+    rules: { 'no-console': 'off' },
+  },
+  {
     files: ['**/test/**/*.ts', '**/*.test.ts'],
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
   },

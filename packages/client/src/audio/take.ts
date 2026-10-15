@@ -9,7 +9,7 @@ import { cutPhrase } from '../core/silence.js';
 import { MicScorer, type VoiceScorer } from '../core/speech.js';
 import { type VadSettings } from '../core/vad.js';
 
-import { type MicCapture } from './mic.js';
+import { type MicCapture, type NoiseFilterMode } from './mic.js';
 
 export interface Take {
   /** Each phrase as 16-bit mono PCM, in the order spoken, with the silence between them removed. */
@@ -21,7 +21,7 @@ export interface TakeStartOptions {
   settings: VadSettings;
   mode: CaptureMode;
   deviceId?: string;
-  noiseFilter: boolean;
+  noiseFilter: NoiseFilterMode;
 }
 
 export class TakeRecorder {

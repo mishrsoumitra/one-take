@@ -17,8 +17,16 @@ export interface LayoutRefs {
   stepExport: HTMLElement;
   /** Which microphone to open; in the bottom bar, after the sliders. */
   micSelect: HTMLSelectElement;
-  /** Run the noise filter over the microphone; next to the picker. */
-  noiseFilter: HTMLInputElement;
+  /** Which noise filter runs over the microphone (deep, classic, off); next to the picker. */
+  noiseFilter: HTMLSelectElement;
+  /** Which camera the lip check watches, or none. */
+  camSelect: HTMLSelectElement;
+  /** Enrolls the speaker's voice for the voice check, or does it again. */
+  btnVoice: HTMLButtonElement;
+  /** The camera's picture in a corner of the stage while the lip check watches it, with a note under it. */
+  selfBox: HTMLElement;
+  selfView: HTMLVideoElement;
+  selfNote: HTMLElement;
   btnArm: HTMLButtonElement;
   /** Auto / press to speak, as a two-button segmented control. */
   modeSwitch: HTMLElement;
@@ -353,6 +361,13 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('close', 16),
   );
   const coach = h('div', { id: 'coach', hidden: true }, coachText, btnCoachClose);
+  const selfView = h('video', {
+    id: 'selfView',
+    attrs: { autoplay: '', playsinline: '', 'aria-label': 'Your camera' },
+  });
+  selfView.muted = true;
+  const selfNote = h('span', { class: 'note' }, 'Camera');
+  const selfBox = h('div', { id: 'self', hidden: true }, selfView, selfNote);
   const stage = h(
     'main',
     { id: 'stage' },
@@ -366,6 +381,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     previewFlag,
     restore,
     coach,
+    selfBox,
     loading,
   );
 
@@ -384,7 +400,38 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     { id: 'micSel', title: 'Which microphone to use' },
     h('option', { value: '' }, 'Default microphone'),
   );
-  const noiseFilter = h('input', { type: 'checkbox', id: 'noiseFilter', checked: true });
+  const noiseFilter = h(
+    'select',
+    {
+      id: 'noiseFilter',
+      title:
+        'What is taken out from under your voice before anything is recorded. Deep: DeepFilterNet3, a trained model that removes fans, typing, traffic, music and other people talking. Classic: a plain filter for steady noise (a fan, a hum, hiss). Off: only what Chrome does on its own.',
+    },
+    h('option', { value: 'deep' }, 'Deep (DeepFilterNet3)'),
+    h('option', { value: 'classic' }, 'Classic'),
+    h('option', { value: 'off' }, 'Off'),
+  );
+  const camSelect = h(
+    'select',
+    {
+      id: 'camSel',
+      title:
+        'The lip check: the camera watches your mouth while you record, so a phrase someone else says while your lips are still is marked as another voice. The picture stays on this computer. The choice is remembered.',
+    },
+    h('option', { value: '' }, 'Default camera'),
+    h('option', { value: 'off' }, 'Camera off'),
+  );
+  const btnVoice = h(
+    'button',
+    {
+      id: 'btnVoice',
+      class: 'ghost',
+      title:
+        'The voice check: read for twenty seconds once, and every phrase is compared with how your voice sounds. A phrase in another voice is marked in the timeline.',
+    },
+    icon('mic', 16),
+    label('Learn my voice'),
+  );
   const micSettings = h(
     'span',
     { id: 'micSettings' },
@@ -394,16 +441,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       h('span', { class: 'label' }, 'Microphone'),
       micSelect,
     ),
-    h(
-      'label',
-      {
-        class: 'check',
-        title:
-          "Takes the room's steady noise (a fan, an air conditioner, a hum, hiss) out from under your voice before anything is recorded, on top of what Chrome already filters. Untick it if your voice comes out thin.",
-      },
-      noiseFilter,
-      h('span', { class: 'label' }, 'Noise filter'),
-    ),
+    h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Noise filter'), noiseFilter),
+    h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Camera'), camSelect),
+    btnVoice,
   );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
@@ -489,6 +529,11 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stepExport,
     micSelect,
     noiseFilter,
+    camSelect,
+    btnVoice,
+    selfBox,
+    selfView,
+    selfNote,
     btnArm,
     modeSwitch,
     btnModeAuto,

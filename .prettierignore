@@ -6,3 +6,4 @@ packages/e2e/out
 packages/e2e/fixtures
 *.md
 .claude/
+packages/client/test/fixtures/*.json

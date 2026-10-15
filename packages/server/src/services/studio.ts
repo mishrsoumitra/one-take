@@ -12,7 +12,7 @@
  * fetches as soon as the job says it is there, so a job stopped half way still hands over what it
  * finished.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
@@ -142,13 +142,17 @@ export async function detectStudio(config: StudioConfig, log?: (m: string) => vo
           .filter((l) => l.startsWith('{'))
           .pop();
         if (!line) {
-          reject(new Error(`the studio check exited with ${code ?? 'no code'}: ${err.trim().split('\n').pop() ?? ''}`));
+          reject(
+            new Error(
+              `the studio check exited with ${code ?? 'no code'}: ${err.trim().split('\n').pop() ?? ''}`,
+            ),
+          );
           return;
         }
         try {
           resolve(JSON.parse(line) as CheckOutput);
         } catch (e) {
-          reject(e as Error);
+          reject(e instanceof Error ? e : new Error(String(e)));
         }
       });
     });
@@ -173,7 +177,8 @@ export async function detectStudio(config: StudioConfig, log?: (m: string) => vo
   const imports = output.clearvoice === true && device !== null;
   const missing = (Object.keys(STUDIO_MODELS) as StudioModelKind[]).filter((k) => !have[k]);
   let note: string;
-  if (!imports) note = `The studio environment is incomplete (${output.error ?? 'clearvoice does not import'}); ${setup}.`;
+  if (!imports)
+    note = `The studio environment is incomplete (${output.error ?? 'clearvoice does not import'}); ${setup}.`;
   else if (missing.length > 0)
     note = `The studio runs on the ${deviceLabel(device)}, but ${missing.map((k) => STUDIO_MODELS[k].name).join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing; ${setup}.`;
   else
@@ -227,8 +232,8 @@ interface Pending {
  * `idleMs` without one, so the models (a gigabyte or two of memory) are not held for ever.
  */
 export class StudioWorker {
-  private child: ChildProcess | null = null;
-  private starting: Promise<ChildProcess> | null = null;
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private starting: Promise<ChildProcessWithoutNullStreams> | null = null;
   private pending: Pending | null = null;
   private queue: Promise<void> = Promise.resolve();
   private idleTimer: NodeJS.Timeout | null = null;
@@ -247,7 +252,11 @@ export class StudioWorker {
   }
 
   /** Sends one request and waits for its answer; requests run one after another. */
-  request(op: string, body: Record<string, unknown>, onProgress: (fraction: number) => void): Promise<WorkerLine> {
+  request(
+    op: string,
+    body: Record<string, unknown>,
+    onProgress: (fraction: number) => void,
+  ): Promise<WorkerLine> {
     const run = this.queue.then(() => this.send(op, body, onProgress));
     this.queue = run.then(
       () => undefined,
@@ -256,14 +265,18 @@ export class StudioWorker {
     return run;
   }
 
-  private async send(op: string, body: Record<string, unknown>, onProgress: (fraction: number) => void): Promise<WorkerLine> {
+  private async send(
+    op: string,
+    body: Record<string, unknown>,
+    onProgress: (fraction: number) => void,
+  ): Promise<WorkerLine> {
     const child = await this.start();
     this.clearIdle();
     const id = `r${++this.serial}`;
     const answer = new Promise<WorkerLine>((resolve, reject) => {
       this.pending = { id, onProgress, resolve, reject };
     });
-    child.stdin?.write(`${JSON.stringify({ op, id, ...body })}\n`);
+    child.stdin.write(`${JSON.stringify({ op, id, ...body })}\n`);
     try {
       return await answer;
     } finally {
@@ -272,7 +285,7 @@ export class StudioWorker {
     }
   }
 
-  private start(): Promise<ChildProcess> {
+  private start(): Promise<ChildProcessWithoutNullStreams> {
     if (this.child) return Promise.resolve(this.child);
     this.starting ??= this.spawn().finally(() => {
       this.starting = null;
@@ -280,18 +293,19 @@ export class StudioWorker {
     return this.starting;
   }
 
-  private spawn(): Promise<ChildProcess> {
+  private spawn(): Promise<ChildProcessWithoutNullStreams> {
     return new Promise((resolve, reject) => {
       const args = ['-I', WORKER_SCRIPT, '--models', this.models];
       if (this.speaker) args.push('--speaker', this.speaker);
       this.log(`studio worker: ${this.python} ${args.join(' ')}`);
       const child = spawn(this.python, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       let ready = false;
-      child.stderr?.setEncoding('utf8');
-      child.stderr?.on('data', (d: string) => {
-        for (const line of d.split('\n')) if (line.trim() && !/warn/i.test(line)) this.log(`studio: ${line.trim()}`);
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (d: string) => {
+        for (const line of d.split('\n'))
+          if (line.trim() && !/warn/i.test(line)) this.log(`studio: ${line.trim()}`);
       });
-      const lines = readline.createInterface({ input: child.stdout as Readable });
+      const lines = readline.createInterface({ input: child.stdout });
       lines.on('line', (line) => {
         let message: WorkerLine;
         try {
@@ -320,10 +334,11 @@ export class StudioWorker {
         this.gone(error);
       });
       child.on('close', (code) => {
-        if (!ready) reject(new Error(`the studio worker exited with ${code ?? 'no code'} before it was ready`));
+        if (!ready)
+          reject(new Error(`the studio worker exited with ${code ?? 'no code'} before it was ready`));
         this.gone(new Error(`the studio worker stopped (exit ${code ?? 'unknown'})`));
       });
-      child.stdin?.write(`${JSON.stringify({ op: 'hello' })}\n`);
+      child.stdin.write(`${JSON.stringify({ op: 'hello' })}\n`);
     });
   }
 
@@ -342,7 +357,7 @@ export class StudioWorker {
     this.clearIdle();
     if (!child) return;
     try {
-      child.stdin?.write(`${JSON.stringify({ op: 'quit' })}\n`);
+      child.stdin.write(`${JSON.stringify({ op: 'quit' })}\n`);
     } catch {
       /* already gone */
     }
@@ -393,6 +408,11 @@ interface InternalJob {
   clips: ClipFiles[];
   listeners: Set<(event: StudioEvent) => void>;
   cancelled: boolean;
+}
+
+/** Whether the job was cancelled meanwhile (through a call, so a check before an await does not narrow it away). */
+function isCancelled(internal: InternalJob): boolean {
+  return internal.cancelled;
 }
 
 export interface StudioManagerOptions {
@@ -449,7 +469,11 @@ export class StudioManager {
     if (!this.info.python) {
       throw new ApiError(400, 'studio_unavailable', this.info.note);
     }
-    const speaker = await findSpeakerModel({ dataDir: this.dataDir, pythonPath: null, staticDir: this.staticDir });
+    const speaker = await findSpeakerModel({
+      dataDir: this.dataDir,
+      pythonPath: null,
+      staticDir: this.staticDir,
+    });
     this.worker = new StudioWorker(this.info.python, modelsDir(this.dataDir), speaker, this.log);
     return this.worker;
   }
@@ -483,7 +507,14 @@ export class StudioManager {
       durationSec: request.clips.reduce((s, c) => s + seconds(c), 0),
       denoiseSec: request.clips.filter((c) => c.denoise).reduce((s, c) => s + seconds(c), 0),
       voiceSec: request.clips.filter((c) => c.voice !== 'off').reduce((s, c) => s + seconds(c), 0),
-      progress: { stage: 'upload', clip: null, done: 0, total: request.clips.length, fraction: null, message: 'Waiting for the audio…' },
+      progress: {
+        stage: 'upload',
+        clip: null,
+        done: 0,
+        total: request.clips.length,
+        fraction: null,
+        message: 'Waiting for the audio…',
+      },
       clips: request.clips.map((c) => ({
         id: c.id,
         deep: false,
@@ -519,7 +550,8 @@ export class StudioManager {
   /** The audio of every clip, in order, as 16-bit PCM. */
   async writeAudio(id: string, body: Readable): Promise<StudioJob> {
     const internal = this.internal(id);
-    if (internal.job.state !== 'uploading') throw ApiError.conflict('studio_started', 'The job has already started');
+    if (internal.job.state !== 'uploading')
+      throw ApiError.conflict('studio_started', 'The job has already started');
     await pipeline(body, createWriteStream(internal.audioPath));
     internal.audioBytes = (await fs.stat(internal.audioPath)).size;
     return internal.job;
@@ -528,7 +560,8 @@ export class StudioManager {
   /** The mouth crops of every clip that has them, in order. */
   async writeFaces(id: string, body: Readable): Promise<StudioJob> {
     const internal = this.internal(id);
-    if (internal.job.state !== 'uploading') throw ApiError.conflict('studio_started', 'The job has already started');
+    if (internal.job.state !== 'uploading')
+      throw ApiError.conflict('studio_started', 'The job has already started');
     await pipeline(body, createWriteStream(internal.facesPath));
     internal.faceBytes = (await fs.stat(internal.facesPath)).size;
     return internal.job;
@@ -565,7 +598,8 @@ export class StudioManager {
     const clip = internal.clips.find((c) => c.request.id === clipId);
     const result = internal.job.clips.find((c) => c.id === clipId);
     if (!clip || !result) throw ApiError.notFound(`No clip ${clipId} in this job`);
-    if (!result[kind]) throw ApiError.conflict('studio_not_ready', `The ${kind} result of clip ${clipId} is not there yet`);
+    if (!result[kind])
+      throw ApiError.conflict('studio_not_ready', `The ${kind} result of clip ${clipId} is not there yet`);
     return clip[kind];
   }
 
@@ -619,20 +653,27 @@ export class StudioManager {
 
   private async run(internal: InternalJob): Promise<void> {
     const { job } = internal;
-    if (internal.cancelled) return;
+    if (isCancelled(internal)) return;
     job.state = 'running';
     this.touch(internal);
     try {
       const worker = await this.ensureWorker();
       await this.denoiseAll(internal, worker);
       await this.voiceEach(internal, worker);
-      if (internal.cancelled) return;
+      if (isCancelled(internal)) return;
       job.state = 'done';
-      job.progress = { stage: 'done', clip: null, done: job.clips.length, total: job.clips.length, fraction: 1, message: 'Done' };
+      job.progress = {
+        stage: 'done',
+        clip: null,
+        done: job.clips.length,
+        total: job.clips.length,
+        fraction: 1,
+        message: 'Done',
+      };
       this.touch(internal);
       this.log(`studio job ${job.id} done`);
     } catch (error) {
-      if (internal.cancelled) return;
+      if (isCancelled(internal)) return;
       job.state = 'failed';
       job.error = errorMessage(error);
       job.progress = { ...job.progress, message: `Failed: ${job.error}` };
@@ -651,10 +692,17 @@ export class StudioManager {
     const rates = [...new Set(wanted.map((c) => c.request.rate))];
     const total = wanted.reduce((s, c) => s + c.request.samples / c.request.rate, 0);
     let doneSec = 0;
-    job.progress = { stage: 'denoise', clip: null, done: 0, total: wanted.length, fraction: 0, message: 'Deep clean: listening to the whole recording…' };
+    job.progress = {
+      stage: 'denoise',
+      clip: null,
+      done: 0,
+      total: wanted.length,
+      fraction: 0,
+      message: 'Deep clean: listening to the whole recording…',
+    };
     this.touch(internal);
     for (const rate of rates) {
-      if (internal.cancelled) return;
+      if (isCancelled(internal)) return;
       const group = wanted.filter((c) => c.request.rate === rate);
       const joined = path.join(internal.dir, `denoise-in-${rate}.pcm`);
       const out = path.join(internal.dir, `denoise-out-${rate}.pcm`);
@@ -688,7 +736,11 @@ export class StudioManager {
       await fs.rm(joined, { force: true });
       await fs.rm(out, { force: true });
       doneSec += groupSec;
-      job.progress = { ...job.progress, done: job.clips.filter((c) => c.deep).length, fraction: total > 0 ? doneSec / total : 1 };
+      job.progress = {
+        ...job.progress,
+        done: job.clips.filter((c) => c.deep).length,
+        fraction: total > 0 ? doneSec / total : 1,
+      };
       this.touch(internal);
     }
   }
@@ -702,7 +754,7 @@ export class StudioManager {
     let doneSec = 0;
     let done = 0;
     for (const clip of wanted) {
-      if (internal.cancelled) return;
+      if (isCancelled(internal)) return;
       const result = job.clips[clip.index];
       if (!result) continue;
       const seconds = clip.request.samples / clip.request.rate;
@@ -730,7 +782,10 @@ export class StudioManager {
             measure,
           },
           (fraction) => {
-            job.progress = { ...job.progress, fraction: total > 0 ? (doneSec + fraction * seconds) / total : fraction };
+            job.progress = {
+              ...job.progress,
+              fraction: total > 0 ? (doneSec + fraction * seconds) / total : fraction,
+            };
             this.touch(internal);
           },
         );
@@ -743,7 +798,7 @@ export class StudioManager {
         result.otherRunSec = typeof line.otherRunSec === 'number' ? line.otherRunSec : null;
         result.voice = !measure && typeof line.samples === 'number';
       } catch (error) {
-        if (internal.cancelled) return;
+        if (isCancelled(internal)) return;
         // one clip failing (a face file the model cannot read, say) does not sink the rest
         result.error = errorMessage(error);
         this.log(`studio job ${job.id}: clip ${clip.request.id} failed: ${result.error}`);
@@ -769,7 +824,8 @@ export class StudioManager {
 
   private internal(id: string): InternalJob {
     const internal = this.jobs.get(id);
-    if (!internal) throw new ApiError(404, 'studio_not_found', 'Unknown studio job. The server may have restarted.');
+    if (!internal)
+      throw new ApiError(404, 'studio_not_found', 'Unknown studio job. The server may have restarted.');
     return internal;
   }
 
@@ -795,7 +851,12 @@ function asMethod(value: unknown): StudioMethod | null {
 }
 
 /** Copies `bytes` from `offset` of an open file into a new file. */
-async function copyRange(handle: fs.FileHandle, offset: number, bytes: number, target: string): Promise<void> {
+async function copyRange(
+  handle: fs.FileHandle,
+  offset: number,
+  bytes: number,
+  target: string,
+): Promise<void> {
   const out = await fs.open(target, 'w');
   try {
     const chunk = Buffer.alloc(Math.min(bytes, 4 * 1024 * 1024));

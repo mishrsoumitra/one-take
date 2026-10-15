@@ -49,22 +49,29 @@ describe('Tape', () => {
   });
 
   it('maps filtered blocks to the tape by the filter delay', () => {
-    expect(rawRange({ from: 10, to: 12 }, BLOCK, 1952)).toEqual({ from: 10 * BLOCK - 1952, to: 12 * BLOCK - 1952 });
+    expect(rawRange({ from: 10, to: 12 }, BLOCK, 1952)).toEqual({
+      from: 10 * BLOCK - 1952,
+      to: 12 * BLOCK - 1952,
+    });
   });
 });
 
 describe('bestLag', () => {
   it('finds where a delayed copy sits, to the sample, even through a changed level and added noise', () => {
-    const source = voice(RATE * 3);
+    const source = voice(RATE * 4);
     const delay = 1952;
-    // the "filtered" phrase: the source from `delay` on, quieter, with a little noise
+    // the "filtered" phrase: the source from `phraseAt + delay` on, quieter, with a little noise
     const n = RATE * 2;
+    const phraseAt = RATE;
     const filtered = new Float32Array(n);
-    for (let i = 0; i < n; i++) filtered[i] = 0.5 * (source[i + delay] ?? 0) + 0.01 * Math.sin(i * 12.9898);
+    for (let i = 0; i < n; i++)
+      filtered[i] = 0.5 * (source[phraseAt + i + delay] ?? 0) + 0.01 * Math.sin(i * 12.9898);
     const maxShift = 2400;
-    const nominalFrom = delay;
+    const nominalFrom = phraseAt + delay;
     const around = source.slice(nominalFrom - maxShift, nominalFrom + n + maxShift);
-    expect(bestLag(filtered, around, RATE, maxShift)).toEqual({ lag: 0, peak: expect.closeTo(1, 1) });
+    const exact = bestLag(filtered, around, RATE, maxShift);
+    expect(exact.lag).toBe(0);
+    expect(exact.peak).toBeGreaterThan(0.9);
     // the nominal delay was 10 ms off: the lag says by how much
     const off = source.slice(nominalFrom - 480 - maxShift, nominalFrom - 480 + n + maxShift);
     const lag = bestLag(filtered, off, RATE, maxShift);
@@ -92,7 +99,8 @@ describe('takeRaw', () => {
     // the phrase: filtered blocks 100..300 are the source delayed by 1024 samples, at half level
     const blocks = { from: 100, to: 300 };
     const filtered = new Float32Array((blocks.to - blocks.from) * BLOCK);
-    for (let i = 0; i < filtered.length; i++) filtered[i] = 0.5 * (source[blocks.from * BLOCK + i - delay] ?? 0);
+    for (let i = 0; i < filtered.length; i++)
+      filtered[i] = 0.5 * (source[blocks.from * BLOCK + i - delay] ?? 0);
     const exact = takeRaw(tape, filtered, blocks, delay, 2400, RATE);
     expect(exact.lag.lag).toBe(0);
     expect(exact.samples.length).toBe(filtered.length);

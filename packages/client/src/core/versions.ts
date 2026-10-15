@@ -87,15 +87,19 @@ export function describeVersion(seg: Segment, voicing: Voicing): string {
 export function mapAudio(seg: Segment, fn: (pcm: Int16Array) => Int16Array | null): Segment | null {
   const pcm = fn(seg.pcm);
   if (pcm === null) return null;
-  const next: Segment = { ...seg, pcm };
-  for (const field of AUDIO_FIELDS) {
-    if (field === 'pcm') continue;
-    const audio = seg[field];
-    if (!audio) continue;
+  const { raw: _raw, deep: _deep, voice: _voice, ...rest } = seg;
+  const next: Segment = { ...rest, pcm };
+  const map = (audio: Int16Array | undefined): Int16Array | undefined => {
+    if (!audio) return undefined;
     const mapped = fn(audio);
-    if (mapped === null || mapped.length !== pcm.length) delete next[field];
-    else next[field] = mapped;
-  }
+    return mapped !== null && mapped.length === pcm.length ? mapped : undefined;
+  };
+  const raw = map(seg.raw);
+  if (raw) next.raw = raw;
+  const deep = map(seg.deep);
+  if (deep) next.deep = deep;
+  const voice = map(seg.voice);
+  if (voice) next.voice = voice;
   return next;
 }
 

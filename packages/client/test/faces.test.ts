@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { faceBox, faceCropRect, faceGrid, framesFile, framesFromFile } from '../src/core/faces.js';
+import {
+  cutFaces,
+  faceBox,
+  faceCropRect,
+  faceGrid,
+  faceTrack,
+  framesFile,
+  framesFromFile,
+  joinFaces,
+  sliceFaces,
+} from '../src/core/faces.js';
 
 describe('the mouth crop', () => {
   it('boxes the face from its landmarks in pixels', () => {
@@ -40,7 +50,11 @@ describe('faceGrid', () => {
   });
 
   it('gives up when the face was there for less than half the phrase, or not at all', () => {
-    const few = [{ t: 500, crop: 'a' }, { t: 540, crop: 'b' }, { t: 580, crop: null }];
+    const few = [
+      { t: 500, crop: 'a' },
+      { t: 540, crop: 'b' },
+      { t: 580, crop: null },
+    ];
     expect(faceGrid(few, 500, 1000)).toBeNull();
     expect(faceGrid([{ t: 10, crop: null }], 0, 400)).toBeNull();
     expect(faceGrid([], 0, 400)).toBeNull();
@@ -60,5 +74,25 @@ describe('the frames file', () => {
     const back = framesFromFile(file);
     expect(back.map((f) => Array.from(f))).toEqual([[1, 2, 3], [9]]);
     expect(framesFromFile(file.subarray(0, 6))).toEqual([]);
+  });
+});
+
+describe('the film follows the cuts', () => {
+  const frames = Array.from({ length: 10 }, (_, k) => Uint8Array.from([k]));
+  const track = faceTrack(frames);
+  const ids = (t: { data: Uint8Array } | null | undefined) =>
+    t ? framesFromFile(t.data).map((f) => f[0]) : null;
+
+  it('keeps a stretch, cuts one out, and joins two films', () => {
+    expect(track.frames).toBe(10);
+    // 0.1 s is frame 2.5, rounded to 3; 0.3 s is frame 7.5, rounded to 8
+    expect(ids(sliceFaces(track, 0.1, 0.3))).toEqual([3, 4, 5, 6, 7]);
+    expect(ids(cutFaces(track, 0.1, 0.3))).toEqual([0, 1, 2, 8, 9]);
+    expect(sliceFaces(track, 0.2, 0.2)).toBeNull();
+    expect(cutFaces(track, 0.2, 0.2)).toBe(track);
+    expect(
+      ids(joinFaces(sliceFaces(track, 0, 0.08) ?? undefined, sliceFaces(track, 0.32, 0.4) ?? undefined)),
+    ).toEqual([0, 1, 8, 9]);
+    expect(joinFaces(track, undefined)).toBeUndefined();
   });
 });

@@ -13,13 +13,13 @@ import { shortcutDirectories } from './services/filesystem.js';
 import { JobManager } from './services/jobs.js';
 import { ExportLibrary } from './services/library.js';
 import { LoadMonitor } from './services/load.js';
+import { detectStudio, StudioManager } from './services/studio.js';
 import {
   benchmarkEncoders,
   detectSystem,
   formatSystemReport,
   withoutBrokenEncoders,
 } from './services/system.js';
-import { detectStudio, StudioManager } from './services/studio.js';
 import { detectTranscription, TranscriptionManager } from './services/transcribe.js';
 
 const MIN_NODE_MAJOR = 22;
@@ -52,7 +52,11 @@ async function main(): Promise<void> {
       dataDir: config.dataDir,
     }),
     config.studio
-      ? detectStudio({ dataDir: config.dataDir, pythonPath: config.studioPython, staticDir: config.staticDir })
+      ? detectStudio({
+          dataDir: config.dataDir,
+          pythonPath: config.studioPython,
+          staticDir: config.staticDir,
+        })
       : Promise.resolve(null),
   ]);
 

@@ -43,9 +43,13 @@ export function registerStudioRoutes(app: FastifyInstance, deps: AppDependencies
 
   app.get<IdParams>('/api/studio/:id', (request) => studio.get(request.params.id));
 
-  app.put<IdParams>('/api/studio/:id/audio', (request) => studio.writeAudio(request.params.id, body(request)));
+  app.put<IdParams>('/api/studio/:id/audio', (request) =>
+    studio.writeAudio(request.params.id, body(request)),
+  );
 
-  app.put<IdParams>('/api/studio/:id/faces', (request) => studio.writeFaces(request.params.id, body(request)));
+  app.put<IdParams>('/api/studio/:id/faces', (request) =>
+    studio.writeFaces(request.params.id, body(request)),
+  );
 
   app.post<IdParams>('/api/studio/:id/start', (request) => studio.start(request.params.id));
 

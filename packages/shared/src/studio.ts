@@ -99,12 +99,18 @@ export const StudioClipSchema = z.object({
   id: z.string().min(1).max(100),
   rate: z.int().min(8000).max(192_000),
   /** Samples of 16-bit mono PCM sent for this clip. */
-  samples: z.int().min(1).max(48_000 * 3600 * 4),
+  samples: z
+    .int()
+    .min(1)
+    .max(48_000 * 3600 * 4),
   /** Run the deep clean on it. */
   denoise: z.boolean(),
   voice: StudioVoiceSchema,
   /** Bytes of mouth crops sent for it (JPEG frames, each after its little-endian uint32 length). */
-  faceBytes: z.int().min(0).max(512 * 1024 * 1024),
+  faceBytes: z
+    .int()
+    .min(0)
+    .max(512 * 1024 * 1024),
 });
 export type StudioClipRequest = z.infer<typeof StudioClipSchema>;
 
@@ -188,7 +194,9 @@ export const OVERLAP_MIN_LEVEL_DB = -24;
 export const OVERLAP_MIN_RUN_SEC = 1;
 
 /** Whether a clip's measure says two people talk at once in it. */
-export function twoVoices(result: Pick<StudioClipResult, 'otherShare' | 'otherLevelDb' | 'otherRunSec'>): boolean {
+export function twoVoices(
+  result: Pick<StudioClipResult, 'otherShare' | 'otherLevelDb' | 'otherRunSec'>,
+): boolean {
   return (
     result.otherShare !== null &&
     result.otherLevelDb !== null &&

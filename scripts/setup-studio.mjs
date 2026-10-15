@@ -26,11 +26,14 @@ import { MODELS, STUDIO_MODELS, STUDIO_PACKAGES } from '@one-take/shared';
 const { values } = parseArgs({
   options: { python: { type: 'string' }, 'models-only': { type: 'boolean' }, 'data-dir': { type: 'string' } },
 });
-const dataDir = path.resolve(values['data-dir'] ?? process.env.ONE_TAKE_DATA_DIR ?? path.join(os.homedir(), '.one-take'));
+const dataDir = path.resolve(
+  values['data-dir'] ?? process.env.ONE_TAKE_DATA_DIR ?? path.join(os.homedir(), '.one-take'),
+);
 const studio = path.join(dataDir, 'studio');
 const venv = path.join(studio, 'venv');
 const modelsDir = path.join(studio, 'models');
-const venvPython = process.platform === 'win32' ? path.join(venv, 'Scripts', 'python.exe') : path.join(venv, 'bin', 'python');
+const venvPython =
+  process.platform === 'win32' ? path.join(venv, 'Scripts', 'python.exe') : path.join(venv, 'bin', 'python');
 fs.mkdirSync(modelsDir, { recursive: true });
 
 /** @param {string} file */
@@ -54,7 +57,9 @@ function run(program, args, quiet = false) {
 /** @param {string} program */
 function versionOf(program) {
   try {
-    const out = execFileSync(program, ['-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], { encoding: 'utf8' }).trim();
+    const out = execFileSync(program, ['-c', 'import sys; print("%d.%d" % sys.version_info[:2])'], {
+      encoding: 'utf8',
+    }).trim();
     const [major, minor] = out.split('.').map(Number);
     return { major, minor };
   } catch {
@@ -92,7 +97,9 @@ if (!values['models-only']) {
     } else {
       const python = usablePython();
       if (!python) {
-        console.error('No Python 3.10 to 3.13 was found. Install one (brew install python@3.12, or uv) and run this again.');
+        console.error(
+          'No Python 3.10 to 3.13 was found. Install one (brew install python@3.12, or uv) and run this again.',
+        );
         process.exit(1);
       }
       run(python, ['-m', 'venv', venv]);
@@ -100,7 +107,9 @@ if (!values['models-only']) {
   } else {
     console.log(`The studio's Python environment is at ${venv}`);
   }
-  console.log(`Installing ${STUDIO_PACKAGES.join(', ')} (ClearerVoice-Studio and what it needs: torch and friends)…`);
+  console.log(
+    `Installing ${STUDIO_PACKAGES.join(', ')} (ClearerVoice-Studio and what it needs: torch and friends)…`,
+  );
   if (uv) run('uv', ['pip', 'install', '--python', venvPython, ...STUDIO_PACKAGES]);
   else run(venvPython, ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip', ...STUDIO_PACKAGES]);
 }
@@ -126,7 +135,9 @@ for (const model of Object.values(STUDIO_MODELS)) {
     console.log(`${model.name}: already here (${mb(fs.statSync(checkpoint).size)})`);
     continue;
   }
-  console.log(`${model.name}: fetching about ${mb(model.bytes)} from Hugging Face (${model.repo}) for ${model.what}…`);
+  console.log(
+    `${model.name}: fetching about ${mb(model.bytes)} from Hugging Face (${model.repo}) for ${model.what}…`,
+  );
   try {
     run(venvPython, ['-I', '-c', fetchScript, model.repo, target]);
     console.log(`${model.name}: done`);
@@ -159,7 +170,9 @@ if (fs.existsSync(speakerTarget) && sha256(speakerTarget) === speaker.sha256) {
   } catch (error) {
     failed = true;
     fs.rmSync(partial, { force: true });
-    console.error(`${speaker.name}: ${error instanceof Error ? error.message : String(error)} (without it a voice is picked by its level)`);
+    console.error(
+      `${speaker.name}: ${error instanceof Error ? error.message : String(error)} (without it a voice is picked by its level)`,
+    );
   }
 }
 
@@ -168,14 +181,22 @@ if (fs.existsSync(speakerTarget) && sha256(speakerTarget) === speaker.sha256) {
 console.log('\nChecking the environment…');
 const worker = path.resolve(import.meta.dirname, '../packages/server/py/studio.py');
 try {
-  const out = run(venvPython, ['-I', worker, '--models', modelsDir, '--speaker', speakerTarget, '--check'], true);
+  const out = run(
+    venvPython,
+    ['-I', worker, '--models', modelsDir, '--speaker', speakerTarget, '--check'],
+    true,
+  );
   const line = out.trim().split('\n').pop() ?? '{}';
   const info = JSON.parse(line);
   if (info.error) {
     console.error(`The environment does not import: ${info.error}`);
     failed = true;
   } else {
-    console.log(`torch ${info.torch} on the ${info.device}; models: ${Object.entries(info.models).map(([k, v]) => `${k} ${v ? 'ok' : 'missing'}`).join(', ')}; speaker ${info.speaker ? 'ok' : 'missing'}`);
+    console.log(
+      `torch ${info.torch} on the ${info.device}; models: ${Object.entries(info.models)
+        .map(([k, v]) => `${k} ${v ? 'ok' : 'missing'}`)
+        .join(', ')}; speaker ${info.speaker ? 'ok' : 'missing'}`,
+    );
   }
 } catch (error) {
   console.error(`The check failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -183,7 +204,11 @@ try {
 }
 
 if (failed) {
-  console.error('\nSomething is missing; run this again when the network is back. The server greys out what it cannot run.');
+  console.error(
+    '\nSomething is missing; run this again when the network is back. The server greys out what it cannot run.',
+  );
   process.exit(1);
 }
-console.log(`\nThe studio is ready in ${studio}. Restart the server (npm start) and the export dialog shows the deep clean and "keep only my voice".`);
+console.log(
+  `\nThe studio is ready in ${studio}. Restart the server (npm start) and the export dialog shows the deep clean and "keep only my voice".`,
+);

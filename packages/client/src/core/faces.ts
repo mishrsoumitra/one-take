@@ -60,12 +60,9 @@ export function faceBox(landmarks: readonly Point[], width: number, height: numb
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
   }
-  const box = {
-    x: minX * width,
-    y: minY * height,
-    width: (maxX - minX) * width,
-    height: (maxY - minY) * height,
-  };
+  const x = minX * width;
+  const y = minY * height;
+  const box = { x, y, width: maxX * width - x, height: maxY * height - y };
   return box.width > 0 && box.height > 0 ? box : null;
 }
 
@@ -97,7 +94,10 @@ export interface FaceSample<T = Uint8Array> {
  */
 export function faceGrid<T>(samples: readonly FaceSample<T>[], from: number, to: number): T[] | null {
   if (to <= from) return null;
-  const seen = samples.filter((s): s is FaceSample<T> & { crop: T } => s.crop !== null && s.t >= from - NEAREST_MS && s.t < to + NEAREST_MS);
+  const seen = samples.filter(
+    (s): s is FaceSample<T> & { crop: T } =>
+      s.crop !== null && s.t >= from - NEAREST_MS && s.t < to + NEAREST_MS,
+  );
   if (seen.length === 0) return null;
   const step = 1000 / FACE_FPS;
   const slots = Math.max(1, Math.round((to - from) / step));
@@ -107,7 +107,12 @@ export function faceGrid<T>(samples: readonly FaceSample<T>[], from: number, to:
   let previous: T | null = null;
   for (let i = 0; i < slots; i++) {
     const at = from + i * step;
-    while (k + 1 < seen.length && Math.abs((seen[k + 1]?.t ?? Infinity) - at) <= Math.abs((seen[k]?.t ?? Infinity) - at)) k++;
+    // the nearest frame; on a tie the earlier one, so a dropped frame reads as the last one held
+    while (
+      k + 1 < seen.length &&
+      Math.abs((seen[k + 1]?.t ?? Infinity) - at) < Math.abs((seen[k]?.t ?? Infinity) - at)
+    )
+      k++;
     const nearest = seen[k];
     if (nearest && Math.abs(nearest.t - at) <= NEAREST_MS) {
       own++;
@@ -150,9 +155,55 @@ export function framesFromFile(bytes: Uint8Array): Uint8Array[] {
   return frames;
 }
 
-/** The film kept with a phrase: the frames file as a blob, and how many frames it holds. */
+/**
+ * The film kept with a phrase: the frames file (the studio's own format, so it is uploaded as it
+ * is) and how many frames it holds. Frame `k` covers the phrase's seconds `[k / fps, (k + 1) / fps)`.
+ */
 export interface FaceTrack {
   fps: number;
   frames: number;
-  data: Blob;
+  data: Uint8Array;
+}
+
+export function faceTrack(frames: readonly Uint8Array[]): FaceTrack {
+  return { fps: FACE_FPS, frames: frames.length, data: framesFile(frames) };
+}
+
+/** The frame the phrase's second `sec` falls in. */
+function frameAt(track: FaceTrack, sec: number): number {
+  return Math.max(0, Math.min(track.frames, Math.round(sec * track.fps)));
+}
+
+/** The film between two moments of the phrase, or null when nothing of it is left. */
+export function sliceFaces(track: FaceTrack, fromSec: number, toSec: number): FaceTrack | null {
+  const lo = frameAt(track, Math.min(fromSec, toSec));
+  const hi = frameAt(track, Math.max(fromSec, toSec));
+  if (hi <= lo) return null;
+  const frames = framesFromFile(track.data).slice(lo, hi);
+  return frames.length > 0 ? faceTrack(frames) : null;
+}
+
+/** The film with the stretch between two moments taken out. */
+export function cutFaces(track: FaceTrack, fromSec: number, toSec: number): FaceTrack | null {
+  const lo = frameAt(track, Math.min(fromSec, toSec));
+  const hi = frameAt(track, Math.max(fromSec, toSec));
+  if (hi <= lo) return track;
+  const all = framesFromFile(track.data);
+  const frames = [...all.slice(0, lo), ...all.slice(hi)];
+  return frames.length > 0 ? faceTrack(frames) : null;
+}
+
+/** Two films back to back; null when either is missing (a film with a hole is no use to the model). */
+export function joinFaces(a: FaceTrack | undefined, b: FaceTrack | undefined): FaceTrack | undefined {
+  if (!a || !b) return undefined;
+  return {
+    fps: a.fps,
+    frames: a.frames + b.frames,
+    data: (() => {
+      const out = new Uint8Array(a.data.length + b.data.length);
+      out.set(a.data, 0);
+      out.set(b.data, a.data.length);
+      return out;
+    })(),
+  };
 }

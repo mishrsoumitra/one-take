@@ -43,7 +43,10 @@ let cropContext: OffscreenCanvasRenderingContext2D | null = null;
  * Cuts the mouth out of the frame the way the studio's model wants it: the face's landmarks give
  * the box, `faceCropRect` the square to take, and the pixels go grey. Returns the JPEG bytes.
  */
-async function cropMouth(frame: VideoFrame, landmarks: { x: number; y: number }[]): Promise<ArrayBuffer | null> {
+async function cropMouth(
+  frame: VideoFrame,
+  landmarks: { x: number; y: number }[],
+): Promise<ArrayBuffer | null> {
   const g = cropContext;
   const canvas = cropCanvas;
   if (!g || !canvas) return null;
@@ -59,7 +62,17 @@ async function cropMouth(frame: VideoFrame, landmarks: { x: number; y: number }[
   const ey = Math.min(frame.displayHeight, rect.sy + rect.size);
   if (ex <= sx || ey <= sy) return null;
   const scale = FACE_SIZE / rect.size;
-  g.drawImage(frame, sx, sy, ex - sx, ey - sy, (sx - rect.sx) * scale, (sy - rect.sy) * scale, (ex - sx) * scale, (ey - sy) * scale);
+  g.drawImage(
+    frame,
+    sx,
+    sy,
+    ex - sx,
+    ey - sy,
+    (sx - rect.sx) * scale,
+    (sy - rect.sy) * scale,
+    (ex - sx) * scale,
+    (ey - sy) * scale,
+  );
   const image = g.getImageData(0, 0, FACE_SIZE, FACE_SIZE);
   const d = image.data;
   for (let i = 0; i < d.length; i += 4) {

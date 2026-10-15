@@ -77,6 +77,8 @@ export class LipWatcher {
   readonly track = new LipTrack();
   /** The mouth crops, while they are wanted. */
   readonly film = new FaceFilm();
+  /** Set before `start`: every frame with a face also yields a mouth crop for the studio's film. */
+  wantCrops = false;
   private crops = false;
   private worker: Worker | null = null;
   private stream: MediaStream | null = null;
@@ -120,13 +122,10 @@ export class LipWatcher {
     }
   }
 
-  /**
-   * Opens the camera and starts watching; false (with `note` set) when that cannot be done here.
-   * With `crops`, every frame with a face also yields a mouth crop for the studio's film.
-   */
-  async start(deviceId?: string, crops = false): Promise<boolean> {
+  /** Opens the camera and starts watching; false (with `note` set) when that cannot be done here. */
+  async start(deviceId?: string): Promise<boolean> {
     this.stop();
-    this.crops = crops;
+    this.crops = this.wantCrops;
     const gen = ++this.generation;
     const Processor = trackProcessor();
     if (!Processor) {
@@ -196,7 +195,8 @@ export class LipWatcher {
   private onMessage(message: LipsResponse): void {
     if (message.type === 'sample') {
       this.track.push({ t: message.t, open: message.open });
-      if (this.crops) this.film.push({ t: message.t, crop: message.crop ? new Uint8Array(message.crop) : null });
+      if (this.crops)
+        this.film.push({ t: message.t, crop: message.crop ? new Uint8Array(message.crop) : null });
     } else if (message.type === 'error') console.warn('lip worker:', message.message);
   }
 

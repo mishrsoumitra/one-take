@@ -68,7 +68,15 @@ function fakeWorker(options: { fail?: string; slowMs?: number } = {}) {
         out.writeInt16LE(op === 'denoise' ? Math.trunc(v / 2) : -v, i);
       }
       onProgress(1);
-      if (body.measure === true) return { event: 'done', method: 'profile', similarity: [0.9, 0.1], overlap: 0.2, otherShare: 0.3, otherLevelDb: -5 };
+      if (body.measure === true)
+        return {
+          event: 'done',
+          method: 'profile',
+          similarity: [0.9, 0.1],
+          overlap: 0.2,
+          otherShare: 0.3,
+          otherLevelDb: -5,
+        };
       await fs.writeFile(String(body.out), out);
       return {
         event: 'done',
@@ -154,9 +162,17 @@ describe('StudioManager', () => {
   });
 
   it('refuses uploads that do not add up, and a job that asks for nothing', async () => {
-    const manager = new StudioManager({ info: READY, dataDir: path.join(tmp, 'b'), staticDir: null, worker: fakeWorker() });
+    const manager = new StudioManager({
+      info: READY,
+      dataDir: path.join(tmp, 'b'),
+      staticDir: null,
+      worker: fakeWorker(),
+    });
     await expect(
-      manager.create({ clips: [{ id: 'x', rate: 48000, samples: 10, denoise: false, voice: 'off', faceBytes: 0 }], profile: null }),
+      manager.create({
+        clips: [{ id: 'x', rate: 48000, samples: 10, denoise: false, voice: 'off', faceBytes: 0 }],
+        profile: null,
+      }),
     ).rejects.toThrow(/asks for anything/);
     const job = await manager.create({
       clips: [{ id: 'x', rate: 48000, samples: 10, denoise: true, voice: 'off', faceBytes: 0 }],
@@ -174,7 +190,10 @@ describe('StudioManager', () => {
       worker: fakeWorker(),
     });
     await expect(
-      manager.create({ clips: [{ id: 'x', rate: 48000, samples: 10, denoise: false, voice: 'profile', faceBytes: 0 }], profile: null }),
+      manager.create({
+        clips: [{ id: 'x', rate: 48000, samples: 10, denoise: false, voice: 'profile', faceBytes: 0 }],
+        profile: null,
+      }),
     ).rejects.toThrow(/ready|studio/);
     const ok = await manager.create({
       clips: [{ id: 'x', rate: 48000, samples: 10, denoise: true, voice: 'off', faceBytes: 0 }],

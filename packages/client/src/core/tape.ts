@@ -79,7 +79,11 @@ export class Tape {
 }
 
 /** The stretch of the tape, in samples, that lines up with filtered blocks `[from, to)` delayed by `delay` samples. */
-export function rawRange(blocks: { from: number; to: number }, blockSize: number, delay: number): SampleRange {
+export function rawRange(
+  blocks: { from: number; to: number },
+  blockSize: number,
+  delay: number,
+): SampleRange {
   return { from: blocks.from * blockSize - delay, to: blocks.to * blockSize - delay };
 }
 
@@ -149,7 +153,12 @@ const WINDOW_SEC = 1.5;
  * whole range, then a fine one at the full rate around its best, over the reference's loudest
  * second and a half.
  */
-export function bestLag(reference: Float32Array, candidate: Float32Array, rate: number, maxShift: number): Lag {
+export function bestLag(
+  reference: Float32Array,
+  candidate: Float32Array,
+  rate: number,
+  maxShift: number,
+): Lag {
   const window = Math.min(reference.length, Math.round(rate * WINDOW_SEC));
   if (window < COARSE * 8 || candidate.length < reference.length) return { lag: 0, peak: 0 };
   const start = loudestWindow(reference, window);

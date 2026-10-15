@@ -189,7 +189,7 @@ export class VoicingSwitch {
     } finally {
       this.making = null;
     }
-    // the clip object changes when a version lands; the editor re-renders the switch with the new one
-    if (this.seg === seg) this.render(seg);
+    // the clip object changes when a version lands and the editor shows the new one; either way the note is redrawn
+    if (this.seg) this.render(this.seg);
   }
 }

@@ -17,6 +17,7 @@ import {
   type ExportPlan,
   type ExportRequest,
   type Sidecar,
+  type StudioClipResult,
   type TranscriptionJob,
   type TranscriptWord,
 } from '@one-take/shared';
@@ -25,16 +26,21 @@ import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
 import { buildCues, toSrt, toTranscript, toVtt, type Cue } from '../core/captions.js';
 import { type CameraLayout } from '../core/overlay.js';
+import { type VoiceProfile } from '../core/speaker.js';
 import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
+import { flatten, withVersion } from '../core/versions.js';
+import { Segmenter } from '../vision/segmenter.js';
 
+import { CameraCleaner } from './camera-clean.js';
 import { encodeLecture, ExportCancelledError, type EncodeProgress, type EncodeResult } from './encoder.js';
 import { OverlayTrack } from './overlay.js';
 import { mapWords, needsPreparation, prepareSegments, transcriptionAudio } from './prepare.js';
 import { createBufferSink, createFileSink, createServerSink, type Sink } from './sinks.js';
+import { describeStudio, runStudio, type StudioPlan } from './studio.js';
 
 export type ExportStage = 'preparing' | 'transcribing' | 'encoding' | 'processing' | 'finalizing' | 'done';
 
-export type ExportStepId = 'prepare' | 'transcribe' | 'encode' | 'process' | 'finalize';
+export type ExportStepId = 'denoise' | 'voice' | 'prepare' | 'transcribe' | 'encode' | 'process' | 'finalize';
 
 export interface ExportStep {
   id: ExportStepId;
@@ -97,10 +103,27 @@ export interface ExportProgress {
 
 /** What the plan expected each stage to take, from the resource map; the time left starts here. */
 export interface ExportEstimates {
+  /** The studio's two steps, when they run. */
+  denoiseSec?: number | null;
+  voiceSec?: number | null;
   prepareSec: number | null;
   transcribeSec: number | null;
   encodeSec: number | null;
   processSec: number | null;
+}
+
+/** The studio's part of an export: what to do, and where each result goes. */
+export interface StudioRun {
+  plan: StudioPlan;
+  profile: VoiceProfile | null;
+  /** Aborting this skips the rest of the studio's work; what has landed is used, the rest plays as it was. */
+  skip?: AbortSignal;
+  /** A clip's version landed: the caller keeps it with the phrase. */
+  onVersion: (seg: Segment, kind: 'deep' | 'voice', pcm: Int16Array, result: StudioClipResult) => void;
+  /** A clip's figures say two people talk at once in it. */
+  onTwoVoices?: (seg: Segment, result: StudioClipResult) => void;
+  /** What the studio did, as one line, once it is over. */
+  onDone?: (note: string | null) => void;
 }
 
 /** How WebCodecs was configured for the browser stage, for the result panel and the tests. */
@@ -137,6 +160,10 @@ export interface RunExportOptions {
   forceInMemory?: boolean;
   /** Draw the speaker's camera picture over the slides, laid out like this; null leaves it out. */
   camera?: CameraLayout | null;
+  /** The studio's work before anything else is done to the sound; null (or an empty plan) for none. */
+  studio?: StudioRun | null;
+  /** Ids of phrases left out of the export (flagged ones the user unticked). */
+  dropped?: ReadonlySet<string>;
 }
 
 const MAX_IN_MEMORY_BYTES = 2 * 1024 ** 3;
@@ -432,8 +459,35 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
   const preparing = needsPreparation(enhance);
   const transcribing = enhance.captions.enabled;
   if (transcribing && !api) throw new Error('Transcripts and subtitles need the local server (npm start).');
+  const dropped = options.dropped ?? new Set<string>();
+  const kept = options.segments.filter((s) => !dropped.has(s.id));
+  if (kept.length === 0)
+    throw new Error('Every phrase was left out; tick at least one flagged phrase to keep.');
+  const studio = options.studio && options.studio.plan.clips.length > 0 && api ? options.studio : null;
+  const denoising = studio !== null && studio.plan.denoiseSec > 0;
+  const voicing = studio !== null && studio.plan.voiceSec > 0;
 
   const tracker = new ProgressTracker(onProgress, [
+    ...(denoising
+      ? [
+          {
+            id: 'denoise' as const,
+            label: 'Deep clean on the server',
+            runsOn: 'server' as const,
+            modelSec: estimates.denoiseSec ?? null,
+          },
+        ]
+      : []),
+    ...(voicing
+      ? [
+          {
+            id: 'voice' as const,
+            label: 'Keep only your voice on the server',
+            runsOn: 'server' as const,
+            modelSec: estimates.voiceSec ?? null,
+          },
+        ]
+      : []),
     ...(preparing
       ? [
           {
@@ -476,9 +530,53 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
 
   const wakeLock = await requestWakeLock();
   try {
+    // 0. the studio: the heavy models over the raw microphone, each result kept with its phrase; a
+    //    studio that fails or is skipped leaves the phrases as they were, it never sinks the export
+    let working: readonly Segment[] = kept;
+    if (studio && api) {
+      const updates = new Map<string, Segment>();
+      const current = (seg: Segment): Segment => updates.get(seg.id) ?? seg;
+      let note: string | null = null;
+      try {
+        const outcome = await runStudio({
+          api,
+          plan: studio.plan,
+          profile: studio.profile,
+          signal: studio.skip ? anySignal(signal, studio.skip) : signal,
+          onProgress: (job) => {
+            const p = job.progress;
+            if (p.stage !== 'denoise' && p.stage !== 'voice') return;
+            if (p.stage === 'voice' && denoising) tracker.finish('denoise');
+            tracker.update(p.stage, p.fraction, p.message);
+            tracker.emit({
+              stage: 'preparing',
+              message: p.message,
+              percent: p.fraction === null ? null : Math.round(p.fraction * 100),
+            });
+          },
+          onResult: (seg, kind, pcm, result) => {
+            updates.set(seg.id, withVersion(current(seg), kind, pcm));
+            studio.onVersion(seg, kind, pcm, result);
+          },
+          onTwoVoices: studio.onTwoVoices,
+        });
+        note = describeStudio(outcome, studio.plan);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn('the studio could not run; the phrases are used as they were', error);
+        note = `Studio: could not run (${(error as Error).message}); the phrases were used as they were.`;
+      }
+      if (denoising) tracker.finish('denoise');
+      if (voicing) tracker.finish('voice');
+      studio.onDone?.(note);
+      working = kept.map(current);
+    }
+    // each phrase as the version it is set to (Original, Cleaned or Only my voice), nothing else
+    const flat = working.map(flatten);
+
     // 1. the phrases as the export will hear them: fillers cut, volume evened, pace changed
     if (preparing) tracker.begin('prepare');
-    const prepared = await prepareSegments(options.segments, {
+    const prepared = await prepareSegments(flat, {
       enhance,
       keep: options.keepFillers,
       order: request.order,
@@ -499,7 +597,7 @@ export async function runExport(options: RunExportOptions): Promise<ExportResult
     if (transcribing && api) {
       tracker.begin('transcribe');
       tracker.emit({ stage: 'transcribing', message: 'Sending the audio to the recogniser…', percent: null });
-      const audio = transcriptionAudio(options.segments);
+      const audio = transcriptionAudio(flat);
       const job = await api.transcribe(audio.wav, enhance.captions.language, audio.durationSec, signal);
       let final: TranscriptionJob;
       try {
@@ -613,12 +711,32 @@ async function encodeWithSink(
   tracker.emit({ stage: 'encoding', message: 'Starting the encoder…', percent: 0 });
   const layout = options.camera ?? null;
   const overlay = layout && OverlayTrack.hasVideo(timeline) ? new OverlayTrack(timeline) : null;
+  // the camera cleanup: the segmenter comes up first when the background is to go; a segmenter that
+  // cannot run here leaves the background alone, and the frame is only corrected
+  const cleanup = options.request.enhance.camera;
+  let segmenter: Segmenter | null = null;
+  let cleaner: CameraCleaner | null = null;
+  if (overlay && cleanup.background !== 'keep') {
+    segmenter = new Segmenter();
+    if (!(await segmenter.start())) {
+      console.warn('the background cannot be told from the speaker here:', segmenter.note);
+      segmenter.stop();
+      segmenter = null;
+    }
+  }
+  const clean =
+    overlay && CameraCleaner.wanted(cleanup)
+      ? async (frame: VideoFrame): Promise<CanvasImageSource> => {
+          cleaner ??= new CameraCleaner(frame.displayWidth, frame.displayHeight, cleanup, segmenter);
+          return cleaner.clean(frame);
+        }
+      : undefined;
   try {
     const result = await encodeLecture({
       timeline,
       slides: options.slides,
       captions,
-      camera: overlay && layout ? { track: overlay, layout } : null,
+      camera: overlay && layout ? { track: overlay, layout, clean } : null,
       plan: options.plan.browser,
       target: sink.target,
       fastStart: sink.fastStart,
@@ -634,7 +752,20 @@ async function encodeWithSink(
     throw error;
   } finally {
     overlay?.close();
+    segmenter?.stop();
   }
+}
+
+/** A signal that aborts when either of two does. */
+function anySignal(a: AbortSignal, b: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const follow = (signal: AbortSignal) => {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  };
+  follow(a);
+  follow(b);
+  return controller.signal;
 }
 
 async function requestWakeLock(): Promise<WakeLockSentinel | null> {

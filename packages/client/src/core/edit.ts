@@ -6,7 +6,9 @@
  * lists for undo and the controller can tell by identity which phrases need saving again.
  */
 import { concatClipVideo, sliceClipVideo, type ClipVideo } from './clip-video.js';
+import { cutFaces, sliceFaces, type FaceTrack } from './faces.js';
 import { segmentDuration, type Segment, type Timeline } from './timeline.js';
+import { mapAudio } from './versions.js';
 
 /** The fade on either side of a seam inside a phrase, so a cut never clicks. */
 const SEAM_FADE_MS = 8;
@@ -29,6 +31,30 @@ export function videoBetween(seg: Segment, fromSample: number, toSample: number)
   return sliceClipVideo(seg.video, fromSample / seg.sampleRate, toSample / seg.sampleRate);
 }
 
+/** A segment with its film set, or without one. */
+function withFaces(seg: Segment, faces: FaceTrack | null | undefined): Segment {
+  const { faces: _faces, ...rest } = seg;
+  return faces ? { ...rest, faces } : rest;
+}
+
+/**
+ * The stretch `[fromSample, toSample)` of a phrase: every version of its sound, its picture and its
+ * film cut the same way, in one place, so no edit can leave one of them behind. Null when nothing
+ * worth keeping is in the stretch.
+ */
+export function sliceSegment(seg: Segment, fromSample: number, toSample: number): Segment | null {
+  const lo = Math.max(0, Math.min(seg.pcm.length, Math.min(fromSample, toSample)));
+  const hi = Math.max(0, Math.min(seg.pcm.length, Math.max(fromSample, toSample)));
+  if (hi - lo < MIN_CLIP_SEC * seg.sampleRate) return null;
+  const sliced = mapAudio(seg, (pcm) => pcm.slice(lo, hi));
+  if (!sliced) return null;
+  const sr = seg.sampleRate;
+  return withFaces(
+    { ...sliced, video: seg.video ? videoBetween(seg, lo, hi) : seg.video },
+    seg.faces ? sliceFaces(seg.faces, lo / sr, hi / sr) : undefined,
+  );
+}
+
 /** Joins two runs of samples with a short fade out and fade in around the seam. */
 export function joinPcm(a: Int16Array, b: Int16Array, sampleRate: number, fadeMs = SEAM_FADE_MS): Int16Array {
   const out = new Int16Array(a.length + b.length);
@@ -45,30 +71,35 @@ export function joinPcm(a: Int16Array, b: Int16Array, sampleRate: number, fadeMs
 }
 
 /**
- * Removes the audio between `fromSec` and `toSec` from a phrase. The result keeps the phrase's id and
- * slide; it is `null` when nothing worth keeping would be left.
+ * Removes the audio between `fromSec` and `toSec` from a phrase, in every version of its sound, its
+ * picture and its film alike. The result keeps the phrase's id and slide; it is `null` when nothing
+ * worth keeping would be left.
  */
 export function cutRange(seg: Segment, fromSec: number, toSec: number): Segment | null {
   const lo = sampleAt(seg, Math.min(fromSec, toSec));
   const hi = sampleAt(seg, Math.max(fromSec, toSec));
   if (hi <= lo) return seg;
-  const head = seg.pcm.subarray(0, lo);
-  const tail = seg.pcm.subarray(hi);
-  if (head.length + tail.length < MIN_CLIP_SEC * seg.sampleRate) return null;
-  const pcm =
-    head.length === 0 ? tail.slice() : tail.length === 0 ? head.slice() : joinPcm(head, tail, seg.sampleRate);
+  if (seg.pcm.length - (hi - lo) < MIN_CLIP_SEC * seg.sampleRate) return null;
+  const cut = mapAudio(seg, (pcm) => {
+    const head = pcm.subarray(0, lo);
+    const tail = pcm.subarray(hi);
+    return head.length === 0
+      ? tail.slice()
+      : tail.length === 0
+        ? head.slice()
+        : joinPcm(head, tail, seg.sampleRate);
+  });
+  if (!cut) return null;
   const video = seg.video
     ? concatClipVideo(videoBetween(seg, 0, lo), videoBetween(seg, hi, seg.pcm.length))
     : seg.video;
-  return { ...seg, pcm, video };
+  const sr = seg.sampleRate;
+  return withFaces({ ...cut, video }, seg.faces ? cutFaces(seg.faces, lo / sr, hi / sr) : undefined);
 }
 
 /** Keeps only the audio between `fromSec` and `toSec` (the opposite of {@link cutRange}). */
 export function keepRange(seg: Segment, fromSec: number, toSec: number): Segment | null {
-  const lo = sampleAt(seg, Math.min(fromSec, toSec));
-  const hi = sampleAt(seg, Math.max(fromSec, toSec));
-  if (hi - lo < MIN_CLIP_SEC * seg.sampleRate) return null;
-  return { ...seg, pcm: seg.pcm.slice(lo, hi), video: seg.video ? videoBetween(seg, lo, hi) : seg.video };
+  return sliceSegment(seg, sampleAt(seg, Math.min(fromSec, toSec)), sampleAt(seg, Math.max(fromSec, toSec)));
 }
 
 /**
@@ -80,26 +111,17 @@ export function splitAt(seg: Segment, atSec: number, newId: string): [Segment, S
   const at = sampleAt(seg, atSec);
   const min = MIN_CLIP_SEC * seg.sampleRate;
   if (at < min || seg.pcm.length - at < min) return null;
-  const first: Segment = {
-    ...seg,
-    pcm: seg.pcm.slice(0, at),
-    video: seg.video ? videoBetween(seg, 0, at) : seg.video,
-  };
-  const second: Segment = {
-    ...seg,
-    id: newId,
-    pcm: seg.pcm.slice(at),
-    video: seg.video ? videoBetween(seg, at, seg.pcm.length) : seg.video,
-    joined: true,
-    prevId: seg.id,
-    createdAt: Date.now(),
-  };
+  const first = sliceSegment(seg, 0, at);
+  const rest = sliceSegment(seg, at, seg.pcm.length);
+  if (!first || !rest) return null;
+  const second: Segment = { ...rest, id: newId, joined: true, prevId: seg.id, createdAt: Date.now() };
   return [first, second];
 }
 
-/** One phrase of a take: its audio and, when the camera was on, its picture. */
+/** One phrase of a take: its audio, the microphone before the filter when there was one, and its picture when the camera was on. */
 export interface TakePhrase {
   pcm: Int16Array;
+  raw: Int16Array | null;
   video: ClipVideo | null;
 }
 
@@ -117,6 +139,7 @@ export function takeToSegments(
       slide,
       sampleRate,
       pcm: p.pcm,
+      ...(p.raw ? { raw: p.raw } : {}),
       joined: false,
       prevId: null,
       createdAt: Date.now(),

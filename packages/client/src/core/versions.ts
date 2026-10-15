@@ -127,6 +127,15 @@ export function withVersion(seg: Segment, field: 'deep' | 'voice' | 'raw', audio
   return { ...seg, [field]: audio };
 }
 
+/**
+ * The clip as the export hears it: its chosen version as `pcm` and nothing else of the sound, so
+ * what follows (fillers, volume, pace, the recogniser) works on one version and the film goes.
+ */
+export function flatten(seg: Segment): Segment {
+  const { raw: _raw, deep: _deep, voice: _voice, faces: _faces, ...rest } = seg;
+  return { ...rest, pcm: audioOf(seg) };
+}
+
 /** Bytes a clip's versions take in memory. */
 export function versionBytes(seg: Segment): number {
   let n = 0;

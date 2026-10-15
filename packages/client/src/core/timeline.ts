@@ -1,4 +1,5 @@
 /** The ordered list of phrases with the silence placed between them; shared by preview and export. */
+import { type ClipVideo } from './clip-video.js';
 
 export interface Segment {
   id: string;
@@ -10,6 +11,8 @@ export interface Segment {
   joined: boolean;
   prevId: string | null;
   createdAt: number;
+  /** The camera's picture of the speaker while this was said; missing when the camera was off. */
+  video?: ClipVideo | null;
 }
 
 export interface TimelineItem {

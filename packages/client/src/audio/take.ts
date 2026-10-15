@@ -3,17 +3,19 @@
  * or press to speak, each phrase through the second listen), and hand back the phrases, pauses
  * already cut, when the user presses Stop.
  */
+import { type TakePhrase } from '../core/edit.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
 import { cutPhrase } from '../core/silence.js';
 import { MicScorer, type VoiceScorer } from '../core/speech.js';
 import { type VadSettings } from '../core/vad.js';
+import { type CameraCapture } from '../video/camera.js';
 
 import { type MicCapture } from './mic.js';
 
 export interface Take {
-  /** Each phrase as 16-bit mono PCM, in the order spoken, with the silence between them removed. */
-  phrases: Int16Array[];
+  /** Each phrase, in the order spoken, with the silence between them removed; its picture when the camera was on. */
+  phrases: TakePhrase[];
   sampleRate: number;
 }
 
@@ -22,13 +24,16 @@ export interface TakeStartOptions {
   mode: CaptureMode;
   deviceId?: string;
   noiseFilter: boolean;
+  /** The camera, when it is on: each phrase of the take gets its picture too. */
+  camera?: CameraCapture | null;
 }
 
 export class TakeRecorder {
   private recorder: Recorder | null = null;
-  private phrases: Int16Array[] = [];
+  private phrases: TakePhrase[] = [];
   private sampleRate = 48000;
   private doneMs = 0;
+  private camera: CameraCapture | null = null;
 
   constructor(
     private readonly mic: MicCapture,
@@ -86,6 +91,7 @@ export class TakeRecorder {
     if (this.recorder) this.cancel();
     this.phrases = [];
     this.doneMs = 0;
+    const camera = options.camera ?? null;
     const recorder = new Recorder(
       this.blockMs,
       options.settings,
@@ -97,7 +103,9 @@ export class TakeRecorder {
       {
         onPhrase: (phrase) => {
           const pcm = floatBlocksToInt16(phrase.blocks);
-          this.phrases.push(pcm);
+          const video =
+            camera?.take(phrase.at * this.blockMs, (phrase.at + phrase.blocks.length) * this.blockMs) ?? null;
+          this.phrases.push({ pcm, video });
           this.doneMs += (pcm.length / this.sampleRate) * 1000;
           return String(this.phrases.length);
         },
@@ -111,12 +119,21 @@ export class TakeRecorder {
       blockMs: this.blockMs,
       onBlock: (block) => {
         scorer.push(block, this.mic.sampleRate);
-        this.recorder?.process(block, scorer.prob);
+        const rec = this.recorder;
+        if (!rec) return;
+        rec.process(block, scorer.prob);
+        // the camera runs on the microphone's clock: this many blocks have gone by, and nothing
+        // before the earliest pending phrase (or the pre-roll) is needed any more
+        this.camera?.tick(rec.vad.seen, rec.heldFrom - rec.vad.settings.prerollMs / this.blockMs);
       },
     });
     if (!info) return false;
     this.sampleRate = info.sampleRate;
     this.recorder = recorder;
+    if (camera) {
+      camera.record(this.blockMs);
+      this.camera = camera;
+    }
     return true;
   }
 
@@ -134,7 +151,11 @@ export class TakeRecorder {
     this.recorder = null;
     recorder?.end();
     this.mic.stop();
+    // the camera stops taking frames now, but keeps what it has until the last phrases are stored
+    this.camera?.pause();
     await recorder?.settled();
+    this.camera?.stopRecording();
+    this.camera = null;
     const take = { phrases: this.phrases, sampleRate: this.sampleRate };
     this.phrases = [];
     this.doneMs = 0;
@@ -145,6 +166,8 @@ export class TakeRecorder {
   cancel(): void {
     this.recorder = null;
     this.mic.stop();
+    this.camera?.stopRecording();
+    this.camera = null;
     this.phrases = [];
     this.doneMs = 0;
   }

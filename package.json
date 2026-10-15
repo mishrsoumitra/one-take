@@ -27,6 +27,7 @@
     "test:watch": "vitest",
     "e2e": "npm run build && tsx packages/e2e/src/run.ts",
     "e2e:stress": "npm run build && tsx packages/e2e/src/stress.ts",
+    "e2e:camera": "npm run build && tsx packages/e2e/src/camera.ts",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
     "doctor": "npm run build:shared && npm run build:server && node packages/server/dist/doctor.js",
     "bench": "npm run doctor -- --bench"

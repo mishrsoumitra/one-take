@@ -1,5 +1,14 @@
 import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
 
+import {
+  CAMERA_SIZE_DEFAULT,
+  CAMERA_SIZE_MAX,
+  CAMERA_SIZE_MIN,
+  CORNER_LABELS,
+  CORNERS,
+  type Corner,
+} from '../core/overlay.js';
+
 import { h, label } from './dom.js';
 import { icon, nstMark, type IconName } from './icon.js';
 import { kbd, shortcut } from './kbd.js';
@@ -19,6 +28,17 @@ export interface LayoutRefs {
   micSelect: HTMLSelectElement;
   /** Run the noise filter over the microphone; next to the picker. */
   noiseFilter: HTMLInputElement;
+  /** Record the camera along with the voice; next to the noise filter. */
+  camOn: HTMLInputElement;
+  /** The camera row under the sliders: which camera, which corner, how big. Shown while the camera is on. */
+  camRow: HTMLElement;
+  camSelect: HTMLSelectElement;
+  /** The four corner buttons, keyed by corner. */
+  camCorners: Record<Corner, HTMLButtonElement>;
+  camSize: HTMLInputElement;
+  camSizeV: HTMLElement;
+  /** What the camera is doing: opening, the error, or where the picture is. */
+  camNote: HTMLElement;
   btnArm: HTMLButtonElement;
   /** Auto / press to speak, as a two-button segmented control. */
   modeSwitch: HTMLElement;
@@ -107,6 +127,20 @@ function modeOption(id: string, name: IconName, text: string, title: string): HT
     { id, class: 'opt', title, attrs: { role: 'radio', 'aria-checked': 'false' } },
     icon(name, 16),
     label(text),
+  );
+}
+
+/** One corner button: a little slide with a dot in the corner the camera picture would go in. */
+function cornerButton(corner: Corner): HTMLButtonElement {
+  return h(
+    'button',
+    {
+      class: `corner ${corner}`,
+      id: `cam-${corner}`,
+      title: `Put the camera picture ${CORNER_LABELS[corner].toLowerCase()}`,
+      attrs: { 'aria-label': CORNER_LABELS[corner], 'aria-pressed': 'false' },
+    },
+    h('i', { attrs: { 'aria-hidden': 'true' } }),
   );
 }
 
@@ -385,6 +419,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     h('option', { value: '' }, 'Default microphone'),
   );
   const noiseFilter = h('input', { type: 'checkbox', id: 'noiseFilter', checked: true });
+  const camOn = h('input', { type: 'checkbox', id: 'camOn' });
   const micSettings = h(
     'span',
     { id: 'micSettings' },
@@ -404,6 +439,70 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       noiseFilter,
       h('span', { class: 'label' }, 'Noise filter'),
     ),
+    h(
+      'label',
+      {
+        class: 'check',
+        id: 'camSwitch',
+        title:
+          'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
+      },
+      camOn,
+      h('span', { class: 'label' }, 'Camera'),
+    ),
+  );
+  const camSelect = h(
+    'select',
+    { id: 'camSel', title: 'Which camera to use' },
+    h('option', { value: '' }, 'Default camera'),
+  );
+  const camCorners: Record<Corner, HTMLButtonElement> = {
+    'top-left': cornerButton('top-left'),
+    'top-right': cornerButton('top-right'),
+    'bottom-left': cornerButton('bottom-left'),
+    'bottom-right': cornerButton('bottom-right'),
+  };
+  const camSize = h('input', {
+    type: 'range',
+    id: 'camSize',
+    min: Math.round(CAMERA_SIZE_MIN * 100),
+    max: Math.round(CAMERA_SIZE_MAX * 100),
+    step: 1,
+    value: String(Math.round(CAMERA_SIZE_DEFAULT * 100)),
+  });
+  const camSizeV = h('b', { id: 'camSizeV' }, `${Math.round(CAMERA_SIZE_DEFAULT * 100)} %`);
+  const camNote = h('span', { class: 'hint', id: 'camNote' });
+  const camRow = h(
+    'div',
+    { id: 'camRow', hidden: true },
+    h(
+      'label',
+      { class: 'pick', title: 'Which camera to use. The choice is remembered.' },
+      h('span', { class: 'label' }, 'Camera'),
+      camSelect,
+    ),
+    h(
+      'span',
+      {
+        class: 'corners',
+        title: 'Which corner of the slide the picture goes in. Drag the picture itself to put it anywhere.',
+        attrs: { role: 'group', 'aria-label': 'Camera picture position' },
+      },
+      h('span', { class: 'label' }, 'Position'),
+      ...(Object.keys(CORNERS) as Corner[]).map((c) => camCorners[c]),
+      h('span', { class: 'hint' }, 'or drag it on the slide'),
+    ),
+    h(
+      'label',
+      {
+        title:
+          'How wide the picture is, as a share of the slide. Drag its corner on the slide to do the same.',
+      },
+      h('span', { class: 'label' }, 'Size'),
+      camSize,
+      camSizeV,
+    ),
+    camNote,
   );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
@@ -461,6 +560,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
         shortcut('mic on / off', 'R'),
       ),
     ),
+    camRow,
   );
 
   /* ------------------------------------------------------------- side panel */
@@ -489,6 +589,13 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stepExport,
     micSelect,
     noiseFilter,
+    camOn,
+    camRow,
+    camSelect,
+    camCorners,
+    camSize,
+    camSizeV,
+    camNote,
     btnArm,
     modeSwitch,
     btnModeAuto,

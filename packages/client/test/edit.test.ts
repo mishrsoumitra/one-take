@@ -103,13 +103,80 @@ describe('splitAt', () => {
 describe('takeToSegments', () => {
   it('turns the phrases of a take into fresh segments on one slide', () => {
     let n = 0;
-    const segs = takeToSegments([new Int16Array(500), new Int16Array(0), new Int16Array(700)], 1000, 4, () =>
-      String(++n),
+    const segs = takeToSegments(
+      [
+        { pcm: new Int16Array(500), video: null },
+        { pcm: new Int16Array(0), video: null },
+        { pcm: new Int16Array(700), video: null },
+      ],
+      1000,
+      4,
+      () => String(++n),
     );
-    expect(segs.map((s) => [s.id, s.slide, s.pcm.length, s.joined])).toEqual([
-      ['1', 4, 500, false],
-      ['2', 4, 700, false],
+    expect(segs.map((s) => [s.id, s.slide, s.pcm.length, s.joined, s.video])).toEqual([
+      ['1', 4, 500, false, null],
+      ['2', 4, 700, false, null],
     ]);
+  });
+});
+
+describe('edits carry the camera video with the audio', () => {
+  /** A phrase with a picture: one frame every 40 ms, a key frame every second, the frame number in its data. */
+  function withVideo(seconds: number): Segment {
+    const count = seconds * 25;
+    const frames = Array.from({ length: count }, (_, i) => ({
+      key: i % 25 === 0,
+      timestamp: i * 40_000,
+      duration: 40_000,
+      data: new Uint8Array([i & 0xff, i >> 8]),
+    }));
+    return {
+      ...seg('v', 0, seconds),
+      video: {
+        codec: 'vp8',
+        width: 640,
+        height: 360,
+        pieces: [{ frames, startUs: 0, durationUs: seconds * 1_000_000, rate: 1 }],
+      },
+    };
+  }
+  const shownAt = (s: Segment, sec: number): number => {
+    const piece = s.video?.pieces[0];
+    if (!piece) return -1;
+    let at = 0;
+    for (const p of s.video?.pieces ?? []) {
+      if (sec * 1_000_000 < at + p.durationUs) {
+        const t = p.startUs + (sec * 1_000_000 - at) * p.rate;
+        const f = [...p.frames].reverse().find((fr) => fr.timestamp <= t) ?? p.frames[0];
+        return f ? (f.data[0] ?? 0) | ((f.data[1] ?? 0) << 8) : -1;
+      }
+      at += p.durationUs;
+    }
+    return -1;
+  };
+
+  it('keeps the picture in step with the voice through cut, keep and split', () => {
+    const s = withVideo(10);
+    expect(shownAt(s, 7.3)).toBe(182);
+    const cut = cutRange(s, 2, 5)!;
+    expect(cut.video?.pieces).toHaveLength(2);
+    expect(segmentDuration(cut)).toBeCloseTo(7);
+    expect(shownAt(cut, 1.5)).toBe(shownAt(s, 1.5));
+    expect(shownAt(cut, 2.5)).toBe(shownAt(s, 5.5)); // after the seam the picture jumps with the audio
+    const kept = keepRange(s, 4, 6)!;
+    expect(kept.video?.pieces).toHaveLength(1);
+    expect(shownAt(kept, 0.5)).toBe(shownAt(s, 4.5));
+    const [a, b] = splitAt(s, 3.3, 'n')!;
+    expect(shownAt(a, 3.2)).toBe(shownAt(s, 3.2));
+    expect(shownAt(b, 0)).toBe(shownAt(s, 3.3));
+    expect(shownAt(b, 6)).toBe(shownAt(s, 9.3));
+  });
+
+  it('leaves a phrase without a picture without one', () => {
+    const s = seg('p', 0, 4);
+    expect(cutRange(s, 1, 2)?.video).toBeUndefined();
+    expect(keepRange(s, 1, 2)?.video).toBeUndefined();
+    expect(splitAt(s, 2, 'n')?.[1].video).toBeUndefined();
   });
 });
 

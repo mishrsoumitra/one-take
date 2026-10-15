@@ -15,6 +15,14 @@ import { ApiClient } from '../api/client.js';
 import { MicCapture } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
 import { fmtSec, fmtTime } from '../core/format.js';
+import {
+  clampSize,
+  cornerOf,
+  CORNERS,
+  describeLayout,
+  type CameraLayout,
+  type Corner,
+} from '../core/overlay.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
 import { Recorder, type CaptureMode } from '../core/recorder.js';
 import { cutPhrase } from '../core/silence.js';
@@ -30,10 +38,12 @@ import {
 } from '../core/timeline.js';
 import { VoiceDetector } from '../core/voice.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
+import { OverlayTrack } from '../export/overlay.js';
 import { runExport } from '../export/runner.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { ProjectStore } from '../storage/db.js';
 import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
+import { CamStage } from '../ui/cam-stage.js';
 import { Confirm } from '../ui/confirm.js';
 import { h, setLabel, syncRangeFill } from '../ui/dom.js';
 import { Editor } from '../ui/editor.js';
@@ -48,6 +58,7 @@ import { LevelMeter } from '../ui/meter.js';
 import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
 import { Welcome } from '../ui/welcome.js';
+import { CameraCapture, type CameraState } from '../video/camera.js';
 
 import { Store } from './store.js';
 import { DEFAULT_SETTINGS, type PresentationPick, type ProjectMeta, type SlideSource } from './types.js';
@@ -60,6 +71,14 @@ export class App {
   readonly api = new ApiClient();
   private readonly db = new ProjectStore();
   private readonly mic = new MicCapture();
+  /** The camera: live on the stage while it is on, recorded alongside the mic. */
+  private readonly camera: CameraCapture;
+  /** The camera picture over the slide on the stage, live or played back. */
+  private readonly camStage: CamStage;
+  /** The recorded pictures being played during a preview. */
+  private previewOverlay: OverlayTrack | null = null;
+  private previewPainting = false;
+  private previewSerial = -1;
   private readonly preview: PreviewPlayer;
   private readonly refs: LayoutRefs;
   private readonly toast: Toast;
@@ -114,6 +133,13 @@ export class App {
     this.applyTheme(this.prefs.theme);
     this.toast = new Toast(document.body);
     this.confirm = new Confirm(document.body);
+    this.camera = new CameraCapture({ onState: (state, error) => this.onCameraState(state, error) });
+    this.camStage = new CamStage({
+      stage: this.refs.stage,
+      img: this.refs.slideImg,
+      layout: () => this.prefs.cameraLayout,
+      onLayout: (layout, final) => this.setCameraLayout(layout, final),
+    });
     this.meter = new LevelMeter(this.refs.meter, this.refs.meterNote);
     this.film = new Filmstrip(this.refs.film, this.refs.filmInfo, (i) => this.goTo(i));
     this.list = new TimelineList(this.refs.segs, this.refs.segInfo, {
@@ -163,6 +189,7 @@ export class App {
       onHardwarePreferenceChange: (on) => {
         this.prefs = savePrefs({ hardwareEncoding: on });
       },
+      cameraLayout: () => this.prefs.cameraLayout,
       onOpenLibrary: () => this.library.open(),
       onExportingChange: (exporting) => {
         this.store.state.exporting = exporting;
@@ -190,6 +217,9 @@ export class App {
       noiseFilter: () => this.prefs.noiseFilter,
       nextId: () => this.nextSegmentId(),
       speech: () => this.voice,
+      camera: () => (this.camera.on ? this.camera : null),
+      cameraLayout: () => this.prefs.cameraLayout,
+      onCameraLayout: (layout, final) => this.setCameraLayout(layout, final),
       onChange: (segments) => this.applyEdit(segments),
       onClose: () => {
         // the editor may have moved the playhead to another slide; show the one the user left on
@@ -216,6 +246,18 @@ export class App {
     this.film.render([]);
     this.list.render([], [], false);
     void this.listMics();
+    if (!CameraCapture.supported()) {
+      // the switch stays visible so the feature is known, with the reason it is off
+      this.refs.camOn.disabled = true;
+      this.refs.camOn.checked = false;
+      const label = this.refs.camOn.parentElement;
+      if (label) label.title = 'Recording the camera needs WebCodecs: open the app in Chrome or Edge.';
+    } else {
+      // the camera is remembered as wanted, but it only opens on the user's say-so or with the mic
+      this.refs.camOn.checked = this.prefs.camera;
+    }
+    this.syncCameraControls();
+    void this.listCameras();
     if (!('mediaDevices' in navigator)) {
       this.toast.show('This browser cannot use the microphone here. Open the app in Chrome.');
     }
@@ -374,6 +416,28 @@ export class App {
       this.setNoiseFilter(r.noiseFilter.checked);
       r.noiseFilter.blur();
     };
+    r.camOn.onchange = () => {
+      void this.setCameraOn(r.camOn.checked);
+      r.camOn.blur();
+    };
+    r.camSelect.onchange = () => {
+      this.prefs = savePrefs({ cameraDeviceId: r.camSelect.value });
+      r.camSelect.blur();
+      if (this.camera.state !== 'off') void this.openCamera();
+    };
+    for (const [corner, button] of Object.entries(r.camCorners) as [Corner, HTMLButtonElement][]) {
+      button.onclick = () => {
+        this.setCameraLayout({ ...this.prefs.cameraLayout, ...CORNERS[corner] }, true);
+        button.blur();
+      };
+    }
+    r.camSize.oninput = () => {
+      this.setCameraLayout(
+        { ...this.prefs.cameraLayout, size: clampSize(Number(r.camSize.value) / 100) },
+        true,
+      );
+    };
+    r.camSize.onchange = () => r.camSize.blur();
     r.thr.oninput = () => {
       this.store.settings.threshold = Number(r.thr.value);
       this.syncSliders();
@@ -391,8 +455,13 @@ export class App {
       this.saveMeta();
     };
     window.addEventListener('resize', () => this.drawMeter());
-    if ('mediaDevices' in navigator)
-      navigator.mediaDevices.addEventListener('devicechange', () => void this.listMics());
+    if ('mediaDevices' in navigator) {
+      navigator.mediaDevices.addEventListener('devicechange', () => {
+        void this.listMics();
+        void this.listCameras();
+      });
+    }
+    window.addEventListener('pagehide', () => this.camera.close());
     installKeyboard(
       {
         next: () => this.goTo(this.store.state.current + 1),
@@ -623,6 +692,9 @@ export class App {
       if (n > 0) {
         return 'Step 3 · Preview to check it, or Export video when you are done. Start mic again to keep recording.';
       }
+      if (this.camera.on) {
+        return 'Camera on. Drag the picture to where you want it on the slide, or pick a corner and a size below. Then Start mic.';
+      }
       return hold
         ? 'Step 2 · Click Start mic (or press R). Then hold Space, or the button on the stage, while you talk.'
         : 'Step 2 · Click Start mic (or press R), then just talk. Pauses are cut out automatically.';
@@ -689,6 +761,110 @@ export class App {
     this.prefs = savePrefs({ noiseFilter: on });
     this.refs.noiseFilter.checked = on;
     this.mic.setNoiseFilter(on);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Camera                                                              */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The camera switch. On: the camera opens at once, so the picture can be framed and placed before
+   * recording, and is recorded whenever the mic is on. Off: it closes; phrases already recorded keep
+   * their pictures.
+   */
+  async setCameraOn(on: boolean): Promise<void> {
+    this.prefs = savePrefs({ camera: on });
+    this.refs.camOn.checked = on;
+    this.syncCameraControls();
+    if (on) {
+      await this.openCamera();
+    } else {
+      this.camera.close();
+    }
+  }
+
+  /** Opens (or reopens, after a device change) the chosen camera; the state callback does the rest. */
+  private async openCamera(): Promise<boolean> {
+    if (!CameraCapture.supported()) return false;
+    const ok = await this.camera.open(this.refs.camSelect.value || undefined, this.camStage.video);
+    void this.listCameras();
+    return ok;
+  }
+
+  private onCameraState(state: CameraState, error?: string): void {
+    if (state === 'on') {
+      // switched on while the mic is already running: phrases from here on get a picture
+      if (this.store.state.armed && this.recorder) this.camera.record(BLOCK_MS);
+    } else if (state === 'error') {
+      this.toast.show(error ?? 'The camera could not be opened.');
+      this.prefs = savePrefs({ camera: false });
+      this.refs.camOn.checked = false;
+    }
+    this.syncCamStage();
+    this.syncCameraControls();
+    this.updateCoach();
+  }
+
+  /** The stage shows the live camera while it is on, unless a preview is playing recorded pictures. */
+  private syncCamStage(): void {
+    if (this.store.state.previewing && this.previewOverlay) return;
+    const stream = this.camera.liveStream;
+    if (this.camera.on && stream) this.camStage.showLive(stream, this.camera.aspect);
+    else this.camStage.hide();
+  }
+
+  /** Fills the camera picker; like the microphones, the browser names them once one has been allowed. */
+  private async listCameras(): Promise<void> {
+    const devices = await CameraCapture.listDevices();
+    const sel = this.refs.camSelect;
+    while (sel.options.length > 1) sel.remove(1);
+    for (const d of devices) {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || 'Camera';
+      sel.appendChild(o);
+    }
+    const wanted = this.prefs.cameraDeviceId;
+    sel.value = devices.some((d) => d.deviceId === wanted) ? wanted : '';
+  }
+
+  /** Where the picture goes and how big it is; saved when the change is final (a drag that ended, a click). */
+  setCameraLayout(layout: CameraLayout, final: boolean): void {
+    const next = { x: layout.x, y: layout.y, size: clampSize(layout.size) };
+    if (final) this.prefs = savePrefs({ cameraLayout: next });
+    else this.prefs = { ...this.prefs, cameraLayout: next };
+    this.syncCameraControls();
+    this.camStage.relayout();
+    this.editor.relayoutCamera();
+  }
+
+  /** The camera row: shown while the camera switch is on; the corner buttons, the slider and the note follow the state. */
+  private syncCameraControls(): void {
+    const r = this.refs;
+    const layout = this.prefs.cameraLayout;
+    r.camRow.hidden = !r.camOn.checked;
+    const corner = cornerOf(layout);
+    for (const [name, button] of Object.entries(r.camCorners) as [Corner, HTMLButtonElement][]) {
+      button.setAttribute('aria-pressed', String(name === corner));
+    }
+    const pct = Math.round(layout.size * 100);
+    if (Number(r.camSize.value) !== pct) r.camSize.value = String(pct);
+    r.camSizeV.textContent = `${pct} %`;
+    syncRangeFill(r.camSize);
+    let note = '';
+    switch (this.camera.state) {
+      case 'opening':
+        note = 'Opening the camera…';
+        break;
+      case 'on':
+        note = `${this.camera.info?.label ?? 'Camera'} · ${describeLayout(layout)}`;
+        break;
+      case 'error':
+      case 'off':
+        break;
+    }
+    r.camNote.textContent = note;
+    r.camNote.title = note;
   }
 
   /** Preview and export pause the recorder; it stops listening until they end. */
@@ -777,7 +953,7 @@ export class App {
       },
       {
         onPhrase: (phrase) =>
-          this.addSegment(phrase.blocks, phrase.slide, phrase.joined, phrase.prevId, true).id,
+          this.addSegment(phrase.blocks, phrase.slide, phrase.joined, phrase.prevId, true, phrase.at).id,
         onSpeakingChange: (speaking) => {
           this.store.state.speaking = speaking;
           if (speaking) this.refs.capFlagText.textContent = 'RECORDING';
@@ -785,6 +961,8 @@ export class App {
         },
       },
     );
+    // the camera first, so the first phrase has its picture too; a camera that fails is reported and left off
+    if (this.prefs.camera && this.camera.state === 'off') await this.openCamera();
     try {
       const info = await this.mic.start({
         deviceId: this.refs.micSelect.value || undefined,
@@ -803,6 +981,7 @@ export class App {
     this.recorder = recorder;
     this.settling = this.settling.then(() => recorder.settled());
     this.scorer = new MicScorer(this.voice);
+    if (this.camera.on) this.camera.record(BLOCK_MS);
     s.armed = true;
     s.muted = false;
     s.held = false;
@@ -824,8 +1003,13 @@ export class App {
     const recorder = this.recorder;
     recorder?.end();
     this.mic.stop();
+    // the camera takes no more frames; what it holds stays until the last phrase has its picture
+    this.camera.pause();
     // phrases still being reviewed are stored as the reviews come back
     if (recorder) this.settling = this.settling.then(() => recorder.settled());
+    void this.settling.then(() => {
+      if (!this.store.state.armed) this.camera.stopRecording();
+    });
     this.recorder = null;
     this.scorer = null;
     const s = this.store.state;
@@ -857,6 +1041,11 @@ export class App {
     scorer?.push(block, this.sampleRate);
     recorder.process(block, scorer?.prob ?? null);
     const { vad } = recorder;
+    if (this.camera.recording) {
+      // the camera runs on the mic's clock: this many blocks so far, and nothing before the earliest
+      // pending phrase (less the pre-roll a phrase about to start would reach back for) is needed
+      this.camera.tick(vad.seen, recorder.heldFrom - this.store.settings.prerollMs / BLOCK_MS - 50);
+    }
     if (vad.speaking && Math.round(vad.currentMs / BLOCK_MS) % 20 === 0) {
       this.refs.capFlagText.textContent = `RECORDING ${fmtSec(vad.currentMs / 1000)}`;
     }
@@ -872,6 +1061,7 @@ export class App {
     joined: boolean,
     prevId: string | null,
     scroll: boolean,
+    at: number,
   ): Segment {
     const seg: Segment = {
       id: this.nextSegmentId(),
@@ -881,6 +1071,8 @@ export class App {
       joined,
       prevId,
       createdAt: Date.now(),
+      // the camera's picture for exactly these blocks, when it was on
+      video: this.camera.recording ? this.camera.take(at * BLOCK_MS, (at + blocks.length) * BLOCK_MS) : null,
     };
     this.store.state.segments.push(seg);
     void this.db.putSegment(seg);
@@ -1106,6 +1298,11 @@ export class App {
     this.refs.previewFlag.classList.add('on');
     setLabel(this.refs.btnPreview, 'Stop preview');
     setButtonIcon(this.refs.btnPreview, 'square-filled');
+    // the recorded pictures play over the slide where the live camera was
+    this.previewOverlay?.close();
+    this.previewOverlay = OverlayTrack.hasVideo(tl) ? new OverlayTrack(tl) : null;
+    this.previewSerial = -1;
+    if (this.previewOverlay) this.camStage.showPlayback(this.camera.aspect);
     await this.preview.start(tl, fromIndex);
   }
 
@@ -1116,6 +1313,29 @@ export class App {
     if (this.store.state.current !== it.seg.slide) this.showSlide(it.seg.slide);
     this.list.setPlaying(this.store.state.segments.indexOf(it.seg));
     this.refs.previewTime.textContent = `${fmtTime(now)} / ${fmtTime(total)}`;
+    this.paintPreview(index, now);
+  }
+
+  /** The camera frame for this moment of the preview; a frame still decoding is skipped, never waited for. */
+  private paintPreview(index: number, now: number): void {
+    const track = this.previewOverlay;
+    if (!track || this.previewPainting) return;
+    this.previewPainting = true;
+    void track
+      .pictureAt(index, now)
+      .then((picture) => {
+        if (this.previewOverlay !== track) return;
+        if (!picture) {
+          this.camStage.paint(null);
+          this.previewSerial = -1;
+        } else if (picture.serial !== this.previewSerial) {
+          this.previewSerial = picture.serial;
+          this.camStage.paint(picture.frame, picture.aspect);
+        }
+      })
+      .finally(() => {
+        this.previewPainting = false;
+      });
   }
 
   stopPreview(): void {
@@ -1123,6 +1343,9 @@ export class App {
     s.previewing = false;
     this.previewTimeline = null;
     this.preview.stop();
+    this.previewOverlay?.close();
+    this.previewOverlay = null;
+    this.syncCamStage();
     this.list.setPlaying(null);
     this.refs.previewFlag.classList.remove('on');
     setLabel(this.refs.btnPreview, 'Preview');
@@ -1266,6 +1489,11 @@ export class App {
       setNoiseFilter: (on: boolean) => this.setNoiseFilter(on),
       prefs: () => this.prefs,
       mic: this.mic,
+      camera: this.camera,
+      camStage: this.camStage,
+      setCameraOn: (on: boolean) => this.setCameraOn(on),
+      cameraLayout: () => this.prefs.cameraLayout,
+      setCameraLayout: (layout: CameraLayout) => this.setCameraLayout(layout, true),
       hold: (down: boolean) => this.hold(down),
       toggleMute: () => this.toggleMute(),
       goTo: (i: number) => this.goTo(i),
@@ -1276,6 +1504,8 @@ export class App {
       filesChosen: (files: Iterable<File>) => this.filesChosen(files),
       closeSlides: () => this.closeSlides(),
       openExport: () => this.openExport(),
+      startPreview: (from: number) => this.startPreview(from),
+      stopPreview: () => this.stopPreview(),
       exportDialog: this.exportDialog,
       openLibrary: () => this.library.open(),
       library: this.library,
@@ -1321,6 +1551,7 @@ export class App {
       slides: this.store.state.slides,
       api: this.serverCaps ? this.api : null,
       signal: new AbortController().signal,
+      camera: this.prefs.cameraLayout,
       onProgress: (p) => {
         if (p.stage === 'encoding') encodeMs = performance.now() - started;
         if (p.remainingSec !== null && p.stage !== 'done') {

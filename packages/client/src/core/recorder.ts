@@ -26,6 +26,11 @@ export type CaptureMode = 'auto' | 'hold';
 
 export interface Phrase {
   blocks: Float32Array[];
+  /**
+   * Index of the first block among every block this recorder has taken: where the phrase sits on
+   * the microphone's clock, so whatever recorded alongside (the camera) can be cut to match.
+   */
+  at: number;
   /** Zero-based slide the phrase was spoken on. */
   slide: number;
   /** Continues the previous phrase without a gap (the slide changed mid-sentence). */
@@ -68,6 +73,7 @@ export interface RecorderOptions {
 /** A phrase the live detector has finished, waiting for its review. */
 interface Finished {
   blocks: Float32Array[];
+  at: number;
   slide: number;
   /** Continues the part stored at the last slide change, if the review leaves the seam alone. */
   continuation: boolean;
@@ -102,7 +108,7 @@ export class Recorder {
     this.vad = new VoiceActivityDetector(blockMs, settings, {
       onSpeechStart: () => callbacks.onSpeakingChange(true),
       onSpeechEnd: (phrase) => {
-        if (phrase) this.finish(phrase.blocks, phrase.continuation);
+        if (phrase) this.finish(phrase.blocks, phrase.at, phrase.continuation);
         callbacks.onSpeakingChange(false);
       },
     });
@@ -142,6 +148,17 @@ export class Recorder {
   /** Resolves once every phrase finished so far has been reviewed and stored (or dropped). */
   settled(): Promise<void> {
     return this.queue;
+  }
+
+  /**
+   * Index of the earliest block that may still end up in a phrase: the oldest phrase waiting for its
+   * review, else the one being spoken, else the pre-roll. Whatever records alongside the microphone
+   * can let go of everything before it.
+   */
+  get heldFrom(): number {
+    let from = this.vad.heldFrom;
+    for (const finished of this.waiting) if (!finished.dropped) from = Math.min(from, finished.at);
+    return from;
   }
 
   /** Whether sound reaching the mic right now can become a phrase. */
@@ -201,8 +218,8 @@ export class Recorder {
     if (this.vad.speaking) {
       // whether the part being stored itself continued an earlier part: read before the split marks the rest as one
       const continuation = this.vad.continuing;
-      const blocks = this.vad.split();
-      if (blocks) this.finish(blocks, continuation, true);
+      const part = this.vad.split();
+      if (part) this.finish(part.blocks, part.at, continuation, true);
     }
     this._slide = index;
   }
@@ -236,8 +253,8 @@ export class Recorder {
    * A phrase (or, with `split`, the part of one spoken before a slide change) is finished: queue it
    * for its review, or store it at once when there is none.
    */
-  private finish(blocks: Float32Array[], continuation: boolean, split = false): void {
-    const finished: Finished = { blocks, slide: this._slide, continuation, dropped: false };
+  private finish(blocks: Float32Array[], at: number, continuation: boolean, split = false): void {
+    const finished: Finished = { blocks, at, slide: this._slide, continuation, dropped: false };
     if (!this.review) {
       this.store(finished, { keep: [{ from: 0, to: blocks.length }], startCut: false, endCut: false }, split);
       return;
@@ -272,6 +289,7 @@ export class Recorder {
       const joined = i === 0 && finished.continuation && this.lastOpen && !verdict.startCut;
       this.lastId = this.callbacks.onPhrase({
         blocks: finished.blocks.slice(range.from, range.to),
+        at: finished.at + range.from,
         slide: finished.slide,
         joined,
         prevId: joined ? this.lastId : null,

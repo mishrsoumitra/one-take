@@ -26,9 +26,12 @@ import {
 
 import { type Slide } from '../app/types.js';
 import { type Cue } from '../core/captions.js';
+import { type CameraLayout } from '../core/overlay.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 import { BT709_LIMITED, rgbaToI420 } from '../core/yuv.js';
+
+import { drawOverlay, overlayBox, type OverlayPicture, type OverlayTrack } from './overlay.js';
 
 export const EXPORT_SAMPLE_RATE = 48000;
 /** The last slide stays on screen this long after the last word. */
@@ -60,6 +63,8 @@ export interface EncodeOptions {
   onProgress: (progress: EncodeProgress) => void;
   /** Subtitles to draw into the picture, in timeline order. */
   captions?: readonly Cue[];
+  /** The speaker's camera picture to draw over the slides, and where. */
+  camera?: { track: OverlayTrack; layout: CameraLayout } | null;
 }
 
 export interface EncodeResult {
@@ -242,12 +247,13 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
   const frameTotal = totalFrames(timeline, fps);
   const chunkFrames = Math.round(rate * AUDIO_CHUNK_SECONDS);
   const cues = options.captions ?? [];
+  const camera = options.camera ?? null;
   let cueAt = 0;
   let frames = 0;
   let audioPos = 0; // samples emitted
-  /** What the captured frame shows: the slide and the subtitle on it. */
+  /** What the captured frame shows: the slide, the subtitle on it and the camera frame over it. */
   let currentKey = '';
-  /** The current slide (with its subtitle) as one captured frame; every frame of it is a reference clone of this. */
+  /** The current slide (with its subtitle and camera frame) as one captured frame; every frame of it is a reference clone of this. */
   let slideFrame: VideoSample | null = null;
   let acc = new Float32Array(chunkFrames);
   let accN = 0;
@@ -303,14 +309,24 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     return new VideoSample(canvas, { timestamp: 0, duration: frameDuration });
   }
 
-  async function drawSlide(index: number, caption: readonly string[] | null): Promise<VideoSample> {
-    const key = `${index}|${caption?.join('\n') ?? ''}`;
+  async function drawSlide(
+    index: number,
+    caption: readonly string[] | null,
+    picture: OverlayPicture | null,
+  ): Promise<VideoSample> {
+    const key = `${index}|${caption?.join('\n') ?? ''}|${picture?.serial ?? ''}`;
     if (key === currentKey && slideFrame) return slideFrame;
     currentKey = key;
     const bmp = await bitmaps.get(index);
     g.fillStyle = '#000';
     g.fillRect(0, 0, width, height);
-    g.drawImage(bmp, Math.round((width - bmp.width) / 2), Math.round((height - bmp.height) / 2));
+    const left = Math.round((width - bmp.width) / 2);
+    const top = Math.round((height - bmp.height) / 2);
+    g.drawImage(bmp, left, top);
+    if (picture && camera) {
+      const area = { x: left, y: top, width: bmp.width, height: bmp.height };
+      drawOverlay(g, picture.frame, overlayBox(camera.layout, area, picture.aspect));
+    }
     if (caption) drawCaption(g, caption, width, height);
     slideFrame?.close();
     slideFrame = captureSlide();
@@ -324,11 +340,18 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     return cue && cue.start <= sec ? cue.lines : null;
   }
 
-  async function pushFrames(untilSec: number, slideIndex: number, keyFirst: boolean): Promise<void> {
+  async function pushFrames(
+    untilSec: number,
+    slideIndex: number,
+    keyFirst: boolean,
+    item: number,
+  ): Promise<void> {
     let key = keyFirst;
     while (frames * frameDuration < untilSec - 1e-6) {
       checkAbort();
-      const base = await drawSlide(slideIndex, cues.length ? captionAt(frames * frameDuration) : null);
+      const at = frames * frameDuration;
+      const picture = camera ? await camera.track.pictureAt(item, at) : null;
+      const base = await drawSlide(slideIndex, cues.length ? captionAt(at) : null, picture);
       const frame = base.clone();
       frame.setTimestamp(frames / fps);
       frame.setDuration(frameDuration);
@@ -379,12 +402,13 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
       if (it.gap > 0) await pushSamples(new Float32Array(Math.round(it.gap * rate)));
       await pushSamples(segmentToFloat(it.seg.pcm, it.seg.sampleRate, rate, it.fadeIn, it.fadeOut));
       const prev = timeline.items[k - 1];
-      await pushFrames(audioPos / rate, it.seg.slide, k === 0 || prev?.seg.slide !== it.seg.slide);
+      await pushFrames(audioPos / rate, it.seg.slide, k === 0 || prev?.seg.slide !== it.seg.slide, k);
       report(k + 1);
     }
     if (accN > 0) await emitAudio(acc.subarray(0, accN));
-    const lastSlide = timeline.items[timeline.items.length - 1]?.seg.slide ?? 0;
-    await pushFrames(audioPos / rate + TAIL_SECONDS, Math.max(0, lastSlide), false);
+    const lastItem = Math.max(0, timeline.items.length - 1);
+    const lastSlide = timeline.items[lastItem]?.seg.slide ?? 0;
+    await pushFrames(audioPos / rate + TAIL_SECONDS, Math.max(0, lastSlide), false, lastItem);
     checkAbort();
     video.close();
     audio.close();

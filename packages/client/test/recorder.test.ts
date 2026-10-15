@@ -51,6 +51,41 @@ function harness(mode: CaptureMode, slide = 0, review: PhraseReview | null = lev
 }
 
 describe('Recorder in auto mode', () => {
+  it('says where each phrase sits on the microphone clock, pre-roll included', async () => {
+    const h = harness('auto');
+    h.feed(quiet, 500); // blocks 0..49
+    h.feed(loud, 800); // blocks 50..129
+    // while the phrase is open, everything from its first block on is held
+    expect(h.rec.heldFrom).toBeLessThanOrEqual(50);
+    expect(h.rec.heldFrom).toBeGreaterThanOrEqual(50 - 23);
+    h.feed(quiet, HOLD);
+    await h.rec.settled();
+    expect(h.phrases).toHaveLength(1);
+    const p = h.phrases[0];
+    expect(p?.at).toBeGreaterThanOrEqual(50 - 23); // up to 200 ms + 3 blocks of pre-roll
+    expect(p?.at).toBeLessThanOrEqual(50);
+    // the phrase's blocks are the blocks fed at those indices: `at` plus the length reaches the tail
+    expect((p?.at ?? 0) + (p?.blocks.length ?? 0)).toBeGreaterThanOrEqual(130);
+    expect((p?.at ?? 0) + (p?.blocks.length ?? 0)).toBeLessThanOrEqual(130 + 15);
+    expect(h.rec.vad.seen).toBe(50 + 80 + HOLD / 10);
+    // nothing is pending any more: only the pre-roll is held
+    expect(h.rec.heldFrom).toBeGreaterThan(h.rec.vad.seen - 30);
+  });
+
+  it('continues the block count across a slide change', async () => {
+    const h = harness('auto');
+    h.feed(quiet, 300);
+    h.feed(loud, 600);
+    h.rec.setSlide(1);
+    h.feed(loud, 600);
+    h.feed(quiet, HOLD);
+    await h.rec.settled();
+    expect(h.phrases).toHaveLength(2);
+    const [a, b] = h.phrases;
+    expect(b?.at).toBe((a?.at ?? 0) + (a?.blocks.length ?? 0));
+    expect(b?.at).toBe(90);
+  });
+
   it('turns speech into phrases without any key', async () => {
     const h = harness('auto');
     expect(h.rec.gateOpen).toBe(true);

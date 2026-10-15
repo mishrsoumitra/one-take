@@ -14,7 +14,7 @@
  *
  * Pure functions apart from the scoring; the editor and the recorder do the commit.
  */
-import { type IdFactory } from './edit.js';
+import { type IdFactory, videoBetween } from './edit.js';
 import { listenAgain } from './hindsight.js';
 import { type PhraseVerdict } from './recorder.js';
 import { SPEECH_FRAME_SEC, SPEECH_KEEP, SPEECH_START } from './speech.js';
@@ -149,10 +149,13 @@ export function trimSilences(
     keep.forEach((range, i) => {
       const last = i === keep.length - 1;
       const seamless = i === 0 && range.from === 0;
+      const lo = Math.round(range.from * sr);
+      const hi = Math.round(range.to * sr);
       out.push({
         ...base,
         id: last ? seg.id : nextId(),
-        pcm: seg.pcm.slice(Math.round(range.from * sr), Math.round(range.to * sr)),
+        pcm: seg.pcm.slice(lo, hi),
+        video: seg.video ? videoBetween(seg, lo, hi) : seg.video,
         joined: seamless ? base.joined : false,
         prevId: seamless ? base.prevId : null,
       });

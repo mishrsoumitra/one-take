@@ -11,7 +11,7 @@ import { MicScorer, type VoiceScorer } from '../core/speech.js';
 import { type VadSettings } from '../core/vad.js';
 import { type CameraCapture } from '../video/camera.js';
 
-import { type MicCapture } from './mic.js';
+import { type MicCapture, type NoiseFilterMode } from './mic.js';
 
 export interface Take {
   /** Each phrase, in the order spoken, with the silence between them removed; its picture when the camera was on. */
@@ -23,7 +23,7 @@ export interface TakeStartOptions {
   settings: VadSettings;
   mode: CaptureMode;
   deviceId?: string;
-  noiseFilter: boolean;
+  noiseFilter: NoiseFilterMode;
   /** The camera, when it is on: each phrase of the take gets its picture too. */
   camera?: CameraCapture | null;
 }
@@ -103,8 +103,7 @@ export class TakeRecorder {
       {
         onPhrase: (phrase) => {
           const pcm = floatBlocksToInt16(phrase.blocks);
-          const video =
-            camera?.take(phrase.at * this.blockMs, (phrase.at + phrase.blocks.length) * this.blockMs) ?? null;
+          const video = camera?.take(phrase.at.from * this.blockMs, phrase.at.to * this.blockMs) ?? null;
           this.phrases.push({ pcm, video });
           this.doneMs += (pcm.length / this.sampleRate) * 1000;
           return String(this.phrases.length);

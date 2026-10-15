@@ -96,6 +96,8 @@ export class CameraCapture {
   private reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
   private fallbackVideo: HTMLVideoElement | null = null;
   private fallbackHandle = 0;
+  /** What became of the frames offered since `record()`: kept, or dropped and why. For the e2e and for tuning. */
+  readonly stats = { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0 };
 
   constructor(private readonly callbacks: CameraCallbacks) {}
 
@@ -248,6 +250,7 @@ export class CameraCapture {
       lastKeyUs: -Infinity,
       count: 0,
     };
+    Object.assign(this.stats, { offered: 0, early: 0, spaced: 0, queued: 0, kept: 0 });
     this.configureEncoder();
   }
 
@@ -364,16 +367,26 @@ export class CameraCapture {
     const info = this._info;
     if (!s || !s.encoding || !encoder || !g || !canvas || !info) return;
     if (encoder.state !== 'configured') return;
+    this.stats.offered++;
     const now = performance.now();
     const sinceTick = Math.min(s.blockMs, Math.max(0, now - s.tickAt));
     const ms = s.seen * s.blockMs + sinceTick - CAMERA_LAG_MS;
-    if (ms < 0) return; // before the microphone's first block
+    if (ms < 0) {
+      this.stats.early++;
+      return; // before the microphone's first block
+    }
     let us = Math.round(ms * 1000);
     // at most CAPTURE_FPS a second, and never two frames on the same instant
-    if (s.lastUs >= 0 && us - s.lastUs < (US / CAPTURE_FPS) * 0.85) return;
+    if (s.lastUs >= 0 && us - s.lastUs < (US / CAPTURE_FPS) * 0.85) {
+      this.stats.spaced++;
+      return;
+    }
     if (us <= s.lastUs) us = s.lastUs + 1;
     // the encoder has fallen behind (a slow machine): dropping a frame is better than a growing queue
-    if (encoder.encodeQueueSize > 2) return;
+    if (encoder.encodeQueueSize > 2) {
+      this.stats.queued++;
+      return;
+    }
     // scale and crop to the stored size, keeping the picture centred
     const scale = Math.max(info.width / srcW, info.height / srcH);
     const dw = srcW * scale;
@@ -392,6 +405,7 @@ export class CameraCapture {
       s.lastUs = us;
       if (key) s.lastKeyUs = us;
       s.count++;
+      this.stats.kept++;
     } catch (error) {
       console.warn('camera frame could not be encoded', error);
     } finally {

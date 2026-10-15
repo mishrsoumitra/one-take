@@ -171,6 +171,7 @@ describe('VoiceActivityDetector', () => {
     const first = h.vad.split();
     expect(first).not.toBeNull();
     expect(first!.blocks.length).toBeGreaterThan(60);
+    expect(first!.endBlock).toBe(90);
     expect(h.vad.speaking).toBe(true);
     h.feed(loud, 100); // shorter than minSpeech, but it continues a phrase
     h.feed(quiet, HOLD);

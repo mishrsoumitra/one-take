@@ -62,11 +62,12 @@ describe('Recorder in auto mode', () => {
     await h.rec.settled();
     expect(h.phrases).toHaveLength(1);
     const p = h.phrases[0];
-    expect(p?.at).toBeGreaterThanOrEqual(50 - 23); // up to 200 ms + 3 blocks of pre-roll
-    expect(p?.at).toBeLessThanOrEqual(50);
-    // the phrase's blocks are the blocks fed at those indices: `at` plus the length reaches the tail
-    expect((p?.at ?? 0) + (p?.blocks.length ?? 0)).toBeGreaterThanOrEqual(130);
-    expect((p?.at ?? 0) + (p?.blocks.length ?? 0)).toBeLessThanOrEqual(130 + 15);
+    expect(p?.at.from).toBeGreaterThanOrEqual(50 - 23); // up to 200 ms + 3 blocks of pre-roll
+    expect(p?.at.from).toBeLessThanOrEqual(50);
+    // the phrase's blocks are the blocks fed at those indices: the range ends where the tail does
+    expect(p?.at.to).toBe((p?.at.from ?? 0) + (p?.blocks.length ?? 0));
+    expect(p?.at.to).toBeGreaterThanOrEqual(130);
+    expect(p?.at.to).toBeLessThanOrEqual(130 + 15);
     expect(h.rec.vad.seen).toBe(50 + 80 + HOLD / 10);
     // nothing is pending any more: only the pre-roll is held
     expect(h.rec.heldFrom).toBeGreaterThan(h.rec.vad.seen - 30);
@@ -82,8 +83,8 @@ describe('Recorder in auto mode', () => {
     await h.rec.settled();
     expect(h.phrases).toHaveLength(2);
     const [a, b] = h.phrases;
-    expect(b?.at).toBe((a?.at ?? 0) + (a?.blocks.length ?? 0));
-    expect(b?.at).toBe(90);
+    expect(b?.at.from).toBe(a?.at.to);
+    expect(b?.at.from).toBe(90);
   });
 
   it('turns speech into phrases without any key', async () => {
@@ -239,6 +240,47 @@ describe('the second listen on finished phrases', () => {
     h.feed(quiet, HOLD);
     expect(h.phrases).toHaveLength(1); // synchronously
     expect(h.rec.pending).toBe(0);
+  });
+
+  it('names each live phrase and says where its pieces sit in the stream', async () => {
+    const keys: number[] = [];
+    const h = harness('auto', 0, null);
+    const rec = new Recorder(
+      10,
+      settings,
+      { mode: 'auto', slide: 0 },
+      {
+        onPhrase: (p) => {
+          h.phrases.push({ ...p, id: `p${h.phrases.length + 1}` });
+          return `p${h.phrases.length}`;
+        },
+        onSpeakingChange: (on, key) => keys.push(on ? key : -key),
+      },
+    );
+    const feed = (block: () => Float32Array, ms: number) => {
+      for (let i = 0; i < ms / 10; i++) rec.process(block());
+    };
+    feed(quiet, 1000); // 100 blocks of nothing
+    feed(loud, 500); // the first phrase starts in here
+    rec.setSlide(1); // split: the first piece ends at block 150
+    feed(loud, 400);
+    feed(quiet, HOLD);
+    expect(keys).toEqual([1, -1]);
+    const [a, b] = h.phrases;
+    expect(a?.key).toBe(1);
+    expect(b?.key).toBe(1);
+    expect(a?.at.to).toBe(150);
+    expect(a?.at.from).toBe(150 - (a?.blocks.length ?? 0));
+    expect(a?.at.from).toBeGreaterThanOrEqual(100 - 23); // the pre-roll reaches back into the quiet
+    expect(b?.at.from).toBe(150);
+    expect(b?.at.to).toBe(150 + (b?.blocks.length ?? 0));
+    expect(rec.vad.seen).toBe(100 + 50 + 40 + HOLD / 10);
+    // a second phrase gets the next key
+    feed(loud, 500);
+    rec.discard();
+    expect(keys).toEqual([1, -1, 2, -2]);
+    expect(rec.phrase).toBe(2);
+    await rec.settled();
   });
 });
 

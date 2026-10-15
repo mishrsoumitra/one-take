@@ -1,5 +1,6 @@
 /** The ordered list of phrases with the silence placed between them; shared by preview and export. */
 import { type ClipVideo } from './clip-video.js';
+import { type SpeakerVerdict } from './identity.js';
 
 export interface Segment {
   id: string;
@@ -13,6 +14,8 @@ export interface Segment {
   createdAt: number;
   /** The camera's picture of the speaker while this was said; missing when the camera was off. */
   video?: ClipVideo | null;
+  /** Whose voice it is, once the lip and voice checks have judged the phrase (see `identity.ts`). */
+  speaker?: SpeakerVerdict;
 }
 
 export interface TimelineItem {

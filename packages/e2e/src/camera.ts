@@ -26,7 +26,16 @@ import {
 } from './harness.js';
 import { writeFixtures } from './make-fixtures.js';
 
-const { values } = parseArgs({ options: { out: { type: 'string' }, port: { type: 'string' } } });
+const { values } = parseArgs({
+  options: {
+    out: { type: 'string' },
+    port: { type: 'string' },
+    /** The noise filter to run under (deep, classic, off); the app's default when not given. */
+    noise: { type: 'string' },
+    /** `off` turns the lip check off before recording; it watches the same camera by default. */
+    lips: { type: 'string' },
+  },
+});
 const OUT = path.resolve(values.out ?? path.join(ROOT, 'packages/e2e/camera-out'));
 const PORT = Number(values.port ?? 4599);
 const CDP_PORT = PORT + 1;
@@ -51,6 +60,14 @@ await sleep(1500);
 await page.setFiles('#fileIn', [fixtures.pdf]);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 4; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 4, 'four slides rendered');
+if (values.noise) {
+  await ev(`__onetake.setNoiseFilter(${JSON.stringify(values.noise)})`);
+  console.log(`noise filter: ${values.noise}`);
+}
+if (values.lips === 'off') {
+  await ev('__onetake.setCamera("off")');
+  console.log('lip check: off');
+}
 
 /* ------------------------------------------------------------ the switch and the live picture */
 page.step('camera on');
@@ -272,6 +289,10 @@ await ev('__onetake.setCameraLayout({ x: 1, y: 1, size: 0.28 })');
 
 /* ------------------------------------------------------------ recording with the camera */
 page.step('recording with the camera');
+// the first mic start offers the voice enrollment; skipped, so the run is about the camera
+await ev('void __onetake.startMic()');
+if (await page.waitFor('__onetake.enroll.isOpen', 30, 100))
+  await ev('document.getElementById("enrollSkip").click()');
 check(await page.startMic(), 'mic started');
 check(await page.waitFor('__onetake.camera.recording', 30, 100), 'the camera records while the mic is on');
 const t0 = Date.now();
@@ -287,6 +308,7 @@ await at(13.0, () => Promise.resolve());
   const held = await ev<number>('__onetake.camera.heldBytes');
   console.log(`camera holds ${(held / 1024).toFixed(0)} KB while recording`);
   check(held > 0, 'frames are being kept');
+  console.log(`camera frames so far: ${JSON.stringify(await ev('__onetake.camera.stats'))}`);
 }
 await page.screenshot('camera-recording.png');
 await ev('__onetake.stopMic()');

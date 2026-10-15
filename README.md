@@ -26,6 +26,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - [Large exports](#large-exports)
 - [System check and performance mode](#system-check-and-performance-mode)
 - [What counts as speech](#what-counts-as-speech)
+- [Who is speaking](#who-is-speaking)
 - [Saving your work and resuming](#saving-your-work-and-resuming)
 - [Design system](#design-system)
 - [The server](#the-server)
@@ -40,8 +41,9 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 ## What you get
 
 - **Pauses cut automatically, and never your voice.** Two listens, both plain signal processing (no model, nothing trained, every rule readable), listen for a human voice 32 ms at a time: sound that stands out from the room's noise, repeats at the rate of a voice's pitch, and changes the way speech does. The first listen runs live and is lenient on purpose: it opens a phrase on the first hint of a voice and holds it open through a soft aside, a sentence that trails off or a low creaky ending, so nothing you say is cut as you say it. Two seconds after you fall silent the phrase is finished and gets a second listen, with the whole of it in view: the room's noise is measured from the quiet moments either side of every frame, the pitch is followed both ways, and only then are the pauses cut out, the dead air at the ends trimmed, and a phrase that turns out to hold no voice at all dropped. A fan, an air conditioner, typing, breathing or a chair never make it into the video, and neither does a pause; a sentence that drops 25 dB in the middle does.
-- **Background noise filtered out.** A noise filter built the same way (plain signal processing, every rule readable) learns the room's steady noise, a fan, an air conditioner, a hum, hiss, and takes it out from under your voice before anything is recorded: about 20 dB on top of what Chrome already removes. A switch under the level meter turns it off, and the **Microphone** list next to it picks the mic; both are remembered.
-- **Your camera in the picture.** Tick **Camera** under the level meter and your webcam is recorded along with your voice, phrase by phrase, and laid over the slides in the video. Put the picture in any corner with one click, or drag it anywhere on the slide; set its size with a slider or by dragging its corner, from a small badge up to half the slide's width. What you see on the stage is exactly where it will be in the export. The picture follows every cut, split and re-record in the editor without being re-encoded, and the export dialog can leave it out.
+- **Background noise taken out, live.** Before anything hears the microphone, DeepFilterNet3 (a trained noise model, full-band at 48 kHz, running on the audio thread as WebAssembly) takes out fans, typing, traffic, music and other people talking, with about 40 ms of delay. On a machine that cannot keep up it gives way to the classic filter, plain signal processing that learns the room's steady noise (a fan, a hum, hiss) and takes it out; you can also choose the classic filter, or none, from the **Noise filter** list under the level meter. The **Microphone** list next to it picks the mic; both are remembered.
+- **Knows whose voice it is.** Two checks run on every phrase while you record. The camera watches your mouth (MediaPipe's Face Landmarker, in a worker): a voice with your lips moving is you, a voice with your lips still is someone else. And each phrase's voice is compared with a profile of yours, made once from twenty seconds of reading (a speaker-embedding model, WeSpeaker's ResNet34, through onnxruntime-web in a worker). A phrase that is another voice is marked in the timeline within a second of ending, with the reasons; one the two checks disagree on is marked as not sure. Nothing is uploaded: the models are fetched once and kept, the profile stays in your browser.
+- **Your camera in the picture.** Tick **Record camera** under the level meter and your webcam is recorded along with your voice, phrase by phrase, and laid over the slides in the video. Put the picture in any corner with one click, or drag it anywhere on the slide; set its size with a slider or by dragging its corner, from a small badge up to half the slide's width. What you see on the stage is exactly where it will be in the export. The picture follows every cut, split and re-record in the editor without being re-encoded, and the export dialog can leave it out.
 - **Two ways to drive the mic.** *Auto* listens all the time and decides for you. *Press to speak* records only while you hold `Space` or the big button on the stage, so the app is never listening when you have not asked it to; the dead air at either end of a press is still trimmed. Switch at any time, even mid-recording.
 - **PDF, PowerPoint or images.** Drop a PDF, a `.pptx` / `.ppsx` / `.pptm` deck or a set of images. PowerPoint files are turned into PDF on the local server in plain JavaScript; no Office, Keynote or LibreOffice needed.
 - **Slides follow your navigation.** Change slides with the arrow keys, a presenter clicker, or a click on a thumbnail. If you change slides mid-sentence, the sentence stays intact across both slides.
@@ -118,7 +120,9 @@ Slides are rasterised once, at up to 2560×1440, and kept as JPEGs. Decks with h
 
 ### 2. Start the mic and find your speech line
 
-Click **Start mic**. Chrome asks for microphone permission the first time. Pick a different microphone from the **Microphone** list under the level meter if you have more than one (the browser only names them once the mic has been allowed, so the list fills after the first start); the choice is remembered. Next to it, **Noise filter** is on by default: it takes the room's steady noise, a fan, an air conditioner, a hum or hiss, out from under your voice before anything is recorded. Untick it if your voice comes out thin; it takes effect at once, even mid-recording.
+Click **Start mic**. Chrome asks for microphone permission the first time. Pick a different microphone from the **Microphone** list under the level meter if you have more than one (the browser only names them once the mic has been allowed, so the list fills after the first start); the choice is remembered. Next to it, **Noise filter** is set to **Deep** by default: DeepFilterNet3 takes fans, typing, traffic, music and other people's voices out from under yours before anything is recorded. Pick **Classic** for the plain filter that only takes out steady noise (a fan, a hum, hiss), or **Off** for nothing beyond what Chrome does on its own; the choice takes effect at once, even mid-recording, and is remembered. The note under the meter says which filter is really running.
+
+The first time you start the mic, One Take asks to learn your voice: read the lines in the box out loud for twenty seconds, in the voice you lecture in, and press nothing else. From then on every phrase is compared with how your voice sounds (see [Who is speaking](#who-is-speaking)). Skip it and the voice check stays off until you click **Learn my voice** under the level meter, which also lets you learn it again. The **Camera** list next to it picks the camera for the lip check, or turns it off; while the camera is watched, a small mirror of it sits in the corner of the stage so you can see you are in the frame.
 
 Next to **Start mic** is the mode switch, **Auto | Press to speak**:
 
@@ -131,9 +135,9 @@ The **Mic level** meter shows your voice against a white line, the *speech line*
 
 ### 3. Switch on the camera (optional)
 
-Tick **Camera** next to **Noise filter** under the level meter. The browser asks for camera permission the first time, then your picture appears over the slide, mirrored like a mirror so it is easy to frame yourself (the recording is not mirrored). A row of camera controls appears under the sliders:
+Tick **Record camera** next to the **Camera** list under the level meter. The browser asks for camera permission the first time, then your picture appears over the slide, mirrored like a mirror so it is easy to frame yourself (the recording is not mirrored). A row of camera controls appears under the sliders:
 
-- **Camera**: which camera to use, if you have more than one. Like the microphones, the browser names them once one has been allowed.
+- **Camera** (the list next to the switch): which camera to use, if you have more than one. The same camera watches your lips for the lip check (see *Who is speaking*), opened once for both. Like the microphones, the browser names them once one has been allowed.
 - **Position**: four buttons put the picture in the top-left, top-right, bottom-left or bottom-right corner of the slide. Or just drag the picture on the slide to wherever you like; it snaps into a corner when it comes close to one, and the note under the row says *Where you dragged it* otherwise.
 - **Size**: the picture's width as a share of the slide's width, from 12 % to 50 % (24 % to begin with). Dragging the small handle on the picture's free corner does the same.
 
@@ -497,7 +501,7 @@ The latency choice is measured, not assumed: on an M2 Max the VideoToolbox encod
 
 ## What counts as speech
 
-The microphone first goes through the noise filter (see [The noise filter](#the-noise-filter) below) when it is on. Then it is listened to twice: once live, 10 ms at a time, to notice that something which could be a voice is going on, and once more when the phrase is finished, with the whole of it in view, to decide what to keep. The live listen never cuts anything; the second one makes every cut. Both are the same arithmetic.
+The microphone first goes through the noise filter (see [The noise filter](#the-noise-filter) below). Then it is listened to twice: once live, 10 ms at a time, to notice that something which could be a voice is going on, and once more when the phrase is finished, with the whole of it in view, to decide what to keep. The live listen never cuts anything; the second one makes every cut. Both are the same arithmetic.
 
 ### The voice detector
 
@@ -548,17 +552,57 @@ The microphone is opened in mono with echo cancellation, Chrome's own noise supp
 
 ### The noise filter
 
-With **Noise filter** on (the default), the microphone goes through `packages/client/src/core/denoise.ts` on the audio thread before the voice detector or the recorder hears it. Like the detector it is plain signal processing: no model, nothing trained, every number a rule. The sound is cut into 21 ms frames that overlap by half, each frame is turned into its spectrum (bins about 47 Hz wide), and every bin of every frame goes through three steps:
+The **Noise filter** list under the level meter has three choices, and whichever runs does so on the audio thread, before the voice detector, the recorder or the voice check hears anything:
+
+- **Deep** (the default): DeepFilterNet3, a trained model that takes out fans, typing, traffic, music and other people talking, at the full 48 kHz band. It is the `libDF` runtime compiled to WebAssembly, in its own AudioWorklet, from the `@workadventure/noise-suppression` package (the model and the runtime, 22 MB, are served with the app; nothing is fetched elsewhere). The app's audio context runs at 48 kHz for it. It may take out up to 40 dB (`audio/deepfilter.ts`); unlimited attenuation silences the room between words, which sounds like dropouts. It adds about 40 ms of delay, costs a few per cent of one core on a recent laptop, and while it loads (a moment, the first time) the classic filter stands in. Chrome's own noise suppression is turned off under it, so the two do not fight. The worklet measures its own cost; when it spends more than 60 % of real time over two windows in a row, the machine cannot keep up, the classic filter takes over for the rest of the session and a message says so.
+- **Classic**: the filter below, plain signal processing, for steady noise only.
+- **Off**: nothing beyond what Chrome does on its own.
+
+The classic filter, `packages/client/src/core/denoise.ts`, is like the detector: no model, nothing trained, every number a rule. The sound is cut into 21 ms frames that overlap by half, each frame is turned into its spectrum (bins about 47 Hz wide), and every bin of every frame goes through three steps:
 
 - **Learning the room.** Each bin keeps a _floor_, its estimate of the noise there. For the first half second the floor is simply the average so far (nobody is speaking yet). After that the bin's power, smoothed over its neighbours and over frames, is compared with the quietest it has been in the last second or two; a bin that stands more than 7 dB over that is judged to hold a voice and its floor stays put, otherwise the floor follows the power. A fan, a hum or hiss hold their level, so they are the quietest the bin has been and become the floor within a second or two of switching on; a voice keeps changing and never does.
 - **Judging what stands over it.** The _measured_ ratio is how far the frame's power stands over the floor. The _believed_ ratio, what is taken to be voice on top of the floor, comes mostly (98 %) from what the filter kept of the previous frame and only a little from this one (the decision-directed rule). That memory is what stops the result from twinkling: a bin that stood out for one frame by chance is not believed, a harmonic a voice keeps going for a few frames is.
 - **Scaling the bin.** The two ratios give the bin's gain through the Ephraim-Malah log-spectral amplitude estimator: the gain with the least expected error in the log of the amplitude, the scale that matches how loudness is heard. A bin believed to be all noise goes down to the gain floor, 24 dB; a bin believed to be all voice is left alone. Nothing is ever scaled under the floor, so what is left of the room sounds like a quieter room rather than a flutter of tones.
 
-The frames are put back together through windows that add up to one, so a clean voice comes out as it went in, 21 ms later. On the test fixtures a fan, a humming fan, hiss or white noise drops by about 20 dB from the first second, a clean voice comes through within a decibel of itself, a fan that switches on mid-recording is absorbed within three seconds, and the voice detector hears more of a voice through a fan than it did before (at 5 dB of fan under the voice, two thirds of the loud frames instead of a third). The filter cannot take out sounds that keep changing, such as a voice from the next room, music or typing, because they never become the floor. It takes about a millisecond per second of audio, and the switch takes effect without reopening the microphone.
+The frames are put back together through windows that add up to one, so a clean voice comes out as it went in, 21 ms later. On the test fixtures a fan, a humming fan, hiss or white noise drops by about 20 dB from the first second, a clean voice comes through within a decibel of itself, a fan that switches on mid-recording is absorbed within three seconds, and the voice detector hears more of a voice through a fan than it did before (at 5 dB of fan under the voice, two thirds of the loud frames instead of a third). The classic filter cannot take out sounds that keep changing, such as a voice from the next room, music or typing, because they never become the floor; that is what the deep one is for. It takes about a millisecond per second of audio, and the choice takes effect without reopening the microphone.
 
 A headset or USB microphone gives the cleanest cut. Mute (`M`) when you need to talk to someone in the room.
 
 **Remove pauses** in the editor applies the second listen to clips that are already recorded (`packages/client/src/core/silence.ts`): every clip is scored from start to end with hindsight, the stretches with a voice are padded with the pre-roll and the tail, a pause longer than _Phrase ends after_ splits the clip, a stretch of voice shorter than the minimum phrase is dropped, and a clip with no voice at all is removed. Silence of up to 0.3 s at either end of a clip is left alone, since that is what a phrase keeps on purpose. A clip that continued a split sentence stays joined to it unless the cut reached the seam. The editor's own **Record** goes through the same two listens as the main recording.
+
+## Who is speaking
+
+Two checks run while you record, and together they say, for every phrase, whether it was you. A phrase that was someone else gets an **Another voice** badge in the timeline, within a second of the phrase ending, and the reasons sit in the badge's tooltip; a phrase the two checks disagree on gets **Not sure whose voice**. Your own phrases get no badge, only the reasons on hover. The verdict is stored with the phrase, so it is still there after a reload, and it changes nothing by itself: delete the phrase with its ✕, or keep it.
+
+### The lip check
+
+With a camera chosen in the **Camera** list (the default is the default camera), its picture goes to MediaPipe's Face Landmarker in a worker (`packages/client/src/vision/lips.ts`, `workers/lips.worker.ts`): up to twenty times a second it finds 478 points on your face, and four of them are read (`core/lips.ts`): the inside edges of the upper and lower lip, and the two corners of the mouth. The gap between the lips over the width of the mouth is how open your mouth is, a number that does not change when you lean towards the camera or away from it: about 0 shut, 0.5 for an open "ah". Each frame becomes a sample with the time it was seen. When a phrase has been stored, the samples inside its span are looked at together: the swing of the opening (the gap between its 10th and 90th percentiles) and how much it moved from frame to frame. A swing of 5 % of the mouth's width, or a mean move of 2 % per frame, means your lips were moving; less means they were still. With no face in view for most of the phrase, or fewer than six frames, the camera has nothing to say. The frames are matched to the phrase by the time they reached the page, allowing for the filter's delay, which is why a phrase is judged over its whole span and never over a split second. The small mirror in the corner of the stage shows what the camera sees and whether a face is in view; the picture never leaves the page.
+
+### The voice check
+
+The first time you start the mic, you read for twenty seconds. The stretches the voice detector hears a voice in are cut into windows of four seconds, every two seconds, each window goes through a speaker-embedding model, and the mean of the vectors is your **voice profile**: 256 numbers that say what your voice sounds like and, as far as the model can manage, nothing about what you said. The model is WeSpeaker's ResNet34 trained on VoxCeleb, the ONNX file that sherpa-onnx publishes, run by onnxruntime-web's WebAssembly backend in a worker (`packages/client/src/speaker/voice-check.ts`, `workers/speaker.worker.ts`). It is fed Kaldi's 80-band log mel filterbank with each band's mean over the clip taken out (`core/fbank.ts`, matched number for number against kaldi-native-fbank), which is what makes the vector deaf to the microphone's colour and the level. At least eight seconds of voice have to come through for a profile; the enrollment says so and offers to go again when they do not.
+
+While a phrase is being spoken, its audio (after the noise filter) goes to the worker as it comes, and is embedded window by window as the windows become due, so that when the phrase ends only the tail is left to do: the voice check's answer lands a few hundred milliseconds after the phrase, however long the phrase was. The phrase's vector is the mean of its windows', and it is compared with the profile by the cosine between the two: 1 for the same direction, 0 for unrelated. On the model's own test speakers the same voice scores 0.5 to 0.9 and another voice at most 0.4 (median 0.14), and on macOS's text-to-speech voices the same voice scores 0.87 or more and another one 0.63 at most; the bars are **0.5 and above is you**, **0.35 and below is another voice**, and between the two is doubt (`core/speaker.ts`). A phrase with less than 0.8 s of voice is not judged by the voice check.
+
+### The verdict
+
+`core/identity.ts` reads the pair off a table:
+
+| Voice says \ lips say | moving  | still   | no face in view | camera off |
+| --------------------- | ------- | ------- | --------------- | ---------- |
+| you                   | you     | not sure | you            | you        |
+| another voice         | not sure | another | another        | another    |
+| in doubt              | you     | another | not sure        | not sure   |
+| no profile            | you     | another | (no verdict)    | (no verdict) |
+
+When the two agree, that is the verdict. When one has nothing to say, the other decides, a voice in doubt by itself staying in doubt. When they disagree (a voice unlike yours while your lips moved, or your voice over still lips), neither is trusted alone and the phrase is marked as not sure, with both reasons, so you can listen and decide. A phrase split by a slide change is judged piece by piece against the camera, with the voice check's one answer for the whole phrase.
+
+### What it needs, and what it costs
+
+- **Chrome or Edge** for the lip check (`MediaStreamTrackProcessor` hands the camera's frames to the worker). The voice check and the deep filter run wherever AudioWorklet and WebAssembly do.
+- **Three models.** DeepFilterNet3 (8 MB) and its runtime (15 MB) come with the app. The speaker model (25 MB) and the face model (4 MB) are fetched once: `npm run models` puts them in `packages/client/public/models` for the app to serve, and a client without them fetches each from its publisher the first time it is needed, says so, checks it against its SHA-256 and keeps it in the browser's cache storage, so a machine is only ever asked once. Nothing is ever uploaded.
+- **Time.** The face model answers in a few milliseconds a frame on the GPU; the speaker model takes about 70 ms per second of speech on one CPU thread in Python and a few times that in WebAssembly, which the windows hide. In the headless check on an M2 Max every verdict landed 125 to 550 ms after the phrase ended.
+- **What it cannot do.** The checks tell your voice from a different one; a voice very like yours, or your own voice played back from a speaker, can pass. A face turned well away from the camera, or in the dark, is "no face in view", and the voice check decides alone. The voice profile is made once; if your voice changes a lot (a cold, a different microphone, a different room), click **Learn my voice** and read again.
 
 ## Saving your work and resuming
 
@@ -830,6 +874,7 @@ one-take/
 ├── tsconfig.base.json        strict compiler options shared by every package
 ├── eslint.config.js          typescript-eslint strictTypeChecked + stylisticTypeChecked, import order
 ├── vitest.config.ts          three test projects: shared, server, client
+├── scripts/fetch-models.mjs  `npm run models`: fetches the speaker and face models into the client's public folder
 └── packages/
     ├── shared/               types and logic used by both sides (no DOM, no Node APIs)
     │   └── src/
@@ -843,6 +888,7 @@ one-take/
     │       ├── system.ts         SystemProfile types and the machine tier
     │       ├── performance.ts    performance modes, browser capability probe results, applyPerformanceMode()
     │       ├── resources.ts      resource map per export stage and performance warnings
+    │       ├── models.ts         the model files for the voice and lip checks: names, URLs, checksums
     │       └── util.ts           formatBytes, formatDuration, sanitizeFileName
     ├── server/               Fastify server (Node 22+)
     │   └── src/
@@ -866,16 +912,20 @@ one-take/
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
-    │       ├── audio/            the shared AudioContext, MicCapture (AudioWorklet), capture processor, preview playback (seekable), take recording for the editor (with the camera when it is on)
+    │       ├── audio/            the shared AudioContext (48 kHz), MicCapture (source → DeepFilterNet3 → capture worklet, or the classic filter), deepfilter.ts (the deep noise filter's node), capture processor, preview playback (seekable), take recording for the editor (with the camera when it is on)
     │       ├── video/            camera.ts (CameraCapture: the live camera, frames encoded with WebCodecs on the microphone's block clock, a phrase's stretch cut out on request), reader.ts (ClipReader: a clip's pieces decoded in order for the export and the preview)
-    │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the noise filter), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert; the picture follows), clip-video.ts (a phrase's camera picture as pieces of encoded frames: slicing, joining, speed), overlay.ts (where the picture sits on the slide: corners, anywhere, size), PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the classic noise filter), fbank.ts (Kaldi's log mel filterbank for the speaker model), speaker.ts (the voice check's arithmetic: cosine, mean vector, the bars, the windows), lips.ts (mouth opening from landmarks, lip activity over a span), identity.ts (the verdict table and its reasons), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert; the picture follows), clip-video.ts (a phrase's camera picture as pieces of encoded frames: slicing, joining, speed), overlay.ts (where the picture sits on the slide: corners, anywhere, size), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
-    │       ├── storage/          IndexedDB project store (idb)
+    │       ├── storage/          IndexedDB project store (idb), prefs (localStorage), the voice profile
+    │       ├── models/           fetch.ts: a model's bytes from /models, the cache storage or its publisher, checked
+    │       ├── speaker/          voice-check.ts: the speaker model in its worker, fed each live phrase, compared with the profile
+    │       ├── vision/           lips.ts: the camera into the lip worker, the samples kept for each phrase's span
+    │       ├── workers/          speaker.worker.ts (onnxruntime-web, windows of a phrase), lips.worker.ts (MediaPipe Face Landmarker on the camera's frames)
     │       ├── export/           capabilities, prepare (fillers cut, volume, speed, the audio for the recogniser, word times onto the final timeline), encoder (mediabunny, subtitles and the camera picture drawn in), overlay (which camera frame goes with each moment of the timeline), sinks (server / file / memory), runner (prepare, transcribe, encode, finish), real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, cam-stage (the camera picture over the slide: live or played back, drag to move, handle to resize), editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list, meter, keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       ├── ui/               layout, cam-stage (the camera picture over the slide: live or played back, drag to move, handle to resize), editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list (with the voice badges), meter, enroll (the voice enrollment), keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
-    │   └── public/fonts/         Mona Sans (variable weight, OFL)
+    │   └── public/fonts/         Mona Sans (variable weight, OFL); public/models/ holds the fetched models (not in git)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
         └── src/
             ├── run.ts            boots server + headless Chrome, records in both modes, exports, probes with ffprobe
@@ -886,7 +936,7 @@ one-take/
             └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs of speech (macOS text-to-speech) with pauses, typing and clicks
 ```
 
-Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
+Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `pdfjs-dist` (PDF rendering), `idb` (IndexedDB), `@newtonschool/grauity` (design tokens and the icon font; only its CSS is bundled, the React components are not used), `@workadventure/noise-suppression` (DeepFilterNet3 as WebAssembly in an AudioWorklet; only its `deepfilternet` entry is used), `onnxruntime-web` (runs the speaker model, WebAssembly backend only), `@mediapipe/tasks-vision` (the Face Landmarker). Server: `fastify`, `@fastify/static`, `zod`, `pptxtojson` (reads PowerPoint files), `pdfkit` (draws the PDF). Shared: `zod`.
 
 ## Development
 
@@ -906,6 +956,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | `npm run check`        | Typecheck, lint, format check and unit tests. Run this before you commit.                                  |
 | `npm run doctor`       | System check and resource map for a one-hour 1080p lecture, without starting the server.                    |
 | `npm run bench`        | `doctor --bench`: races the H.264 encoders on this machine (`--height 2160` for 4K).                        |
+| `npm run models`       | Fetches the speaker model and the face model (29 MB) into `packages/client/public/models`, checking each against its SHA-256. Optional: a client without them fetches them itself on first use. |
 
 ### Tooling
 
@@ -924,7 +975,7 @@ npm test
 
 - `shared`: the planner (every branch of what-runs-where), key-frame alignment, ladders, size and frame estimates for a three-hour lecture, even-size rounding, file name sanitising, formatting.
 - `server`: the ffmpeg argument builder and capability parsing, the job manager (unique names, short uploads, cancel during upload and during ffmpeg, replace rules, faststart remux, HLS and DASH packaging), and the HTTP app (loopback checks, validation, the SPA fallback, a full export through the API). Tests that need ffmpeg run only when it is installed.
-- `client`: the live phrase detector (with scores and without them), the voice detector (`test/voice.test.ts`: two spoken fixtures, clean and with a fan, a humming fan or white noise 10 dB under the voice; a fan, hiss, typing, a tone, a fan switching on, a fan swelling and fading, gain creeping up and silence; and the live path from 48 kHz blocks through the second listen to phrases), the second listen (`test/hindsight.test.ts`: a woman, a man and a 58 Hz deep voice heard through, a sentence that drops 25 dB in the middle and a soft sentence on its own kept, the voices through a fan, nothing in the sounds of a room or in a fan, hum or tone switching on, the cut verdict on a phrase, and the whole live path), the noise filter (`test/denoise.test.ts`: a clean voice through within a decibel, a fan taken out from under a voice at 10 and 5 dB with the detector hearing more of the voice, the room alone quietened by 20 dB and never heard as a voice over many noise seeds, a fan switching on absorbed, typing only dulled, the same samples whatever the block size, the one-frame delay, and the live path from 48 kHz blocks through the filter to phrases), the scoring plumbing (`test/speech.test.ts`: the downsampler, the microphone scorer and the clip scorer), the pause remover (`test/silence.test.ts`), the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses, and the review queue: cuts, drops, order, failures, discards, joins across slides that survive or break with the cut), the timeline builder, the editor's edit functions (cutting and keeping a stretch, splitting, replacing and inserting clips, which clip is under a time, waveform peaks) and the PCM helpers (these are pure, so they run in Node), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
+- `client`: the live phrase detector (with scores and without them), the voice detector (`test/voice.test.ts`: two spoken fixtures, clean and with a fan, a humming fan or white noise 10 dB under the voice; a fan, hiss, typing, a tone, a fan switching on, a fan swelling and fading, gain creeping up and silence; and the live path from 48 kHz blocks through the second listen to phrases), the second listen (`test/hindsight.test.ts`: a woman, a man and a 58 Hz deep voice heard through, a sentence that drops 25 dB in the middle and a soft sentence on its own kept, the voices through a fan, nothing in the sounds of a room or in a fan, hum or tone switching on, the cut verdict on a phrase, and the whole live path), the noise filter (`test/denoise.test.ts`: a clean voice through within a decibel, a fan taken out from under a voice at 10 and 5 dB with the detector hearing more of the voice, the room alone quietened by 20 dB and never heard as a voice over many noise seeds, a fan switching on absorbed, typing only dulled, the same samples whatever the block size, the one-frame delay, and the live path from 48 kHz blocks through the filter to phrases), the scoring plumbing (`test/speech.test.ts`: the downsampler, the microphone scorer and the clip scorer), the pause remover (`test/silence.test.ts`), the recorder (auto and press to speak: the gate, the key, splits, mutes, pauses, and the review queue: cuts, drops, order, failures, discards, joins across slides that survive or break with the cut), the timeline builder, the editor's edit functions (cutting and keeping a stretch, splitting, replacing and inserting clips, which clip is under a time, waveform peaks), the PCM helpers (these are pure, so they run in Node), the filterbank (`test/fbank.test.ts`: frames against kaldi-native-fbank on three spoken fixtures, edges included), the speaker arithmetic and, when `npm run models` has run, the real model through onnxruntime-web (`test/speaker.test.ts`: the embeddings against a Python reference, the two fixture voices told apart, a voice recognised from its windows and from a 2 s crop), the lip maths (`test/lips.test.ts`: a talking mouth, a shut one through the landmarks' jitter, spans, missing faces) and the verdict table (`test/identity.test.ts`), plus a long-session stress simulation (`test/stress.test.ts`). The simulation drives four virtual hours of speaking through the recorder in a few seconds: thousands of phrases, slides going back and forth with hundreds of changes mid-sentence, auto and press to speak alternating, holds with human reaction times, mutes, preview pauses, coughs, discards, a twenty-minute sentence held the whole time, and an hour of random chaos. Every 10 ms block carries its position, so each phrase is checked exactly: consecutive blocks, all heard with the gate open, none shared, on the slide that was showing, no more than the pre-roll in front and the tail behind; the total kept is bounded by the speech fed; the timeline built from the result is consistent in both orders.
 
 ### End-to-end run
 
@@ -939,7 +990,7 @@ The runner needs Chrome, ffmpeg and ffprobe. It:
 1. writes a 4-page PDF and a WAV that imitates speech with thinking pauses,
 2. starts the real server on port 4399 with the built client,
 3. starts headless Chrome with the WAV as a fake microphone (`--use-file-for-fake-audio-capture`) and drives it over the DevTools Protocol,
-4. loads the slides, records with a slide change mid-sentence, and checks that four phrases exist and one continues across slides,
+4. loads the slides, skips the voice enrollment it is offered at the first mic start (which turns the voice check off and is remembered), checks that DeepFilterNet3 is the filter running and that the lip check watches the fake camera, records with a slide change mid-sentence, and checks that four phrases exist and one continues across slides,
 4. switches to Press to speak and, with real key and mouse events, checks that speech with the key up records nothing, that holding `Space` (auto-repeat included) records exactly one press with a slide change inside it as two joined parts, that the stage button works with the mouse, that `Space` never changes slides in that mode and does again in Auto, and that the mode is remembered,
 5. exports MP4 (checks faststart, 5 fps and AAC), HLS by stream copy at 480p with 2 s segments (checks the playlist, the init segment, the segment count and H.264), DASH with compression (checks that the ffmpeg command carried CRF 30 and the `stillimage` tune), WebM (checks no ffmpeg was needed), a compressed HEVC file (checks it is smaller than the MP4) and an in-memory MP4 saved in the browser, probing each with ffprobe,
 6. reloads the page, checks the project resumed, and plays the preview.
@@ -948,7 +999,7 @@ Set `CHROME` to the path of your Chrome binary if it is not at `/Applications/Go
 
 Neither runner can wait forever. Every call into the browser has a deadline (60 s by default, longer for exports) and each script arms a watchdog for the whole run; when either fires, the script prints the stage it was in, the page's console and a last screenshot (`stall.png`), and exits with a failure. Keys are sent as real DevTools input events, except letter keys (`M`, `R`, `Ctrl+Z`): on this Chrome (headless, macOS) one injected letter key turns into thousands of keydown events a second that never stop, so those are dispatched as `KeyboardEvent`s inside the page, which reach the app's handler the same way. Run the scripts with their output unpiped (not through `tail`), or the progress lines only appear at the end.
 
-The app exposes `window.__onetake` with the store, the detector, the recorder, `setMode`, `hold`, slide loading, navigation, deletion, undo and `exportWith(overrides, inMemory)`, so you can script the same checks from the DevTools console.
+The app exposes `window.__onetake` with the store, the detector, the recorder, `setMode`, `hold`, slide loading, navigation, deletion, undo, `exportWith(overrides, inMemory)`, and for the checks `voiceCheck`, `lips`, `enroll`, `enrollVoice()`, `profile()`, `setProfile()`, `makeProfile()`, `setNoiseFilter()` and `setCamera()`, so you can script the same checks from the DevTools console. The who-is-speaking path (enrollment through the dialog, a second voice marked, the verdict's delay) was checked by hand the same way, with a WAV of two text-to-speech voices as the microphone: the enrolled voice scored 98 %, the other 7 to 20 %, and each verdict landed within 550 ms of its phrase ending.
 
 ### Stress run
 
@@ -970,9 +1021,11 @@ The stress runner (`packages/e2e/src/stress.ts`) plays a generated voice as the 
 | Other Chromium browsers | Yes       | Yes, full speed        | Usually the same as Chrome                        |
 | Safari, Firefox         | Yes       | Depends on WebCodecs support in that version | In memory, up to about 2 GB, then downloaded. Without WebCodecs, real-time WebM only. |
 
-Recording the camera needs WebCodecs and either `MediaStreamTrackProcessor` or `requestVideoFrameCallback`: Chrome and Edge have both, and the **Camera** switch is greyed out, with the reason, where they are missing.
+Recording the camera needs WebCodecs and either `MediaStreamTrackProcessor` or `requestVideoFrameCallback`: Chrome and Edge have both, and the **Record camera** switch is greyed out, with the reason, where they are missing.
 
 The export dialog tells you what your browser can encode. Codec availability also depends on the operating system: H.265 and AV1 encoding, for example, are often only available with hardware support.
+
+The lip check needs Chrome or Edge (it hands the camera's frames to a worker with `MediaStreamTrackProcessor`); elsewhere the voice check decides alone. The deep noise filter needs AudioWorklet; the ScriptProcessor fallback gets the classic filter.
 
 ## Troubleshooting
 
@@ -980,13 +1033,19 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 **The recording starts on its own.** Something crosses the line and the voice detector hears a voice in it: a TV, a radio, people talking nearby. Raise the **Speech line** slider so that only your own voice goes past it, or switch to Press to speak.
 
-**The Camera switch unticks itself.** The browser refused the camera: allow it in the address bar (the camera icon) and tick the switch again. If another app has the camera open, close it first. A camera that is unplugged while recording ends the picture there; the phrases already recorded keep theirs.
+**The Record camera switch unticks itself.** The browser refused the camera: allow it in the address bar (the camera icon) and tick the switch again. If another app has the camera open, close it first. A camera that is unplugged while recording ends the picture there; the phrases already recorded keep theirs.
 
 **A long silence was kept inside a phrase.** That happens with a recording made before the voice detector was there. Click **Edit**, then **Remove pauses**: every stretch without a voice is cut out, and Undo brings it back if you disagree.
 
 **A soft stretch of my voice was cut.** The cut is made after the phrase is finished, from the whole of it, so a quiet aside or a sentence that trails off should survive; if one does not, it stood less than 3 dB over the room's noise, so lower the room (the **Noise filter** on, a headset) rather than the **Speech line**, which only decides what can _open_ a phrase. A whispered stretch longer than _Phrase ends after_ is cut, since a whisper has nothing voiced in it.
 
-**The fan is in the recording.** Check that **Noise filter** under the level meter is ticked: it takes a steady fan, air conditioner, hum or hiss out from under your voice (about 20 dB, on top of what Chrome's own suppression removes), and a fan that switches on mid-recording is absorbed within three seconds. It cannot take out sounds that keep changing, a voice from the next room, music, typing; for those move the microphone or use a headset. If your own voice comes out thin, untick the filter.
+**The fan is in the recording.** Check that **Noise filter** under the level meter says **Deep** and that the note under the meter says *deep filter*: DeepFilterNet3 takes out a fan, typing, traffic, music and other voices. If the note says *classic filter* although Deep is chosen, the machine could not keep up with the model (a message said so when it gave way) and the classic filter is doing what it can: a steady fan, air conditioner, hum or hiss, about 20 dB, within three seconds of it switching on, but not sounds that keep changing. If your own voice comes out thin, try **Classic** or **Off**.
+
+**A phrase of mine is marked as another voice.** Hover the badge: it says what each check saw. *Voice unlike yours* with a low match means the profile does not fit how you sounded, a cold, another microphone, a very different room; click **Learn my voice** and read again. *Your lips were still* with your face in view means the camera did not see your mouth move while the voice went on: check the mirror in the corner of the stage shows your face straight on, in the light. A verdict changes nothing by itself, so the phrase is still there to listen to and keep.
+
+**The camera's mirror says no face in view.** Face the camera, and give it light from the front; a face in profile or in the dark is not found. If the mirror is missing, the **Camera** list is set to *Off (no lip check)*, the browser refused the camera, or this is not Chrome or Edge; the voice check then decides alone.
+
+**The enrollment says too little of my voice came through.** It needs eight seconds of voice out of the twenty, as the voice detector hears it. Read out loud the whole time, closer to the microphone, with the level meter crossing the white line, and try again.
 
 **Phrases are cut off at the end.** Raise **Phrase ends after**. The default 0.7 s treats a longer pause as the end of a phrase. (A phrase shows up in the timeline about two seconds after you stop talking: the live detector waits that long to be sure you have finished, then the second listen trims the wait away.)
 
@@ -1022,7 +1081,7 @@ The export dialog tells you what your browser can encode. Codec availability als
 
 ## Privacy
 
-Audio never leaves your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no network request goes anywhere but `localhost`. Speech is detected in the browser by plain arithmetic; there is no model to download. There is no analytics, no account, and no cloud.
+Audio and the camera's picture never leave your computer. The browser keeps phrases in IndexedDB, the server writes only to the folder you pick, and no request carries anything of yours anywhere. Speech is detected in the browser by plain arithmetic. The three models (the deep noise filter, the speaker model, the face model) run in the browser too; the first two parts come with the app and the other two are fetched once, from GitHub and from Google's model storage, checked and kept, unless `npm run models` has already put them in place. Your voice profile is 256 numbers in this browser's localStorage, and the verdicts are stored with the phrases. There is no analytics, no account, and no cloud.
 
 ## License
 

@@ -1,5 +1,6 @@
 import { type Slide } from '../app/types.js';
 import { fmtSec, fmtTime } from '../core/format.js';
+import { verdictLabel } from '../core/identity.js';
 import { segmentDuration, totalDuration, type Segment } from '../core/timeline.js';
 
 import { clear, h } from './dom.js';
@@ -41,11 +42,19 @@ export class TimelineList {
     const frag = document.createDocumentFragment();
     segments.forEach((seg, i) => {
       const slide = slides[seg.slide];
+      // whose voice the checks said it was: a badge when it is not the speaker's, the reasons on hover
+      const who = seg.speaker;
+      const reasons = who ? `${verdictLabel(who.verdict)}: ${who.reasons.join(', ').toLowerCase()}` : '';
+      const badge =
+        who && who.verdict !== 'you'
+          ? h('span', { class: `who ${who.verdict}`, title: reasons }, verdictLabel(who.verdict))
+          : null;
       const row = h(
         'div',
         {
-          class: 'seg',
+          class: `seg${who?.verdict === 'other' ? ' other' : ''}`,
           draggable: true,
+          title: who?.verdict === 'you' ? reasons : undefined,
           dataset: { i: String(i) },
           on: {
             click: () => this.handlers.onSelect(i),
@@ -77,6 +86,7 @@ export class TimelineList {
             { class: seg.joined ? 'join' : '' },
             `${fmtSec(segmentDuration(seg))}${seg.joined ? ' · continues' : ''}`,
           ),
+          badge,
         ),
         h(
           'button',

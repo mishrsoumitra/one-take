@@ -173,6 +173,10 @@ const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 
 /* ------------------------------------------------------------------ the two modes, deterministically */
 
 page.step('checking the two modes');
+// the first mic start offers the voice enrollment; skipped, so the run is about the recorder
+await ev('void __onetake.startMic()');
+if (await page.waitFor('__onetake.enroll.isOpen', 30, 100))
+  await ev('document.getElementById("enrollSkip").click()');
 check(await page.startMic(), 'mic started in auto mode');
 await sleep(8000);
 const autoPhrases = await phrases();

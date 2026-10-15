@@ -12,9 +12,10 @@ import {
 } from '@one-take/shared';
 
 import { ApiClient } from '../api/client.js';
-import { MicCapture } from '../audio/mic.js';
+import { MicCapture, type NoiseFilterMode } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
 import { fmtSec, fmtTime } from '../core/format.js';
+import { judgeSpeaker } from '../core/identity.js';
 import {
   clampSize,
   cornerOf,
@@ -24,9 +25,10 @@ import {
   type Corner,
 } from '../core/overlay.js';
 import { floatBlocksToInt16 } from '../core/pcm.js';
-import { Recorder, type CaptureMode } from '../core/recorder.js';
+import { Recorder, type BlockRange, type CaptureMode } from '../core/recorder.js';
 import { cutPhrase } from '../core/silence.js';
-import { MicScorer } from '../core/speech.js';
+import { ENROLL_SEC, SPEAKER_MODEL, type VoiceProfile } from '../core/speaker.js';
+import { LIVE_KEEP, MicScorer } from '../core/speech.js';
 import {
   buildTimeline,
   durationPerSlide,
@@ -40,13 +42,17 @@ import { VoiceDetector } from '../core/voice.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
 import { OverlayTrack } from '../export/overlay.js';
 import { runExport } from '../export/runner.js';
+import { type FetchProgress } from '../models/fetch.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
+import { VoiceCheck, type VoiceResult } from '../speaker/voice-check.js';
 import { ProjectStore } from '../storage/db.js';
 import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
+import { loadProfile, saveProfile } from '../storage/profile.js';
 import { CamStage } from '../ui/cam-stage.js';
 import { Confirm } from '../ui/confirm.js';
 import { h, setLabel, syncRangeFill } from '../ui/dom.js';
 import { Editor } from '../ui/editor.js';
+import { Enroll, type EnrollClip } from '../ui/enroll.js';
 import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
@@ -59,12 +65,35 @@ import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
 import { Welcome } from '../ui/welcome.js';
 import { CameraCapture, type CameraState } from '../video/camera.js';
+import { LipWatcher } from '../vision/lips.js';
 
 import { Store } from './store.js';
 import { DEFAULT_SETTINGS, type PresentationPick, type ProjectMeta, type SlideSource } from './types.js';
 
 const BLOCK_MS = 10;
 const CONFIRM_WINDOW_MS = 5000;
+/**
+ * A phrase's audio goes to the voice check while a voice is going on, and through this much of the
+ * quiet after it; the rest of the live hold (two seconds of nothing) would only dilute the vector.
+ */
+const FEED_QUIET_MS = 300;
+/**
+ * How far behind the microphone a block reaches the page: the deep filter (30 ms), its reframing
+ * (11 ms), the capture worklet and the message. Used to place a phrase against the camera's clock.
+ */
+const PIPELINE_DELAY_MS = 60;
+/** Verdicts are kept for this many live phrases back, for pieces stored after their phrase ended. */
+const JUDGING_KEPT = 50;
+
+/** A verdict in the making for one live phrase: what the voice check will say, once the phrase ends. */
+interface Judging {
+  voice: Promise<VoiceResult | null>;
+  resolve: (result: VoiceResult | null) => void;
+}
+
+function asFilterMode(value: string): NoiseFilterMode {
+  return value === 'classic' || value === 'off' ? value : 'deep';
+}
 
 export class App {
   readonly store = new Store();
@@ -102,6 +131,25 @@ export class App {
   private readonly voice = new VoiceDetector();
   /** Scores the microphone for the detector; exists while the mic is on. */
   private scorer: MicScorer | null = null;
+  /** The voice check: the speaker model in its worker, compared with the enrolled profile. */
+  private readonly voiceCheck: VoiceCheck;
+  private profile: VoiceProfile | null = loadProfile();
+  /** The lip check: the camera, watched by the face model in its worker. */
+  private readonly lips: LipWatcher;
+  private readonly enroll: Enroll;
+  /** The enrollment has been offered once this session; a skip is not asked about again. */
+  private enrollOffered = false;
+  /** Models announced as being fetched, so each is mentioned once. */
+  private readonly fetching = new Set<string>();
+  /** The verdicts in the making, by live-phrase key (see `Phrase.key`). */
+  private readonly judging = new Map<number, Judging>();
+  /** The live phrase whose audio is going to the voice check right now. */
+  private feeding: number | null = null;
+  /** When the latest block reached the page (absolute ms) and the stream's count then: places a phrase in time. */
+  private clock: { at: number; seen: number } | null = null;
+  /** The engines the user has been told about falling back, so each is said once per session. */
+  private fallbackTold = false;
+  private selfNoteShown = '';
   /** The start in progress, so a second Start (a double press, a held R key) joins it instead of racing it. */
   private micStarting: Promise<void> | null = null;
   /** The microphone has been opened once: the browser now tells the microphones apart by name. */
@@ -139,6 +187,15 @@ export class App {
       img: this.refs.slideImg,
       layout: () => this.prefs.cameraLayout,
       onLayout: (layout, final) => this.setCameraLayout(layout, final),
+    });
+    this.voiceCheck = new VoiceCheck(
+      () => this.profile,
+      (p) => this.onModelProgress('voice', p),
+    );
+    this.lips = new LipWatcher((p) => this.onModelProgress('face', p));
+    this.enroll = new Enroll(document.body, {
+      listen: (onTick, signal) => this.listenForEnrollment(onTick, signal),
+      enroll: (clip) => this.makeProfile(clip),
     });
     this.meter = new LevelMeter(this.refs.meter, this.refs.meterNote);
     this.film = new Filmstrip(this.refs.film, this.refs.filmInfo, (i) => this.goTo(i));
@@ -237,7 +294,9 @@ export class App {
 
   async init(): Promise<void> {
     this.store.state.mode = this.prefs.captureMode;
-    this.refs.noiseFilter.checked = this.prefs.noiseFilter;
+    this.refs.noiseFilter.value = this.prefs.noiseFilter;
+    this.refs.camSelect.value = this.prefs.lipCheck ? this.prefs.cameraDeviceId : 'off';
+    this.updateVoiceButton();
     this.wire();
     this.syncSliders();
     this.updateModeSwitch();
@@ -413,7 +472,7 @@ export class App {
       }
     };
     r.noiseFilter.onchange = () => {
-      this.setNoiseFilter(r.noiseFilter.checked);
+      this.setNoiseFilter(asFilterMode(r.noiseFilter.value));
       r.noiseFilter.blur();
     };
     r.camOn.onchange = () => {
@@ -421,10 +480,10 @@ export class App {
       r.camOn.blur();
     };
     r.camSelect.onchange = () => {
-      this.prefs = savePrefs({ cameraDeviceId: r.camSelect.value });
+      this.setCamera(r.camSelect.value);
       r.camSelect.blur();
-      if (this.camera.state !== 'off') void this.openCamera();
     };
+    r.btnVoice.onclick = () => void this.enrollVoice();
     for (const [corner, button] of Object.entries(r.camCorners) as [Corner, HTMLButtonElement][]) {
       button.onclick = () => {
         this.setCameraLayout({ ...this.prefs.cameraLayout, ...CORNERS[corner] }, true);
@@ -499,7 +558,8 @@ export class App {
       this.welcome.isOpen ||
       this.editor.isOpen ||
       this.library.isOpen ||
-      this.confirm.isOpen
+      this.confirm.isOpen ||
+      this.enroll.isOpen
     );
   }
 
@@ -756,11 +816,303 @@ export class App {
     sel.value = devices.some((d) => d.deviceId === wanted) ? wanted : '';
   }
 
-  /** Turns the noise filter on or off: at once while the mic is on, and for every mic from now on. */
-  setNoiseFilter(on: boolean): void {
-    this.prefs = savePrefs({ noiseFilter: on });
-    this.refs.noiseFilter.checked = on;
-    this.mic.setNoiseFilter(on);
+  /** Fills the camera picker the same way; "Off" (no lip check) stays whatever is plugged in. */
+  private async listCameras(): Promise<void> {
+    const devices = await LipWatcher.listDevices();
+    const sel = this.refs.camSelect;
+    while (sel.options.length > 2) sel.remove(2);
+    for (const d of devices) {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || 'Camera';
+      sel.appendChild(o);
+    }
+    const wanted = this.prefs.cameraDeviceId;
+    sel.value = !this.prefs.lipCheck ? 'off' : devices.some((d) => d.deviceId === wanted) ? wanted : '';
+  }
+
+  /** Chooses the noise filter: at once while the mic is on, and for every mic from now on. */
+  setNoiseFilter(mode: NoiseFilterMode): void {
+    this.prefs = savePrefs({ noiseFilter: mode });
+    this.refs.noiseFilter.value = mode;
+    this.mic.setNoiseFilter(mode);
+    this.drawMeter();
+  }
+
+  /** The filter that is really running, for the meter's note. */
+  private filterLabel(): string | null {
+    if (!this.store.state.armed) return null;
+    switch (this.mic.engine) {
+      case 'deep':
+        return 'deep filter';
+      case 'classic':
+        return this.mic.wantedFilter === 'deep' && !this.mic.deepNote
+          ? 'classic filter while the deep one loads'
+          : 'classic filter';
+      case 'off':
+        return 'no filter';
+    }
+  }
+
+  /** The filter running over the microphone changed (the deep one came up, or gave way). */
+  private onEngineChange(engine: NoiseFilterMode): void {
+    this.drawMeter();
+    const note = this.mic.deepNote;
+    if (engine === 'classic' && this.mic.wantedFilter === 'deep' && note && !this.fallbackTold) {
+      this.fallbackTold = true;
+      this.toast.show(`The deep noise filter is ${note}. The classic filter is on instead.`);
+    }
+  }
+
+  /**
+   * Picks the camera, or turns the lip check off; takes effect at once while the mic is on. The
+   * camera being recorded (the switch next to the picker) follows the chosen device and keeps
+   * going when the lip check is turned off.
+   */
+  setCamera(value: string): void {
+    const on = value !== 'off';
+    const before = this.prefs.cameraDeviceId;
+    this.prefs = savePrefs({ lipCheck: on, cameraDeviceId: on ? value : this.prefs.cameraDeviceId });
+    this.refs.camSelect.value = value;
+    const reopen = on && value !== before && this.camera.state !== 'off';
+    if (reopen) void this.openCamera();
+    if (!this.store.state.armed) return;
+    if (!on) {
+      this.lips.stop();
+      this.updateSelfView();
+    } else if (!reopen) {
+      void this.watchLips(); // else the camera's state callback restarts the lip check on the new device
+    }
+  }
+
+  /**
+   * Opens the camera and starts the lip check; says why when it cannot. A camera already open to
+   * be recorded lends the lip check its track, so the device is opened once for both.
+   */
+  private async watchLips(): Promise<void> {
+    const shared = this.camera.on ? (this.camera.liveStream?.getVideoTracks()[0] ?? null) : null;
+    const ok = await this.lips.start(this.prefs.cameraDeviceId || undefined, shared);
+    if (!this.store.state.armed) {
+      this.lips.stop();
+    } else if (!ok && this.lips.note) {
+      this.toast.show(`The lip check is off: ${this.lips.note}`);
+    }
+    this.updateSelfView();
+  }
+
+  /**
+   * Shows the camera in the corner of the stage while it is watched, and what it sees under it; not
+   * while the stage already shows the camera picture where it goes in the video (the lip check's
+   * note moves to the camera row then).
+   */
+  private updateSelfView(): void {
+    const video = this.store.state.armed && !this.camStage.shown ? this.lips.video : null;
+    this.refs.selfBox.hidden = video === null;
+    if (this.refs.selfView.srcObject !== video) this.refs.selfView.srcObject = video;
+    this.selfNoteShown = '';
+    this.updateSelfNote();
+  }
+
+  /**
+   * One line on what the lip check sees (a face in view, the lips moving): under the self-view, or
+   * in the camera row while the stage shows the camera picture instead.
+   */
+  private updateSelfNote(): void {
+    const r = this.refs;
+    const inRow = r.selfBox.hidden && this.store.state.armed && this.prefs.lipCheck && !r.camRow.hidden;
+    if (r.camLips.hidden === inRow) r.camLips.hidden = !inRow;
+    if (r.selfBox.hidden && !inRow) return;
+    let text: string;
+    let kind = '';
+    if (this.lips.state === 'watching') {
+      const now = performance.timeOrigin + performance.now();
+      const latest = this.lips.latest;
+      if (!latest || now - latest.t > 1500) text = 'Camera: waiting for a picture';
+      else if (latest.open === null) {
+        text = 'No face in view';
+        kind = 'warn';
+      } else {
+        const recent = this.lips.activity(now - 1000, now);
+        const moving = recent.swing >= 0.05 || recent.motion >= 0.02;
+        text = moving ? 'Lips moving' : 'Face in view';
+        kind = moving ? 'moving' : 'face';
+      }
+    } else if (this.lips.state === 'failed') {
+      text = `Lip check off: ${this.lips.note ?? 'camera unavailable'}`;
+      kind = 'warn';
+    } else {
+      text = 'Camera starting…';
+    }
+    const shown = `${inRow}|${kind}|${text}`;
+    if (shown === this.selfNoteShown) return;
+    this.selfNoteShown = shown;
+    const note = inRow ? r.camLips : r.selfNote;
+    note.textContent = text;
+    note.className = `note${kind ? ` ${kind}` : ''}`;
+  }
+
+  /** A model is being fetched from its publisher: said once per model, since it takes a moment. */
+  private onModelProgress(what: 'voice' | 'face', p: FetchProgress): void {
+    if (p.source !== 'remote' || this.fetching.has(what)) return;
+    this.fetching.add(what);
+    this.toast.show(
+      `Fetching the ${what} model (${Math.round(p.total / 1_048_576)} MB) once; it is kept on this computer from now on.`,
+    );
+  }
+
+  /** The "Learn my voice" button says whether a profile exists. */
+  private updateVoiceButton(): void {
+    const has = this.profile !== null;
+    setLabel(this.refs.btnVoice, has ? 'Voice learned' : 'Learn my voice');
+    this.refs.btnVoice.classList.toggle('has', has);
+    this.refs.btnVoice.title = has
+      ? `Your voice was learned on ${new Date(this.profile?.createdAt ?? 0).toLocaleDateString()} from ${Math.round(this.profile?.seconds ?? 0)} s of speech. Every phrase is compared with it; one in another voice is marked in the timeline. Click to learn it again.`
+      : 'The voice check: read for twenty seconds once, and every phrase is compared with how your voice sounds. A phrase in another voice is marked in the timeline.';
+  }
+
+  /**
+   * The enrollment: the speaker reads for twenty seconds and the voice heard becomes the profile.
+   * The microphone is the enrollment's for the duration, so a recording in progress is stopped
+   * first and started again after.
+   */
+  async enrollVoice(): Promise<void> {
+    if (this.enroll.isOpen) return;
+    const wasArmed = this.store.state.armed;
+    if (wasArmed) this.stopMic();
+    if (this.store.state.previewing) this.stopPreview();
+    const profile = await this.enroll.open({ hasProfile: this.profile !== null });
+    if (profile) {
+      this.profile = profile;
+      saveProfile(profile);
+      this.prefs = savePrefs({ voiceCheck: true });
+      this.toast.show('Your voice is learned. A phrase in another voice will be marked in the timeline.');
+    } else if (!this.profile) {
+      // skipped with nothing learned: not asked again; "Learn my voice" in the bottom bar is the way back
+      this.prefs = savePrefs({ voiceCheck: false });
+      this.toast.show(
+        'The voice check stays off. Click "Learn my voice" under the level meter when you want it.',
+      );
+    }
+    this.updateVoiceButton();
+    if (wasArmed) void this.startMic();
+  }
+
+  /** Listens for the enrollment: the stretches with a voice in them, through the chosen filter. */
+  private async listenForEnrollment(
+    onTick: (voiceSec: number, elapsedSec: number) => void,
+    signal: AbortSignal,
+  ): Promise<EnrollClip | null> {
+    const ready = this.voiceCheck.start(); // the model loads while the speaker reads
+    const scorer = new MicScorer(this.voice);
+    const heard: Float32Array[] = [];
+    let voiceSamples = 0;
+    let started: number | null = null;
+    let finish: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const info = await this.mic.start({
+      deviceId: this.refs.micSelect.value || undefined,
+      noiseFilter: this.prefs.noiseFilter,
+      blockMs: BLOCK_MS,
+      onBlock: (block) => {
+        started ??= performance.now();
+        scorer.push(block, this.mic.sampleRate);
+        if (scorer.prob >= LIVE_KEEP) {
+          heard.push(Float32Array.from(block));
+          voiceSamples += block.length;
+        }
+        const elapsed = (performance.now() - started) / 1000;
+        onTick(voiceSamples / this.mic.sampleRate, elapsed);
+        if (elapsed >= ENROLL_SEC) finish();
+      },
+    });
+    if (!info) return null;
+    this.micOpened = true;
+    void this.listMics();
+    signal.addEventListener('abort', () => finish());
+    await done;
+    this.mic.stop();
+    if (signal.aborted) return null;
+    if (!(await ready)) throw new Error(this.voiceCheck.note ?? 'the voice model could not be loaded');
+    const samples = new Float32Array(voiceSamples);
+    let at = 0;
+    for (const block of heard) {
+      samples.set(block, at);
+      at += block.length;
+    }
+    return { samples, rate: info.sampleRate };
+  }
+
+  /** The profile out of what the enrollment heard; null when the model could not make one. */
+  private async makeProfile(clip: EnrollClip): Promise<VoiceProfile | null> {
+    if (!(await this.voiceCheck.start())) {
+      throw new Error(this.voiceCheck.note ?? 'the voice model is not available');
+    }
+    const { embedding, seconds } = await this.voiceCheck.embed(clip.samples, clip.rate);
+    if (!embedding) return null;
+    return { model: SPEAKER_MODEL.name, embedding: Array.from(embedding), seconds, createdAt: Date.now() };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Who is speaking: the checks on each live phrase                     */
+  /* ------------------------------------------------------------------ */
+
+  /** A live phrase started: its audio goes to the voice check from here until it ends. */
+  private phraseStarted(key: number): void {
+    let resolve: (result: VoiceResult | null) => void = () => undefined;
+    const voice = new Promise<VoiceResult | null>((r) => {
+      resolve = r;
+    });
+    this.judging.set(key, { voice, resolve });
+    for (const old of this.judging.keys()) if (old < key - JUDGING_KEPT) this.judging.delete(old);
+    if (this.prefs.voiceCheck && this.profile && this.voiceCheck.state === 'ready') {
+      this.voiceCheck.begin(key, this.sampleRate);
+      this.feeding = key;
+    } else {
+      resolve(null);
+    }
+  }
+
+  /** The live phrase ended (kept, too short, or discarded): the voice check finishes its tail. */
+  private phraseEnded(key: number): void {
+    const judging = this.judging.get(key);
+    if (this.feeding === key) {
+      this.feeding = null;
+      this.voiceCheck.end(key).then(
+        (result) => judging?.resolve(result),
+        () => judging?.resolve(null),
+      );
+    } else {
+      judging?.resolve(null);
+    }
+  }
+
+  /** When a stretch of the stream reached the microphone, in absolute ms, from the block clock. */
+  private spanOf(at: BlockRange): { from: number; to: number } | null {
+    const clock = this.clock;
+    if (!clock) return null;
+    const time = (block: number) => clock.at - (clock.seen - block) * BLOCK_MS - PIPELINE_DELAY_MS;
+    return { from: time(at.from), to: time(at.to) };
+  }
+
+  /**
+   * A piece of a live phrase was stored: once the voice check has spoken, it is judged together with
+   * what the camera saw over the piece's own span, and the verdict goes on the segment.
+   */
+  private judgePiece(seg: Segment, key: number, at: BlockRange): void {
+    const span = this.spanOf(at);
+    const lipsOn = this.prefs.lipCheck && this.lips.state === 'watching';
+    const voice = this.judging.get(key)?.voice ?? Promise.resolve(null);
+    void voice.then((result) => {
+      const lips = lipsOn && span ? this.lips.activity(span.from, span.to) : null;
+      const verdict = judgeSpeaker({ similarity: result?.similarity ?? null, lips });
+      if (!verdict) return;
+      seg.speaker = verdict;
+      if (!this.store.state.segments.includes(seg)) return; // deleted meanwhile
+      void this.db.putSegment(seg);
+      this.list.render(this.store.state.segments, this.store.state.slides, false);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -786,7 +1138,7 @@ export class App {
   /** Opens (or reopens, after a device change) the chosen camera; the state callback does the rest. */
   private async openCamera(): Promise<boolean> {
     if (!CameraCapture.supported()) return false;
-    const ok = await this.camera.open(this.refs.camSelect.value || undefined, this.camStage.video);
+    const ok = await this.camera.open(this.prefs.cameraDeviceId || undefined, this.camStage.video);
     void this.listCameras();
     return ok;
   }
@@ -800,6 +1152,15 @@ export class App {
       this.prefs = savePrefs({ camera: false });
       this.refs.camOn.checked = false;
     }
+    // the lip check watches the same camera: a clone of its track once it is open, its own stream otherwise
+    if (
+      this.store.state.armed &&
+      this.prefs.lipCheck &&
+      (state === 'on' || state === 'error') &&
+      this.lips.shared !== (state === 'on')
+    ) {
+      void this.watchLips();
+    }
     this.syncCamStage();
     this.syncCameraControls();
     this.updateCoach();
@@ -811,21 +1172,7 @@ export class App {
     const stream = this.camera.liveStream;
     if (this.camera.on && stream) this.camStage.showLive(stream, this.camera.aspect);
     else this.camStage.hide();
-  }
-
-  /** Fills the camera picker; like the microphones, the browser names them once one has been allowed. */
-  private async listCameras(): Promise<void> {
-    const devices = await CameraCapture.listDevices();
-    const sel = this.refs.camSelect;
-    while (sel.options.length > 1) sel.remove(1);
-    for (const d of devices) {
-      const o = document.createElement('option');
-      o.value = d.deviceId;
-      o.textContent = d.label || 'Camera';
-      sel.appendChild(o);
-    }
-    const wanted = this.prefs.cameraDeviceId;
-    sel.value = devices.some((d) => d.deviceId === wanted) ? wanted : '';
+    this.updateSelfView();
   }
 
   /** Where the picture goes and how big it is; saved when the change is final (a drag that ended, a click). */
@@ -942,6 +1289,11 @@ export class App {
       this.toast.show('Load your slides first');
       return;
     }
+    // the first time, with the voice check on and no voice learned yet: learn it now
+    if (this.prefs.voiceCheck && !this.profile && !this.enrollOffered) {
+      this.enrollOffered = true;
+      await this.enrollVoice();
+    }
     const recorder = new Recorder(
       BLOCK_MS,
       this.store.settings,
@@ -952,11 +1304,26 @@ export class App {
         review: (blocks) => cutPhrase(blocks, this.sampleRate, this.store.settings),
       },
       {
-        onPhrase: (phrase) =>
-          this.addSegment(phrase.blocks, phrase.slide, phrase.joined, phrase.prevId, true, phrase.at).id,
-        onSpeakingChange: (speaking) => {
+        onPhrase: (phrase) => {
+          const seg = this.addSegment(
+            phrase.blocks,
+            phrase.slide,
+            phrase.joined,
+            phrase.prevId,
+            true,
+            phrase.at,
+          );
+          this.judgePiece(seg, phrase.key, phrase.at);
+          return seg.id;
+        },
+        onSpeakingChange: (speaking, key) => {
           this.store.state.speaking = speaking;
-          if (speaking) this.refs.capFlagText.textContent = 'RECORDING';
+          if (speaking) {
+            this.refs.capFlagText.textContent = 'RECORDING';
+            this.phraseStarted(key);
+          } else {
+            this.phraseEnded(key);
+          }
           this.updateStatus();
         },
       },
@@ -969,6 +1336,7 @@ export class App {
         noiseFilter: this.prefs.noiseFilter,
         blockMs: BLOCK_MS,
         onBlock: (block) => this.onBlock(block),
+        onEngineChange: (engine) => this.onEngineChange(engine),
       });
       this.micOpened = true;
       if (!info) return; // stopped again before it had opened
@@ -978,10 +1346,13 @@ export class App {
       return;
     }
     void this.listMics();
+    void this.listCameras();
     this.recorder = recorder;
     this.settling = this.settling.then(() => recorder.settled());
     this.scorer = new MicScorer(this.voice);
     if (this.camera.on) this.camera.record(BLOCK_MS);
+    this.clock = null;
+    this.feeding = null;
     s.armed = true;
     s.muted = false;
     s.held = false;
@@ -990,6 +1361,14 @@ export class App {
     this.updateStatus();
     this.updateButtons();
     this.meterLoop();
+    // the checks come up alongside: the voice model into its worker, the camera into the lip worker
+    if (this.prefs.voiceCheck && this.profile) {
+      void this.voiceCheck.start().then((ok) => {
+        if (!ok && this.voiceCheck.note) this.toast.show(`The voice check is off: ${this.voiceCheck.note}`);
+      });
+    }
+    if (this.prefs.lipCheck) void this.watchLips();
+    this.updateSelfView();
     if (!this.prefs.tips) {
       this.toast.show(
         s.mode === 'hold'
@@ -1017,6 +1396,8 @@ export class App {
     s.muted = false;
     s.held = false;
     s.speaking = false;
+    this.lips.stop();
+    this.updateSelfView();
     this.updateStatus();
     this.updateButtons();
     this.drawMeter();
@@ -1046,6 +1427,11 @@ export class App {
       // pending phrase (less the pre-roll a phrase about to start would reach back for) is needed
       this.camera.tick(vad.seen, recorder.heldFrom - this.store.settings.prerollMs / BLOCK_MS - 50);
     }
+    this.clock = { at: performance.timeOrigin + performance.now(), seen: vad.seen };
+    // the phrase's audio goes to the voice check while a voice is going on, not through the hold
+    if (this.feeding !== null && vad.speaking && vad.quietMs <= FEED_QUIET_MS) {
+      this.voiceCheck.push(this.feeding, block);
+    }
     if (vad.speaking && Math.round(vad.currentMs / BLOCK_MS) % 20 === 0) {
       this.refs.capFlagText.textContent = `RECORDING ${fmtSec(vad.currentMs / 1000)}`;
     }
@@ -1061,7 +1447,7 @@ export class App {
     joined: boolean,
     prevId: string | null,
     scroll: boolean,
-    at: number,
+    at: BlockRange,
   ): Segment {
     const seg: Segment = {
       id: this.nextSegmentId(),
@@ -1072,7 +1458,7 @@ export class App {
       prevId,
       createdAt: Date.now(),
       // the camera's picture for exactly these blocks, when it was on
-      video: this.camera.recording ? this.camera.take(at * BLOCK_MS, (at + blocks.length) * BLOCK_MS) : null,
+      video: this.camera.recording ? this.camera.take(at.from * BLOCK_MS, at.to * BLOCK_MS) : null,
     };
     this.store.state.segments.push(seg);
     void this.db.putSegment(seg);
@@ -1231,6 +1617,7 @@ export class App {
     cancelAnimationFrame(this.meterRaf);
     const loop = () => {
       this.drawMeter();
+      this.updateSelfNote();
       if (this.store.state.armed) this.meterRaf = requestAnimationFrame(loop);
     };
     loop();
@@ -1247,6 +1634,7 @@ export class App {
       noise: this.recorder?.vad.noise ?? -60,
       settingThreshold: this.store.settings.threshold,
       voice: this.recorder?.vad.voice ?? null,
+      filter: this.filterLabel(),
     });
   }
 
@@ -1302,7 +1690,10 @@ export class App {
     this.previewOverlay?.close();
     this.previewOverlay = OverlayTrack.hasVideo(tl) ? new OverlayTrack(tl) : null;
     this.previewSerial = -1;
-    if (this.previewOverlay) this.camStage.showPlayback(this.camera.aspect);
+    if (this.previewOverlay) {
+      this.camStage.showPlayback(this.camera.aspect);
+      this.updateSelfView();
+    }
     await this.preview.start(tl, fromIndex);
   }
 
@@ -1486,7 +1877,9 @@ export class App {
       stopMic: () => this.stopMic(),
       settled: () => this.settling,
       setMode: (mode: CaptureMode) => this.setMode(mode),
-      setNoiseFilter: (on: boolean) => this.setNoiseFilter(on),
+      setNoiseFilter: (mode: NoiseFilterMode | boolean) =>
+        this.setNoiseFilter(typeof mode === 'boolean' ? (mode ? 'deep' : 'off') : mode),
+      setCamera: (value: string) => this.setCamera(value),
       prefs: () => this.prefs,
       mic: this.mic,
       camera: this.camera,
@@ -1494,6 +1887,20 @@ export class App {
       setCameraOn: (on: boolean) => this.setCameraOn(on),
       cameraLayout: () => this.prefs.cameraLayout,
       setCameraLayout: (layout: CameraLayout) => this.setCameraLayout(layout, true),
+      voiceCheck: this.voiceCheck,
+      lips: this.lips,
+      enroll: this.enroll,
+      enrollVoice: () => this.enrollVoice(),
+      profile: () => this.profile,
+      /** Puts a profile in place without the enrollment (the tests make one from a fixture). */
+      setProfile: (profile: VoiceProfile | null) => {
+        this.profile = profile;
+        if (profile) saveProfile(profile);
+        this.updateVoiceButton();
+      },
+      /** Makes a profile out of a clip of floats, through the voice worker. */
+      makeProfile: (samples: Float32Array, rate: number) => this.makeProfile({ samples, rate }),
+      judging: () => this.judging.size,
       hold: (down: boolean) => this.hold(down),
       toggleMute: () => this.toggleMute(),
       goTo: (i: number) => this.goTo(i),

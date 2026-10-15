@@ -1,0 +1,169 @@
+/* ---------------------------------------------------------------- who is speaking
+   The noise filter choice, the camera picker and the voice button in the bottom bar; the camera's
+   self-view in a corner of the stage; the badge on a phrase that is not the speaker's; and the
+   enrollment dialog. */
+
+#noiseFilter,
+#camSel {
+  max-width: 180px;
+  font-size: var(--font-size-12px);
+  padding: 0 var(--spacing-6px);
+}
+#btnVoice {
+  font-size: var(--font-size-12px);
+  padding: 3px var(--spacing-10px);
+  min-height: 0;
+}
+#btnVoice .ico {
+  font-size: 14px;
+}
+#btnVoice.has {
+  color: var(--success-500, #2d9f5a);
+}
+
+/* the self-view: small, in the stage's bottom-right corner, mirrored like a mirror */
+#self {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 168px;
+  border-radius: var(--corner-radius-8px);
+  overflow: hidden;
+  background: var(--neutral-1000);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 3;
+}
+#self video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  transform: scaleX(-1);
+  background: var(--neutral-1000);
+}
+#self .note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-11px);
+  padding: 3px 8px;
+  color: var(--muted);
+  background: var(--panel);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#self .note::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--neutral-600);
+  flex: none;
+}
+#self .note.face::before {
+  background: var(--success-500, #2d9f5a);
+}
+#self .note.moving::before {
+  background: var(--rec);
+}
+#self .note.warn::before {
+  background: var(--yellow-400);
+}
+#stage.hold-on #self {
+  bottom: 84px;
+}
+
+/* the badge on a phrase in the timeline */
+.seg .meta .who {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: var(--font-size-11px);
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.seg .meta .who.other {
+  color: var(--error-500);
+  background: color-mix(in srgb, var(--error-500) 16%, transparent);
+}
+.seg .meta .who.unsure {
+  color: var(--yellow-400);
+  background: color-mix(in srgb, var(--yellow-400) 16%, transparent);
+}
+.seg.other .i {
+  color: var(--error-500);
+}
+
+/* the enrollment dialog */
+.enroll .box {
+  width: min(560px, 92vw);
+}
+.enroll .intro {
+  color: var(--muted);
+  margin: var(--spacing-6px) 0 var(--spacing-14px);
+}
+.enroll .passage {
+  margin: 0 0 var(--spacing-14px);
+  padding: var(--spacing-12px) var(--spacing-16px);
+  border-left: 3px solid var(--brand-500);
+  background: var(--bg-subtle-primary-hover, rgba(127, 127, 127, 0.08));
+  border-radius: 0 var(--corner-radius-8px) var(--corner-radius-8px) 0;
+  font-size: var(--font-size-16px, 16px);
+  line-height: 1.55;
+}
+.enroll .bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--alpha-12, rgba(127, 127, 127, 0.2));
+  overflow: hidden;
+}
+.enroll .bar .fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--brand-500);
+  transition: width 0.25s linear;
+}
+.enroll .status {
+  min-height: 1.4em;
+  margin: var(--spacing-10px) 0 var(--spacing-14px);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* the lip check's note in the camera row, while the stage shows the camera picture instead of the self-view */
+#camLips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-11px);
+  color: var(--muted);
+  white-space: nowrap;
+}
+#camLips[hidden] {
+  display: none;
+}
+#camLips::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--neutral-600);
+  flex: none;
+}
+#camLips.face::before {
+  background: var(--success-500, #2d9f5a);
+}
+#camLips.moving::before {
+  background: var(--rec);
+}
+#camLips.warn::before {
+  background: var(--yellow-400);
+}

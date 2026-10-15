@@ -45,17 +45,17 @@ export const LIVE_HOLD_MS = 2000;
 
 export interface PhraseResult {
   blocks: Float32Array[];
-  /** Index of the first block (pre-roll included) among every block this detector has seen. */
-  at: number;
   loudMs: number;
   /** The phrase continues one that was split by a slide change. */
   continuation: boolean;
+  /** Where the phrase ends in the stream: the index of the block after its last one (see {@link VoiceActivityDetector.seen}). */
+  endBlock: number;
 }
 
-/** What `split()` hands over: the blocks spoken so far and where they start. */
-export interface PhrasePart {
+/** What a slide change splits off: the blocks spoken so far and where they end in the stream. */
+export interface SplitResult {
   blocks: Float32Array[];
-  at: number;
+  endBlock: number;
 }
 
 export interface VadCallbacks {
@@ -76,10 +76,7 @@ export class VoiceActivityDetector {
   private curLoud = 0;
   private continuation = false;
   private _speaking = false;
-  /** Blocks taken so far; the index of the next one. The clock every phrase's `at` is read on. */
   private _seen = 0;
-  /** Index of the first block of the phrase being spoken (pre-roll included). */
-  private curAt = 0;
   /** When false (muted, preview, export, talk key up), blocks only feed the level and noise readings. */
   gate = true;
 
@@ -99,17 +96,13 @@ export class VoiceActivityDetector {
     return this.cur.length * this.blockMs;
   }
 
-  /** Blocks taken so far: the index the next block will get. */
-  get seen(): number {
-    return this._seen;
-  }
-
   /**
-   * Index of the earliest block still held: the start of the phrase being spoken, or of the pre-roll
-   * waiting for one. Whatever records alongside the microphone (the camera) must keep from here on.
+   * Index of the earliest block still held: the start of the phrase being spoken (pre-roll included),
+   * or of the pre-roll waiting for one. Whatever records alongside the microphone (the camera) must
+   * keep from here on.
    */
   get heldFrom(): number {
-    return this._speaking ? this.curAt : this._seen - this.pre.length;
+    return this._seen - (this._speaking ? this.cur : this.pre).length;
   }
 
   /** The phrase being spoken continues a part already split off by a slide change. */
@@ -119,6 +112,15 @@ export class VoiceActivityDetector {
 
   get quietMs(): number {
     return this.quietRun * this.blockMs;
+  }
+
+  /**
+   * Blocks taken so far, gate open or closed: the stream's clock. A phrase's `endBlock` counts in
+   * these, so `endBlock - blocks.length` is where it started, and a block's time is its index times
+   * `blockMs` from the stream's start.
+   */
+  get seen(): number {
+    return this._seen;
   }
 
   /** How long a phrase stays open with nothing heard: the hangover, but never under {@link LIVE_HOLD_MS}. */
@@ -143,7 +145,6 @@ export class VoiceActivityDetector {
     this.continuation = false;
     this._speaking = false;
     this._seen = 0;
-    this.curAt = 0;
   }
 
   /**
@@ -197,7 +198,7 @@ export class VoiceActivityDetector {
    * had already gone quiet (the phrase simply ends), or nothing was said since the previous split (the
    * phrase carries on, still joined to the part before).
    */
-  split(): PhrasePart | null {
+  split(): SplitResult | null {
     if (!this._speaking) return null;
     if (this.quietRun * this.blockMs > this.settings.tailMs) {
       this.end();
@@ -207,16 +208,14 @@ export class VoiceActivityDetector {
       // Nothing was said on the slide being left (two slide changes in quick succession): the sentence
       // simply moves on, and the sliver of quiet since the last split is dropped rather than stored.
       this.cur = [];
-      this.curAt = this._seen;
       this.quietRun = 0;
       return null;
     }
-    const part = { blocks: this.cur, at: this.curAt };
+    const blocks = this.cur;
     this.cur = [];
-    this.curAt = this._seen;
     this.continuation = true;
     this.curLoud = 0;
-    return part;
+    return { blocks, endBlock: this._seen };
   }
 
   /** Drop the phrase being spoken right now (the speaker flubbed it). */
@@ -236,7 +235,6 @@ export class VoiceActivityDetector {
     const keepTail = Math.round(this.settings.tailMs / this.blockMs);
     const drop = Math.max(0, this.quietRun - keepTail);
     const blocks = this.cur.slice(0, this.cur.length - drop);
-    const at = this.curAt;
     this.pre = this.cur.slice(this.cur.length - drop);
     this.trimPre();
     const loudMs = this.curLoud * this.blockMs;
@@ -249,14 +247,12 @@ export class VoiceActivityDetector {
     // A continuation is kept however short it is, as long as something was actually said on the new
     // slide; a slide change right at the end of a sentence must not leave a silent stub behind.
     const keep = loudMs >= this.settings.minSpeechMs || (continuation && loudMs > 0);
-    this.callbacks.onSpeechEnd(keep ? { blocks, at, loudMs, continuation } : null);
+    this.callbacks.onSpeechEnd(keep ? { blocks, loudMs, continuation, endBlock: this._seen - drop } : null);
   }
 
   private start(): void {
     this._speaking = true;
     this.cur = this.pre;
-    // the block just taken is the last of the pre-roll, so the phrase starts `pre.length` blocks back
-    this.curAt = this._seen - this.pre.length;
     this.pre = [];
     this.quietRun = 0;
     this.curLoud = this.loudRun;

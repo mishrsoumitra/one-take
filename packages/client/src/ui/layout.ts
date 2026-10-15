@@ -26,19 +26,28 @@ export interface LayoutRefs {
   stepExport: HTMLElement;
   /** Which microphone to open; in the bottom bar, after the sliders. */
   micSelect: HTMLSelectElement;
-  /** Run the noise filter over the microphone; next to the picker. */
-  noiseFilter: HTMLInputElement;
-  /** Record the camera along with the voice; next to the noise filter. */
-  camOn: HTMLInputElement;
-  /** The camera row under the sliders: which camera, which corner, how big. Shown while the camera is on. */
-  camRow: HTMLElement;
+  /** Which noise filter runs over the microphone (deep, classic, off); next to the picker. */
+  noiseFilter: HTMLSelectElement;
+  /** Which camera to use: watched for the lip check (or not, with "off") and recorded with the switch next to it. */
   camSelect: HTMLSelectElement;
+  /** Record the camera along with the voice; next to the camera picker. */
+  camOn: HTMLInputElement;
+  /** The camera row under the sliders: which corner, how big, what the camera is doing. Shown while the camera is recorded. */
+  camRow: HTMLElement;
   /** The four corner buttons, keyed by corner. */
   camCorners: Record<Corner, HTMLButtonElement>;
   camSize: HTMLInputElement;
   camSizeV: HTMLElement;
   /** What the camera is doing: opening, the error, or where the picture is. */
   camNote: HTMLElement;
+  /** What the lip check sees, in the camera row while the stage shows the camera picture instead of the self-view. */
+  camLips: HTMLElement;
+  /** Enrolls the speaker's voice for the voice check, or does it again. */
+  btnVoice: HTMLButtonElement;
+  /** The camera's picture in a corner of the stage while the lip check watches it, with a note under it. */
+  selfBox: HTMLElement;
+  selfView: HTMLVideoElement;
+  selfNote: HTMLElement;
   btnArm: HTMLButtonElement;
   /** Auto / press to speak, as a two-button segmented control. */
   modeSwitch: HTMLElement;
@@ -387,6 +396,13 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('close', 16),
   );
   const coach = h('div', { id: 'coach', hidden: true }, coachText, btnCoachClose);
+  const selfView = h('video', {
+    id: 'selfView',
+    attrs: { autoplay: '', playsinline: '', 'aria-label': 'Your camera' },
+  });
+  selfView.muted = true;
+  const selfNote = h('span', { class: 'note' }, 'Camera');
+  const selfBox = h('div', { id: 'self', hidden: true }, selfView, selfNote);
   const stage = h(
     'main',
     { id: 'stage' },
@@ -400,6 +416,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     previewFlag,
     restore,
     coach,
+    selfBox,
     loading,
   );
 
@@ -418,7 +435,38 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     { id: 'micSel', title: 'Which microphone to use' },
     h('option', { value: '' }, 'Default microphone'),
   );
-  const noiseFilter = h('input', { type: 'checkbox', id: 'noiseFilter', checked: true });
+  const noiseFilter = h(
+    'select',
+    {
+      id: 'noiseFilter',
+      title:
+        'What is taken out from under your voice before anything is recorded. Deep: DeepFilterNet3, a trained model that removes fans, typing, traffic, music and other people talking. Classic: a plain filter for steady noise (a fan, a hum, hiss). Off: only what Chrome does on its own.',
+    },
+    h('option', { value: 'deep' }, 'Deep (DeepFilterNet3)'),
+    h('option', { value: 'classic' }, 'Classic'),
+    h('option', { value: 'off' }, 'Off'),
+  );
+  const camSelect = h(
+    'select',
+    {
+      id: 'camSel',
+      title:
+        'Which camera to use. While you record, it watches your mouth for the lip check, so a phrase someone else says while your lips are still is marked as another voice; tick Record camera next to it to put its picture in the video too. Off: no lip check (the picture can still be recorded). The picture stays on this computer. The choice is remembered.',
+    },
+    h('option', { value: '' }, 'Default camera'),
+    h('option', { value: 'off' }, 'Off (no lip check)'),
+  );
+  const btnVoice = h(
+    'button',
+    {
+      id: 'btnVoice',
+      class: 'ghost',
+      title:
+        'The voice check: read for twenty seconds once, and every phrase is compared with how your voice sounds. A phrase in another voice is marked in the timeline.',
+    },
+    icon('mic', 16),
+    label('Learn my voice'),
+  );
   const camOn = h('input', { type: 'checkbox', id: 'camOn' });
   const micSettings = h(
     'span',
@@ -429,16 +477,8 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       h('span', { class: 'label' }, 'Microphone'),
       micSelect,
     ),
-    h(
-      'label',
-      {
-        class: 'check',
-        title:
-          "Takes the room's steady noise (a fan, an air conditioner, a hum, hiss) out from under your voice before anything is recorded, on top of what Chrome already filters. Untick it if your voice comes out thin.",
-      },
-      noiseFilter,
-      h('span', { class: 'label' }, 'Noise filter'),
-    ),
+    h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Noise filter'), noiseFilter),
+    h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Camera'), camSelect),
     h(
       'label',
       {
@@ -448,13 +488,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
           'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
       },
       camOn,
-      h('span', { class: 'label' }, 'Camera'),
+      h('span', { class: 'label' }, 'Record camera'),
     ),
-  );
-  const camSelect = h(
-    'select',
-    { id: 'camSel', title: 'Which camera to use' },
-    h('option', { value: '' }, 'Default camera'),
+    btnVoice,
   );
   const camCorners: Record<Corner, HTMLButtonElement> = {
     'top-left': cornerButton('top-left'),
@@ -472,15 +508,10 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   });
   const camSizeV = h('b', { id: 'camSizeV' }, `${Math.round(CAMERA_SIZE_DEFAULT * 100)} %`);
   const camNote = h('span', { class: 'hint', id: 'camNote' });
+  const camLips = h('span', { class: 'note', id: 'camLips', hidden: true });
   const camRow = h(
     'div',
     { id: 'camRow', hidden: true },
-    h(
-      'label',
-      { class: 'pick', title: 'Which camera to use. The choice is remembered.' },
-      h('span', { class: 'label' }, 'Camera'),
-      camSelect,
-    ),
     h(
       'span',
       {
@@ -503,6 +534,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       camSizeV,
     ),
     camNote,
+    camLips,
   );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
@@ -589,13 +621,18 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     stepExport,
     micSelect,
     noiseFilter,
+    camSelect,
     camOn,
     camRow,
-    camSelect,
     camCorners,
     camSize,
     camSizeV,
     camNote,
+    camLips,
+    btnVoice,
+    selfBox,
+    selfView,
+    selfNote,
     btnArm,
     modeSwitch,
     btnModeAuto,

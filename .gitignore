@@ -13,3 +13,4 @@ coverage/
 /packages/e2e/fixtures/
 .claude/worktrees/
 /packages/e2e/camera-out/
+/packages/client/public/models/

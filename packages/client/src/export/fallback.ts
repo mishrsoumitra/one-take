@@ -3,10 +3,12 @@
  * but it works everywhere the microphone works.
  */
 import { type Slide } from '../app/types.js';
+import { type CameraLayout } from '../core/overlay.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 
 import { ExportCancelledError } from './encoder.js';
+import { drawOverlay, overlayBox, OverlayTrack, type OverlayPicture } from './overlay.js';
 
 export interface RealtimeOptions {
   timeline: Timeline;
@@ -17,6 +19,8 @@ export interface RealtimeOptions {
   videoBitrateKbps: number;
   signal: AbortSignal;
   onProgress: (fraction: number, nowSec: number, totalSec: number) => void;
+  /** The speaker's camera picture over the slides, when the browser can decode it. */
+  camera?: CameraLayout | null;
 }
 
 export function canRecordRealtime(): boolean {
@@ -55,6 +59,13 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
     recorder.onstop = () => resolve();
   });
   const bitmaps = new Map<number, ImageBitmap>();
+  const layout = options.camera ?? null;
+  const overlay =
+    layout && typeof VideoDecoder !== 'undefined' && OverlayTrack.hasVideo(timeline)
+      ? new OverlayTrack(timeline)
+      : null;
+  let picture: OverlayPicture | null = null;
+  let drawnSerial = -1;
   const draw = async (index: number) => {
     let bmp = bitmaps.get(index);
     if (!bmp) {
@@ -68,7 +79,17 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
     const s = Math.min(width / bmp.width, height / bmp.height);
     const dw = Math.round(bmp.width * s);
     const dh = Math.round(bmp.height * s);
-    g.drawImage(bmp, (width - dw) / 2, (height - dh) / 2, dw, dh);
+    const left = Math.round((width - dw) / 2);
+    const top = Math.round((height - dh) / 2);
+    g.drawImage(bmp, left, top, dw, dh);
+    if (picture && layout) {
+      drawOverlay(
+        g,
+        picture.frame,
+        overlayBox(layout, { x: left, y: top, width: dw, height: dh }, picture.aspect),
+      );
+      drawnSerial = picture.serial;
+    }
   };
   const first = timeline.items[0];
   if (!first) throw new Error('Nothing to export');
@@ -80,6 +101,7 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
   let cur = 0;
   let shown = -1;
   let lastDraw = 0;
+  let fetching = false;
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setInterval(() => {
@@ -115,7 +137,19 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
           return;
         }
         const slide = timeline.items[cur]?.seg.slide ?? 0;
-        if (slide !== shown || now - lastDraw > 0.5) {
+        if (overlay && !fetching) {
+          // the camera frame for this moment; a slow decode is skipped, not waited for
+          fetching = true;
+          void overlay
+            .pictureAt(cur, Math.max(0, now))
+            .then((p) => {
+              picture = p;
+            })
+            .finally(() => {
+              fetching = false;
+            });
+        }
+        if (slide !== shown || now - lastDraw > 0.5 || (picture?.serial ?? -1) !== drawnSerial) {
           shown = slide;
           lastDraw = now;
           void draw(slide);
@@ -135,6 +169,7 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
     recorder.stop();
     await stopped;
     await ctx.close();
+    overlay?.close();
     for (const b of bitmaps.values()) b.close();
   }
   return new Blob(chunks, { type: mime || 'video/webm' });

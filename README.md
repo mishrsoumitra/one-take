@@ -43,6 +43,7 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Pauses cut automatically, and never your voice.** Two listens, both plain signal processing (no model, nothing trained, every rule readable), listen for a human voice 32 ms at a time: sound that stands out from the room's noise, repeats at the rate of a voice's pitch, and changes the way speech does. The first listen runs live and is lenient on purpose: it opens a phrase on the first hint of a voice and holds it open through a soft aside, a sentence that trails off or a low creaky ending, so nothing you say is cut as you say it. Two seconds after you fall silent the phrase is finished and gets a second listen, with the whole of it in view: the room's noise is measured from the quiet moments either side of every frame, the pitch is followed both ways, and only then are the pauses cut out, the dead air at the ends trimmed, and a phrase that turns out to hold no voice at all dropped. A fan, an air conditioner, typing, breathing or a chair never make it into the video, and neither does a pause; a sentence that drops 25 dB in the middle does.
 - **Background noise taken out, live.** Before anything hears the microphone, DeepFilterNet3 (a trained noise model, full-band at 48 kHz, running on the audio thread as WebAssembly) takes out fans, typing, traffic, music and other people talking, with about 40 ms of delay. On a machine that cannot keep up it gives way to the classic filter, plain signal processing that learns the room's steady noise (a fan, a hum, hiss) and takes it out; you can also choose the classic filter, or none, from the **Noise filter** list under the level meter. The **Microphone** list next to it picks the mic; both are remembered.
 - **Knows whose voice it is.** Two checks run on every phrase while you record. The camera watches your mouth (MediaPipe's Face Landmarker, in a worker): a voice with your lips moving is you, a voice with your lips still is someone else. And each phrase's voice is compared with a profile of yours, made once from twenty seconds of reading (a speaker-embedding model, WeSpeaker's ResNet34, through onnxruntime-web in a worker). A phrase that is another voice is marked in the timeline within a second of ending, with the reasons; one the two checks disagree on is marked as not sure. Nothing is uploaded: the models are fetched once and kept, the profile stays in your browser.
+- **Your camera in the picture.** Tick **Record camera** under the level meter and your webcam is recorded along with your voice, phrase by phrase, and laid over the slides in the video. Put the picture in any corner with one click, or drag it anywhere on the slide; set its size with a slider or by dragging its corner, from a small badge up to half the slide's width. What you see on the stage is exactly where it will be in the export. The picture follows every cut, split and re-record in the editor without being re-encoded, and the export dialog can leave it out.
 - **Two ways to drive the mic.** *Auto* listens all the time and decides for you. *Press to speak* records only while you hold `Space` or the big button on the stage, so the app is never listening when you have not asked it to; the dead air at either end of a press is still trimmed. Switch at any time, even mid-recording.
 - **PDF, PowerPoint or images.** Drop a PDF, a `.pptx` / `.ppsx` / `.pptm` deck or a set of images. PowerPoint files are turned into PDF on the local server in plain JavaScript; no Office, Keynote or LibreOffice needed.
 - **Slides follow your navigation.** Change slides with the arrow keys, a presenter clicker, or a click on a thumbnail. If you change slides mid-sentence, the sentence stays intact across both slides.
@@ -132,29 +133,43 @@ The choice is remembered in this browser. Switching while a phrase is being spok
 
 The **Mic level** meter shows your voice against a white line, the *speech line*. Sound under the line never counts as speech, so a faint voice from the next room can't start a phrase. Above the line, the voice detector decides what is a voice and what is noise, so a fan, an air conditioner or your keyboard won't trigger a phrase either. Your own voice should go clearly past the line; if it doesn't, move the **Speech line** slider until it does. The note under the meter shows how sure the detector is (*voice 92%*).
 
-### 3. Talk, pause, talk again
+### 3. Switch on the camera (optional)
+
+Tick **Record camera** next to the **Camera** list under the level meter. The browser asks for camera permission the first time, then your picture appears over the slide, mirrored like a mirror so it is easy to frame yourself (the recording is not mirrored). A row of camera controls appears under the sliders:
+
+- **Camera** (the list next to the switch): which camera to use, if you have more than one. The same camera watches your lips for the lip check (see *Who is speaking*), opened once for both. Like the microphones, the browser names them once one has been allowed.
+- **Position**: four buttons put the picture in the top-left, top-right, bottom-left or bottom-right corner of the slide. Or just drag the picture on the slide to wherever you like; it snaps into a corner when it comes close to one, and the note under the row says *Where you dragged it* otherwise.
+- **Size**: the picture's width as a share of the slide's width, from 12 % to 50 % (24 % to begin with). Dragging the small handle on the picture's free corner does the same.
+
+The picture always stays on the slide, a small margin in from its edge, and keeps the camera's own shape. The stage shows it exactly where it will be in the finished video, at the same size relative to the slide, whatever resolution you export at.
+
+The camera records only while the mic is on: each phrase takes the stretch of picture that goes with its words, pauses included in neither. Phrases recorded with the camera off (or before you ticked it) simply show the slide alone; you can turn the camera on or off between phrases, or in the middle of a recording. The switch, the camera and the layout are remembered in this browser, but the camera never opens on its own: after a reload it opens when you start the mic, or when you tick the switch again.
+
+Recording the camera needs WebCodecs plus a way to read frames off the camera (Chrome and Edge have both); elsewhere the switch is greyed out and says so.
+
+### 4. Talk, pause, talk again
 
 While you speak, a red **RECORDING** flag shows. The flag stays up for two seconds after you stop, while the app makes sure you have finished rather than dropped your voice; the phrase then appears in the timeline a moment later, with its pauses already cut. Pause as long as you like; nothing of the pause is kept. When you speak again, the new phrase is placed right after the last one with a short gap. The total recorded time is shown at the top.
 
 In Auto, press `M` to mute while you talk to someone in the room. In Press to speak, just let go. Press `R` or **Stop** to turn the mic off.
 
-### 4. Move through the slides
+### 5. Move through the slides
 
 Use `→` and `←`, `PageDown` and `PageUp`, a presenter clicker, or click a thumbnail in the film strip. In Auto, `Space` also moves to the next slide; in Press to speak, `Space` is the talk key and never changes slides. Each thumbnail shows how many seconds you've recorded on that slide.
 
 If you change slides while speaking (in either mode, including during a press), the sentence is split at that moment and continues on the new slide without a gap or a fade. In the video the slide changes exactly where you pressed the key. Skipping straight past a slide mid-sentence stores nothing on it.
 
-### 5. Fix a mistake
+### 6. Fix a mistake
 
 - `Backspace` or `Delete` removes the phrase you're saying right now, or the last finished one if you're quiet.
 - `Cmd/Ctrl+Z` brings a removed phrase back.
 - `✕` on any phrase in the timeline deletes it.
 
-### 6. Preview and reorder
+### 7. Preview and reorder
 
 **Preview** plays the lecture with the slides switching at the right moments. `▶` on a phrase plays from there. Drag phrases to reorder them. Press `Esc` to stop.
 
-### 7. Edit the video
+### 8. Edit the video
 
 Click **Edit** to open the editor. It shows the lecture as a player with a scrub bar on the left and the list of clips on the right. A clip is one phrase on one slide, which is exactly what the timeline on the main screen shows; the editor only gives you more ways to change them.
 
@@ -166,11 +181,12 @@ Click **Edit** to open the editor. It shows the lecture as a player with a scrub
 - **Move a clip to another slide.** The **Slide** list next to the clip's name changes which slide it shows; the audio stays the same.
 - **Delete a clip** with the **Delete** button or the `Delete` key.
 - **Remove pauses.** The second listen goes through every clip and cuts out the stretches where nobody is speaking: a long silence at the end of a clip, or a pause inside one (the clip is split there, just as a live phrase is). Pauses shorter than *Phrase ends after* stay, and so do the pre-roll and tail. It is one change, so one Undo brings everything back. Use it on a recording made before the voice detector was there, or after a session in a room loud enough to keep a phrase open.
+- **The picture follows.** A clip recorded with the camera on keeps its picture through every cut, split, keep, move and Remove pauses: the frames are never decoded and encoded again, the clip only remembers which stretch of them to play. The editor's player shows the picture over the slide while it plays, and a take recorded with the camera on gets one too.
 - **Undo** (`Cmd/Ctrl+Z`) steps back through everything you did since opening the editor.
 
 Every change is saved the moment it is made, so there is no Save button: **Done** (or `Esc`) just closes the editor. The main microphone is turned off while the editor is open, because the editor records its own takes.
 
-### 8. Export the video
+### 9. Export the video
 
 Click **Export video**. In the dialog you choose:
 
@@ -178,13 +194,14 @@ Click **Export video**. In the dialog you choose:
 - **File name**, **Container**, **Resolution**, **Frame rate**, **Quality**, **Video codec**, **Audio** codec and bitrate, **Key frame every**, and **Order**.
 - **Compression (server, ffmpeg)** and, for HLS and DASH, **Segment length**, **Segment type** and **Adaptive bitrate**.
 - Under **This computer**: what the machine has, the **Use the hardware encoder** switch (on by default; untick it to encode on the CPU, and the choice is remembered in this browser) and the performance mode.
+- Under **Camera** (shown when any phrase has a picture): whether to **show the camera picture over the slides**, where it will be, and a reminder to pick 24 or 30 fps so the speaker moves smoothly (slides alone look the same at 15 fps).
 - Under **Enhance**: the playback **Speed**, **even out the volume**, **cut filler words** with a list of what was found, and **transcribe the speech and add subtitles**. See [Speed, filler words, transcript and subtitles](#speed-filler-words-transcript-and-subtitles).
 
 The **Plan** panel shows the two stages (what the browser encodes, what the server does afterwards), an estimate of the upload size and the final size, warnings, and any reason the export cannot run. Progress covers encoding, upload and ffmpeg, and you can cancel at any point. When it's done, **Show in folder** opens Finder or Explorer at the file.
 
 To close the slides and start over, click the **×** after the deck's name in the top bar. Slides with nothing recorded on them close at once; otherwise the app asks before deleting the phrases, because they cannot be brought back.
 
-### 9. Find, watch or delete an exported video
+### 10. Find, watch or delete an exported video
 
 Click **Exports** in the top bar (or **Exported videos…** at the bottom of the export dialog). Every video the local server has saved is listed, newest first, with its format, size, duration, where it went and which encoder made it. **Play** streams an MP4, MOV or WebM into a player right there; an HLS or DASH folder opens in the file manager instead. **Show in folder** opens Finder or Explorer at the file. **Delete** asks once, then removes the file from disk and the entry from the list; an HLS or DASH folder is deleted only while it holds nothing but the export. A video you moved or deleted outside the app is shown as *not on disk*, with **Remove from list** in place of Delete.
 
@@ -592,10 +609,10 @@ When the two agree, that is the verdict. When one has nothing to say, the other 
 Everything is written to IndexedDB (database `one-take`) the moment it exists:
 
 - the slide source (the PDF or the image files), so slides can be re-rendered,
-- every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made),
+- every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made), and, when the camera was on, its picture as the encoded frames the camera produced (about 4 MB a minute),
 - the project state: phrase order, current slide, your detector settings and the last export settings.
 
-The recording mode (Auto or Press to speak), the theme, the tips setting, the microphone, the noise filter and the hardware encoder switch are browser preferences, kept in `localStorage` rather than with the project. The list of exported videos lives on the server side (see [Where files go](#where-files-go)).
+The recording mode (Auto or Press to speak), the theme, the tips setting, the microphone, the noise filter, the camera switch, which camera, where its picture goes and how big it is, and the hardware encoder switch are browser preferences, kept in `localStorage` rather than with the project. The list of exported videos lives on the server side (see [Where files go](#where-files-go)).
 
 Reload the tab or close it and come back, and you continue where you left off. The **×** after the deck's name clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
 
@@ -895,23 +912,25 @@ one-take/
     │   └── src/
     │       ├── main.ts           boot; exposes window.__onetake test hooks
     │       ├── app/              App controller, Store (state + event bus), types and defaults
-    │       ├── audio/            the shared AudioContext (48 kHz), MicCapture (source → DeepFilterNet3 → capture worklet, or the classic filter), deepfilter.ts (the deep noise filter's node), capture processor, preview playback (seekable), take recording for the editor
-    │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the classic noise filter), fbank.ts (Kaldi's log mel filterbank for the speaker model), speaker.ts (the voice check's arithmetic: cosine, mean vector, the bars, the windows), lips.ts (mouth opening from landmarks, lip activity over a span), identity.ts (the verdict table and its reasons), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert), PCM helpers, I420 slide frames (yuv.ts)
+    │       ├── audio/            the shared AudioContext (48 kHz), MicCapture (source → DeepFilterNet3 → capture worklet, or the classic filter), deepfilter.ts (the deep noise filter's node), capture processor, preview playback (seekable), take recording for the editor (with the camera when it is on)
+    │       ├── video/            camera.ts (CameraCapture: the live camera, frames encoded with WebCodecs on the microphone's block clock, a phrase's stretch cut out on request), reader.ts (ClipReader: a clip's pieces decoded in order for the export and the preview)
+    │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the classic noise filter), fbank.ts (Kaldi's log mel filterbank for the speaker model), speaker.ts (the voice check's arithmetic: cosine, mean vector, the bars, the windows), lips.ts (mouth opening from landmarks, lip activity over a span), identity.ts (the verdict table and its reasons), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert; the picture follows), clip-video.ts (a phrase's camera picture as pieces of encoded frames: slicing, joining, speed), overlay.ts (where the picture sits on the slide: corners, anywhere, size), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
     │       ├── storage/          IndexedDB project store (idb), prefs (localStorage), the voice profile
     │       ├── models/           fetch.ts: a model's bytes from /models, the cache storage or its publisher, checked
     │       ├── speaker/          voice-check.ts: the speaker model in its worker, fed each live phrase, compared with the profile
     │       ├── vision/           lips.ts: the camera into the lip worker, the samples kept for each phrase's span
     │       ├── workers/          speaker.worker.ts (onnxruntime-web, windows of a phrase), lips.worker.ts (MediaPipe Face Landmarker on the camera's frames)
-    │       ├── export/           capabilities, prepare (fillers cut, volume, speed, the audio for the recogniser, word times onto the final timeline), encoder (mediabunny, subtitles drawn in), sinks (server / file / memory), runner (prepare, transcribe, encode, finish), real-time fallback
+    │       ├── export/           capabilities, prepare (fillers cut, volume, speed, the audio for the recogniser, word times onto the final timeline), encoder (mediabunny, subtitles and the camera picture drawn in), overlay (which camera frame goes with each moment of the timeline), sinks (server / file / memory), runner (prepare, transcribe, encode, finish), real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list (with the voice badges), meter, enroll (the voice enrollment), keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       ├── ui/               layout, cam-stage (the camera picture over the slide: live or played back, drag to move, handle to resize), editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list (with the voice badges), meter, enroll (the voice enrollment), keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
     │   └── public/fonts/         Mona Sans (variable weight, OFL); public/models/ holds the fetched models (not in git)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
         └── src/
             ├── run.ts            boots server + headless Chrome, records in both modes, exports, probes with ffprobe
             ├── stress.ts         talks through the app for minutes or hours, checking phrases, timelines, heap, resume and export
+            ├── camera.ts         the camera with a fake device: placement, size, dragging, a picture on every phrase, the export frame, the editor, the reload
             ├── harness.ts        shared: server and Chrome start-up, a page over the DevTools Protocol, real key and mouse input
             ├── cdp.ts            minimal Chrome DevTools Protocol client on Node's WebSocket
             └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs of speech (macOS text-to-speech) with pauses, typing and clicks
@@ -1002,6 +1021,8 @@ The stress runner (`packages/e2e/src/stress.ts`) plays a generated voice as the 
 | Other Chromium browsers | Yes       | Yes, full speed        | Usually the same as Chrome                        |
 | Safari, Firefox         | Yes       | Depends on WebCodecs support in that version | In memory, up to about 2 GB, then downloaded. Without WebCodecs, real-time WebM only. |
 
+Recording the camera needs WebCodecs and either `MediaStreamTrackProcessor` or `requestVideoFrameCallback`: Chrome and Edge have both, and the **Record camera** switch is greyed out, with the reason, where they are missing.
+
 The export dialog tells you what your browser can encode. Codec availability also depends on the operating system: H.265 and AV1 encoding, for example, are often only available with hardware support.
 
 The lip check needs Chrome or Edge (it hands the camera's frames to a worker with `MediaStreamTrackProcessor`); elsewhere the voice check decides alone. The deep noise filter needs AudioWorklet; the ScriptProcessor fallback gets the classic filter.
@@ -1012,6 +1033,8 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **The recording starts on its own.** Something crosses the line and the voice detector hears a voice in it: a TV, a radio, people talking nearby. Raise the **Speech line** slider so that only your own voice goes past it, or switch to Press to speak.
 
+**The Record camera switch unticks itself.** The browser refused the camera: allow it in the address bar (the camera icon) and tick the switch again. If another app has the camera open, close it first. A camera that is unplugged while recording ends the picture there; the phrases already recorded keep theirs.
+
 **A long silence was kept inside a phrase.** That happens with a recording made before the voice detector was there. Click **Edit**, then **Remove pauses**: every stretch without a voice is cut out, and Undo brings it back if you disagree.
 
 **A soft stretch of my voice was cut.** The cut is made after the phrase is finished, from the whole of it, so a quiet aside or a sentence that trails off should survive; if one does not, it stood less than 3 dB over the room's noise, so lower the room (the **Noise filter** on, a headset) rather than the **Speech line**, which only decides what can _open_ a phrase. A whispered stretch longer than _Phrase ends after_ is cut, since a whisper has nothing voiced in it.
@@ -1020,7 +1043,7 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **A phrase of mine is marked as another voice.** Hover the badge: it says what each check saw. *Voice unlike yours* with a low match means the profile does not fit how you sounded, a cold, another microphone, a very different room; click **Learn my voice** and read again. *Your lips were still* with your face in view means the camera did not see your mouth move while the voice went on: check the mirror in the corner of the stage shows your face straight on, in the light. A verdict changes nothing by itself, so the phrase is still there to listen to and keep.
 
-**The camera's mirror says no face in view.** Face the camera, and give it light from the front; a face in profile or in the dark is not found. If the mirror is missing, the **Camera** list is set to *Camera off*, the browser refused the camera, or this is not Chrome or Edge; the voice check then decides alone.
+**The camera's mirror says no face in view.** Face the camera, and give it light from the front; a face in profile or in the dark is not found. If the mirror is missing, the **Camera** list is set to *Off (no lip check)*, the browser refused the camera, or this is not Chrome or Edge; the voice check then decides alone.
 
 **The enrollment says too little of my voice came through.** It needs eight seconds of voice out of the twenty, as the voice detector hears it. Read out loud the whole time, closer to the microphone, with the level meter crossing the white line, and try again.
 

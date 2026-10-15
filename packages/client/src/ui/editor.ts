@@ -25,6 +25,7 @@ import {
 } from '../core/edit.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { listenAgain } from '../core/hindsight.js';
+import { type CameraLayout } from '../core/overlay.js';
 import { type CaptureMode } from '../core/recorder.js';
 import { speechRanges, trimSilences, type Range as SpeechRange } from '../core/silence.js';
 import { type VoiceScorer } from '../core/speech.js';
@@ -35,7 +36,10 @@ import {
   type Segment,
   type Timeline,
 } from '../core/timeline.js';
+import { OverlayTrack } from '../export/overlay.js';
+import { type CameraCapture } from '../video/camera.js';
 
+import { CamStage } from './cam-stage.js';
 import { clear, h, label, setLabel } from './dom.js';
 import { icon, setButtonIcon } from './icon.js';
 import { kbd, shortcut } from './kbd.js';
@@ -55,6 +59,11 @@ export interface EditorDeps {
   nextId: () => string;
   /** The voice detector; it cuts takes and finds the pauses in recorded clips. */
   speech: () => VoiceScorer;
+  /** The camera while it is on: takes get its picture, and it shows on the screen while one records. */
+  camera: () => CameraCapture | null;
+  /** Where the camera picture sits on the slide; the same layout as on the main screen. */
+  cameraLayout: () => CameraLayout;
+  onCameraLayout: (layout: CameraLayout, final: boolean) => void;
   /** The clips changed; the new list is the lecture from now on. */
   onChange: (segments: Segment[]) => void;
   onClose: () => void;
@@ -79,6 +88,11 @@ export class Editor {
   private readonly player: PreviewPlayer;
   private readonly take: TakeRecorder;
   private readonly meter: LevelMeter;
+  /** The camera picture over the slide on the editor's screen: recorded frames while playing, live during a take. */
+  private readonly cam: CamStage;
+  private overlay: OverlayTrack | null = null;
+  private painting = false;
+  private paintedSerial = -1;
   private readonly e: {
     info: HTMLElement;
     screen: HTMLElement;
@@ -446,12 +460,78 @@ export class Editor {
       btnDone,
     };
     this.meter = new LevelMeter(takeMeter, takeNote);
+    this.cam = new CamStage({
+      stage: screen,
+      img: slideImg,
+      layout: () => deps.cameraLayout(),
+      onLayout: (layout, final) => deps.onCameraLayout(layout, final),
+    });
     this.wire();
     parent.appendChild(this.el);
   }
 
   get isOpen(): boolean {
     return this.el.classList.contains('on');
+  }
+
+  /** The camera layout changed on the main screen: move the picture here too. */
+  relayoutCamera(): void {
+    if (this.isOpen) this.cam.relayout();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The camera picture on the screen                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Recorded pictures while a timeline plays, the live camera while a take records, nothing otherwise. */
+  private syncCam(): void {
+    const camera = this.deps.camera();
+    const stream = camera?.liveStream;
+    if (this.take.recording && camera?.on && stream) {
+      this.cam.showLive(stream, camera.aspect);
+    } else if (!this.overlay) {
+      this.cam.hide();
+    }
+  }
+
+  /** Starts painting the recorded pictures of `tl` as it plays; nothing when no clip of it has one. */
+  private startOverlay(tl: Timeline): void {
+    this.overlay?.close();
+    this.overlay = OverlayTrack.hasVideo(tl) ? new OverlayTrack(tl) : null;
+    this.paintedSerial = -1;
+    if (this.overlay) {
+      const first = tl.items.find((it) => it.seg.video)?.seg.video;
+      this.cam.showPlayback(first ? first.width / first.height : 16 / 9);
+    } else {
+      this.syncCam();
+    }
+  }
+
+  private stopOverlay(): void {
+    this.overlay?.close();
+    this.overlay = null;
+    this.syncCam();
+  }
+
+  private paintCam(index: number, now: number): void {
+    const track = this.overlay;
+    if (!track || this.painting) return;
+    this.painting = true;
+    void track
+      .pictureAt(index, now)
+      .then((picture) => {
+        if (this.overlay !== track) return;
+        if (!picture) {
+          this.cam.paint(null);
+          this.paintedSerial = -1;
+        } else if (picture.serial !== this.paintedSerial) {
+          this.paintedSerial = picture.serial;
+          this.cam.paint(picture.frame, picture.aspect);
+        }
+      })
+      .finally(() => {
+        this.painting = false;
+      });
   }
 
   /* ------------------------------------------------------------------ */
@@ -476,6 +556,7 @@ export class Editor {
     if (!this.isOpen) return;
     this.pause();
     this.closeTake();
+    this.cam.hide();
     this.el.classList.remove('on');
     if (this.previouslyFocused instanceof HTMLElement) this.previouslyFocused.focus();
     this.deps.onClose();
@@ -980,6 +1061,7 @@ export class Editor {
     this.position = fromSec;
     setButtonIcon(this.e.btnPlay, 'pause');
     this.e.btnPlay.setAttribute('aria-label', 'Pause');
+    this.startOverlay(this.tl);
     await this.player.startAtTime(this.tl, fromSec);
   }
 
@@ -987,6 +1069,7 @@ export class Editor {
     if (this.player.playing) this.player.stop();
     this.auditioning = false;
     this.stopAtSec = null;
+    this.stopOverlay();
     setButtonIcon(this.e.btnPlay, 'play');
     this.e.btnPlay.setAttribute('aria-label', 'Play');
     this.updatePlayhead();
@@ -1017,6 +1100,7 @@ export class Editor {
   private onTick(index: number, now: number): void {
     if (this.auditioning) {
       this.e.takeStatus.textContent = `Playing the take · ${fmtTime(now)}`;
+      this.paintCam(index, now);
       return;
     }
     this.position = now;
@@ -1025,12 +1109,14 @@ export class Editor {
       return;
     }
     if (index !== this.selected) this.select(index, false);
+    this.paintCam(index, now);
     this.updatePlayhead();
   }
 
   private onEnd(): void {
     if (this.auditioning) {
       this.auditioning = false;
+      this.stopOverlay();
       this.showTakeResult();
       return;
     }
@@ -1184,6 +1270,7 @@ export class Editor {
       this.player.stop();
       this.auditioning = false;
     }
+    this.stopOverlay();
     this.target = null;
     this.finished = null;
     this.e.takePanel.hidden = true;
@@ -1197,6 +1284,7 @@ export class Editor {
     if (this.auditioning) {
       this.player.stop();
       this.auditioning = false;
+      this.stopOverlay();
     }
     this.finished = null;
     const e = this.e;
@@ -1210,6 +1298,7 @@ export class Editor {
         mode: this.deps.mode(),
         deviceId: this.deps.micDeviceId(),
         noiseFilter: this.deps.noiseFilter(),
+        camera: this.deps.camera(),
       });
     } catch (error) {
       e.btnRecord.disabled = false;
@@ -1230,6 +1319,8 @@ export class Editor {
     setButtonIcon(e.btnRecord, 'square-filled');
     e.btnRecord.classList.remove('primary');
     e.btnRecord.classList.add('rec');
+    // the live camera shows on the screen while the take records, where its picture will be
+    this.syncCam();
     const loop = () => {
       if (!this.take.recording) return;
       this.drawTakeMeter();
@@ -1269,6 +1360,7 @@ export class Editor {
       take = await this.take.stop();
     } finally {
       e.btnRecord.disabled = false;
+      this.syncCam();
     }
     // the panel closed (or another take began) while the last phrases were being gone over
     if (this.takeGeneration !== generation) return;
@@ -1282,7 +1374,7 @@ export class Editor {
   }
 
   private takeSeconds(take: Take): number {
-    return take.phrases.reduce((a, p) => a + p.length / take.sampleRate, 0);
+    return take.phrases.reduce((a, p) => a + p.pcm.length / take.sampleRate, 0);
   }
 
   private showTakeResult(): void {
@@ -1304,6 +1396,7 @@ export class Editor {
     if (this.auditioning) {
       this.player.stop();
       this.auditioning = false;
+      this.stopOverlay();
       this.showTakeResult();
       return;
     }
@@ -1319,6 +1412,7 @@ export class Editor {
     this.auditioning = true;
     setLabel(this.e.btnListen, 'Stop');
     setButtonIcon(this.e.btnListen, 'square-filled');
+    this.startOverlay(tl);
     await this.player.start(tl, 0);
   }
 
@@ -1329,6 +1423,7 @@ export class Editor {
     if (this.auditioning) {
       this.player.stop();
       this.auditioning = false;
+      this.stopOverlay();
     }
     const slide = Number(this.e.takeSlideSelect.value);
     const segs = takeToSegments(take.phrases, take.sampleRate, slide, this.deps.nextId);

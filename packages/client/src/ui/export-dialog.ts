@@ -54,6 +54,7 @@ import {
 import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
 import { toTranscript } from '../core/captions.js';
+import { describeLayout, type CameraLayout } from '../core/overlay.js';
 import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
 import { canRecordRealtime, recordRealtime } from '../export/fallback.js';
 import {
@@ -97,6 +98,8 @@ export interface ExportDialogDeps {
   /** The hardware switch is a browser preference: read on opening, written when the user flips it. */
   hardwarePreference: () => boolean;
   onHardwarePreferenceChange: (on: boolean) => void;
+  /** Where the camera picture sits on the slide and how big it is, as set on the main screen. */
+  cameraLayout: () => CameraLayout;
   /** Opens the list of exported videos. */
   onOpenLibrary: () => void;
   onExportingChange: (exporting: boolean) => void;
@@ -230,6 +233,8 @@ export class ExportDialog {
   private fillerScanRun = 0;
   private readonly fillerKeep = new Set<string>();
   private readonly snippet = new SnippetPlayer();
+  /** Draw the camera picture over the slides (when any phrase has one). */
+  private includeCamera = true;
   private readonly els: {
     sumTime: HTMLElement;
     sumSegs: HTMLElement;
@@ -296,6 +301,10 @@ export class ExportDialog {
     /** The hardware switch and the line under it saying what was found. */
     hardware: HTMLInputElement;
     hardwareNote: HTMLElement;
+    /** The camera section: shown when any phrase has a picture; the switch leaves it out of the video. */
+    cameraSection: HTMLElement;
+    cameraInclude: HTMLInputElement;
+    cameraNote: HTMLElement;
     modes: HTMLElement;
     modeInputs: Record<PerformanceMode, HTMLInputElement>;
     resources: HTMLElement;
@@ -734,6 +743,27 @@ export class ExportDialog {
       });
     };
     e.hardwareNote = h('div', { class: 'hint', id: 'hwNote' });
+
+    // The camera picture over the slides.
+    e.cameraInclude = h('input', { type: 'checkbox', id: 'cameraInclude', checked: true });
+    e.cameraInclude.onchange = () => {
+      this.includeCamera = e.cameraInclude.checked;
+      this.refresh();
+    };
+    e.cameraNote = h('div', { class: 'hint', id: 'cameraNote' });
+    e.cameraSection = section(
+      'Camera',
+      row(
+        'Speaker',
+        h(
+          'div',
+          { class: 'stack' },
+          check(e.cameraInclude, 'show the camera picture over the slides'),
+          e.cameraNote,
+        ),
+      ),
+    );
+    e.cameraSection.id = 'cameraSection';
     e.modeInputs = {} as Record<PerformanceMode, HTMLInputElement>;
     e.modes = h(
       'div',
@@ -902,6 +932,7 @@ export class ExportDialog {
             row('Key frame every', unit(e.keyInt, 's'), 'Smaller values seek faster and make bigger files.'),
           ),
           section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
+          e.cameraSection,
           section(
             'Enhance',
             row(
@@ -1340,6 +1371,25 @@ export class ExportDialog {
     const tl = this.deps.timeline(r.order);
     e.sumSegs.textContent = String(tl.items.length);
     e.sumSlides.textContent = String(new Set(tl.items.map((i) => i.seg.slide)).size);
+
+    // Camera: only phrases recorded with the camera on have a picture
+    const withCamera = tl.items.filter((it) => it.seg.video && it.seg.video.pieces.length > 0).length;
+    e.cameraSection.hidden = withCamera === 0;
+    e.cameraInclude.checked = this.includeCamera;
+    if (withCamera > 0) {
+      const where = describeLayout(this.deps.cameraLayout());
+      const coverage =
+        withCamera === tl.items.length
+          ? 'Every phrase has a picture.'
+          : `${withCamera} of ${tl.items.length} phrases have a picture; the rest show the slide alone.`;
+      e.cameraNote.textContent = this.includeCamera
+        ? `${where}. Drag or resize it on the main screen to change that. ${coverage}${
+            r.fps < 24
+              ? ` At ${r.fps} fps the speaker will move in steps; 24 or 30 fps suits a camera picture.`
+              : ''
+          }`
+        : 'The video shows the slides alone.';
+    }
 
     // Destination
     const serverOk = server !== null;
@@ -1853,6 +1903,7 @@ export class ExportDialog {
         signal: controller.signal,
         estimates: this.estimates(),
         onProgress: (p) => this.renderProgress(p),
+        camera: this.includeCamera ? this.deps.cameraLayout() : null,
       });
       this.showResult(result);
     } catch (error) {
@@ -2054,6 +2105,7 @@ export class ExportDialog {
         fps: b.fps,
         videoBitrateKbps: b.videoBitrateKbps,
         signal: controller.signal,
+        camera: this.includeCamera ? this.deps.cameraLayout() : null,
         onProgress: (f, now, total) =>
           this.renderProgress({
             ...this.simpleProgress(

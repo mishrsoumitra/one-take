@@ -96,6 +96,15 @@ export class VoiceActivityDetector {
     return this.cur.length * this.blockMs;
   }
 
+  /**
+   * Index of the earliest block still held: the start of the phrase being spoken (pre-roll included),
+   * or of the pre-roll waiting for one. Whatever records alongside the microphone (the camera) must
+   * keep from here on.
+   */
+  get heldFrom(): number {
+    return this._seen - (this._speaking ? this.cur : this.pre).length;
+  }
+
   /** The phrase being spoken continues a part already split off by a slide change. */
   get continuing(): boolean {
     return this._speaking && this.continuation;

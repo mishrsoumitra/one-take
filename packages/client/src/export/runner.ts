@@ -24,9 +24,11 @@ import {
 import { type ApiClient } from '../api/client.js';
 import { type Slide } from '../app/types.js';
 import { buildCues, toSrt, toTranscript, toVtt, type Cue } from '../core/captions.js';
+import { type CameraLayout } from '../core/overlay.js';
 import { type PhraseOrder, type Segment, type Timeline, type TimelineSettings } from '../core/timeline.js';
 
 import { encodeLecture, ExportCancelledError, type EncodeProgress, type EncodeResult } from './encoder.js';
+import { OverlayTrack } from './overlay.js';
 import { mapWords, needsPreparation, prepareSegments, transcriptionAudio } from './prepare.js';
 import { createBufferSink, createFileSink, createServerSink, type Sink } from './sinks.js';
 
@@ -133,6 +135,8 @@ export interface RunExportOptions {
   estimates?: ExportEstimates;
   /** Skip the save dialog and assemble the file in memory (tests, or browsers that block the picker). */
   forceInMemory?: boolean;
+  /** Draw the speaker's camera picture over the slides, laid out like this; null leaves it out. */
+  camera?: CameraLayout | null;
 }
 
 const MAX_IN_MEMORY_BYTES = 2 * 1024 ** 3;
@@ -607,11 +611,14 @@ async function encodeWithSink(
 ): Promise<{ bytes: number; frames: number; encoder: EncoderUsed }> {
   tracker.begin('encode');
   tracker.emit({ stage: 'encoding', message: 'Starting the encoder…', percent: 0 });
+  const layout = options.camera ?? null;
+  const overlay = layout && OverlayTrack.hasVideo(timeline) ? new OverlayTrack(timeline) : null;
   try {
     const result = await encodeLecture({
       timeline,
       slides: options.slides,
       captions,
+      camera: overlay && layout ? { track: overlay, layout } : null,
       plan: options.plan.browser,
       target: sink.target,
       fastStart: sink.fastStart,
@@ -625,6 +632,8 @@ async function encodeWithSink(
   } catch (error) {
     await sink.abort();
     throw error;
+  } finally {
+    overlay?.close();
   }
 }
 

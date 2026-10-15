@@ -2,7 +2,9 @@
  * The lip check on the main thread: opens the camera, hands its frames to the lip worker
  * (`workers/lips.worker.ts`, MediaPipe's Face Landmarker) and keeps the samples that come back in a
  * `LipTrack`, so a phrase can ask what the mouth was doing over its span. The camera's stream is
- * also there for a self-view, so the speaker can see they are in the frame.
+ * also there for a self-view, so the speaker can see they are in the frame. When the camera is
+ * already open to be recorded (`video/camera.ts`), a clone of its track is watched instead of
+ * opening the device a second time; each side stops its own track and leaves the other's alone.
  *
  * Chrome's `MediaStreamTrackProcessor` is what gets the frames to the worker without the page in
  * the way; a browser without it gets no lip check, and says why.
@@ -85,6 +87,7 @@ export class LipWatcher {
   private _state: LipWatcherState = 'off';
   private _note: string | null = null;
   private _delegate: 'GPU' | 'CPU' | null = null;
+  private _shared = false;
   private generation = 0;
 
   constructor(private readonly onProgress?: (p: FetchProgress) => void) {}
@@ -101,6 +104,11 @@ export class LipWatcher {
   /** Where the landmarker runs. */
   get delegate(): 'GPU' | 'CPU' | null {
     return this._delegate;
+  }
+
+  /** Watching a clone of a track opened elsewhere (the recorded camera) rather than its own stream. */
+  get shared(): boolean {
+    return this._shared;
   }
 
   /** The camera's stream, for a self-view, while it is open. */
@@ -122,8 +130,11 @@ export class LipWatcher {
     }
   }
 
-  /** Opens the camera and starts watching; false (with `note` set) when that cannot be done here. */
-  async start(deviceId?: string): Promise<boolean> {
+  /**
+   * Opens the camera and starts watching; false (with `note` set) when that cannot be done here.
+   * With `shared` (the track of a camera already open), a clone of it is watched instead.
+   */
+  async start(deviceId?: string, shared?: MediaStreamTrack | null): Promise<boolean> {
     this.stop();
     this.crops = this.wantCrops;
     const gen = ++this.generation;
@@ -135,15 +146,19 @@ export class LipWatcher {
     this._state = 'starting';
     this._note = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { ...VIDEO, deviceId: deviceId ? { exact: deviceId } : undefined },
-        audio: false,
-      });
+      const borrow = shared?.readyState === 'live';
+      const stream = borrow
+        ? new MediaStream([shared.clone()])
+        : await navigator.mediaDevices.getUserMedia({
+            video: { ...VIDEO, deviceId: deviceId ? { exact: deviceId } : undefined },
+            audio: false,
+          });
       if (gen !== this.generation) {
         for (const t of stream.getTracks()) t.stop();
         return false;
       }
       this.stream = stream;
+      this._shared = borrow;
       const [model, worker] = await Promise.all([loadModel(MODELS.face, this.onProgress), this.spawn()]);
       if (gen !== this.generation) return false;
       await this.ready(worker, model);
@@ -225,5 +240,6 @@ export class LipWatcher {
     this.film.clear();
     this._state = 'off';
     this._delegate = null;
+    this._shared = false;
   }
 }

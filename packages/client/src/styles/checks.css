@@ -137,3 +137,33 @@
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* the lip check's note in the camera row, while the stage shows the camera picture instead of the self-view */
+#camLips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-11px);
+  color: var(--muted);
+  white-space: nowrap;
+}
+#camLips[hidden] {
+  display: none;
+}
+#camLips::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--neutral-600);
+  flex: none;
+}
+#camLips.face::before {
+  background: var(--success-500, #2d9f5a);
+}
+#camLips.moving::before {
+  background: var(--rec);
+}
+#camLips.warn::before {
+  background: var(--yellow-400);
+}

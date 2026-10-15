@@ -89,17 +89,23 @@ The server looks for `ffmpeg` on your `PATH` and in the usual places (`/opt/home
 ```sh
 git clone https://github.com/mishrsoumitra/one-take.git
 cd one-take
-npm install
-npm run models     # 29 MB, once, while online: the models for the voice check and the lip check
-npm run build
 npm start          # http://127.0.0.1:4317
 ```
 
+`npm start` is the only command you need. Every time it runs it does whatever is still to be done, says so, and then starts the server:
+
+1. **Installs the dependencies** when `node_modules` is missing or older than `package-lock.json` (`npm ci`).
+2. **Builds** the shared code, the server and the client when a source, a config or a dependency changed since the last build (a few seconds; nothing when nothing changed).
+3. **Fetches the models** for the voice check, the lip check and the camera cleanup (29 MB, once, while online) into `packages/client/public/models`, checking each against its SHA-256. Files already there are left alone. Offline, this is only a note: the server fetches a missing model itself the first time the app asks for it.
+4. **Starts the server.** Everything after `--` goes to it: `npm start -- --port 4317 --dir ~/Movies/One\ Take`.
+
 Open the address in Chrome, load a PDF, a PowerPoint file (`.pptx`, `.ppsx`, `.pptm`) or a set of images, click **Start mic** and talk. Keynote and Google Slides: export as PDF or `.pptx` first.
 
-**The models.** The first time you start the mic, One Take learns your voice (you read a short passage for twenty seconds) so that it can mark phrases that were somebody else's, and with a camera on it watches your lips. The two models that do this, WeSpeaker's speaker model (25 MB, from sherpa-onnx's GitHub release) and MediaPipe's Face Landmarker (4 MB, from Google), are not in the repository: `npm run models` fetches them into `packages/client/public/models`, checks each against its SHA-256, and the server serves them from there. Run it before or after the build, it makes no difference. If you skip it, the server fetches a missing model itself the first time the app asks for one, into `~/.one-take/models`, provided the machine is online at that moment; a message such as `Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched` means neither place had it and the download failed, so run `npm run models` while online and reload the page. Everything the models work on stays on your machine: the recording of your voice becomes 256 numbers in this browser's localStorage, and nothing is uploaded.
+The steps are also there one by one, for when you want just one of them: `npm install`, `npm run build`, `npm run models`, and `node packages/server/dist/index.js` for the server alone.
 
-Optional, for the export's deep clean and *Only my voice*: `npm run studio` once (about 1.7 GB of models and a Python environment of its own; see [The studio](#the-studio-deep-clean-and-only-your-voice)), then restart the server.
+**The models.** The first time you start the mic, One Take learns your voice (you read a short passage for twenty seconds) so that it can mark phrases that were somebody else's, and with a camera on it watches your lips. The two models that do this, WeSpeaker's speaker model (25 MB, from sherpa-onnx's GitHub release) and MediaPipe's Face Landmarker (4 MB, from Google), are not in the repository: `npm start` (or `npm run models`) fetches them into `packages/client/public/models`, checks each against its SHA-256, and the server serves them from there, whether they arrived before or after the build. If the machine was offline then, the server fetches a missing model itself the first time the app asks for one, into `~/.one-take/models`, provided it is online at that moment; a message such as `Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched` means neither place had it and the download failed, so run `npm start` (or `npm run models`) again while online and reload the page. Everything the models work on stays on your machine: the recording of your voice becomes 256 numbers in this browser's localStorage, and nothing is uploaded.
+
+Optional, for the export's deep clean and *Only my voice*: `npm run studio` once (about 1.7 GB of models and a Python environment of its own; see [The studio](#the-studio-deep-clean-and-only-your-voice)), then start the server again. It is the one thing `npm start` does not do by itself, because of its size and its need for Python.
 
 Server options, if you need them:
 
@@ -696,8 +702,8 @@ The server (`packages/server`) is a small [Fastify](https://fastify.dev) app. It
 ### Starting it
 
 ```sh
-npm start                                  # after npm run build
-node packages/server/dist/index.js         # the same
+npm start                                  # installs, builds and fetches the models when needed, then starts
+node packages/server/dist/index.js         # the server alone, after npm run build
 ```
 
 On start it prints the system check (see [System check and performance mode](#system-check-and-performance-mode)), then logs the address, the ffmpeg it found (or that HLS, DASH and compression are disabled), where the client is served from, and the default output folder, which it creates if needed.
@@ -1027,7 +1033,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `npm run dev`          | Builds `shared` once, then watches it, runs the server with `tsx watch` on 4317, and Vite on 5173 with `/api` proxied. |
 | `npm run build`        | Builds `shared`, `server` and `client` in order.                                                           |
-| `npm start`            | Runs the built server, which serves the built client.                                                      |
+| `npm start`            | Everything, then the server: installs the dependencies when `node_modules` is missing or behind the lockfile, builds when a source changed, fetches the models when any is missing, and runs the server (arguments after `--` go to it). `node packages/server/dist/index.js` is the server alone. |
 | `npm run typecheck`    | `tsc -b` across all four packages.                                                                         |
 | `npm run lint`         | ESLint. `npm run lint:fix` fixes what it can.                                                              |
 | `npm run format`       | Prettier. `npm run format:check` only checks.                                                              |
@@ -1148,7 +1154,7 @@ The lip check needs Chrome or Edge (it hands the camera's frames to a worker wit
 
 **A PowerPoint slide looks a little different.** Fonts the machine lacks are replaced by a stand-in with the same weight and style, which shifts line breaks. Pass the real fonts with `--fonts`. 3-D effects, soft shadows, embedded video, SmartArt animation and GIF or SVG pictures are approximated or skipped; the browser console lists what the renderer changed. For a pixel-exact result, export the deck as PDF.
 
-**"Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched."** The voice check's model is on neither the server nor in the browser's cache, and it could not be downloaded: the message says what was tried (the server not running, the server unable to reach GitHub, the publisher refusing the page). Run `npm run models` once while the machine is online, then reload the page; no rebuild and no restart are needed, the server serves the files straight from `packages/client/public/models`. The server's start-up line `Models` says where each model was found. (Before this release the only working path was `npm run models` run *before* `npm run build`, because the browser was refused the download by GitHub's CORS rules; the server now fetches it instead.)
+**"Could not listen: wespeaker_en_voxceleb_resnet34_LM.onnx … could not be fetched."** The voice check's model is on neither the server nor in the browser's cache, and it could not be downloaded: the message says what was tried (the server not running, the server unable to reach GitHub, the publisher refusing the page). Run `npm run models` (or `npm start` again) while the machine is online, then reload the page; no rebuild is needed, the server serves the files straight from `packages/client/public/models`. The server's start-up line `Models` says where each model was found. (Before this release the only working path was `npm run models` run *before* `npm run build`, because the browser was refused the download by GitHub's CORS rules; the server now fetches it instead.)
 
 **The export runs on the CPU although this machine has a hardware encoder.** Open the export dialog and look under **This computer**: **Use the hardware encoder and decoder** must be ticked (it is, unless it was unticked once; the choice is remembered per browser), and the line under it lists the encoders and decoders found in the browser and in ffmpeg. On an Apple-silicon Mac that line may add that the CPU encoder measured faster on slides; that is information, not a decision. The *Smallest file* mode keeps ffmpeg on the software encoders by design.
 

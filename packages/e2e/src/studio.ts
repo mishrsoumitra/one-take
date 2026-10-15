@@ -124,6 +124,10 @@ check(differs, 'the raw copy is not the filtered one (the filter changed somethi
 page.step('reloading');
 await page.reload();
 await page.waitForApp();
+check(
+  await page.waitFor('document.getElementById("restore").classList.contains("on")', 100, 100),
+  'the resume banner shows',
+);
 await ev('document.getElementById("btnRestore").click()');
 check(await page.waitFor('__onetake.state.segments.length >= 3', 100, 100), 'phrases restored');
 check(
@@ -218,7 +222,9 @@ check(
 const studioNote = await ev<string>('document.getElementById("studioNote").textContent');
 console.log('studio note:', studioNote);
 check(
-  ready ? studioNote.includes('ready') : /npm run studio|switched off|needs the local server/.test(studioNote),
+  ready
+    ? studioNote.includes('ready')
+    : /npm run studio|switched off|needs the local server/.test(studioNote),
   'the Sound section says what the studio can do here',
 );
 check(

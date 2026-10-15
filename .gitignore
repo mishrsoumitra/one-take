@@ -10,6 +10,7 @@ coverage/
 /e2e-out/
 /packages/e2e/out/
 /packages/e2e/stress-out/
+/packages/e2e/studio-out/
 /packages/e2e/fixtures/
 .claude/worktrees/
 /packages/e2e/camera-out/

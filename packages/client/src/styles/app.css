@@ -663,6 +663,228 @@ button.x .ico {
   margin-left: 3px;
 }
 
+/* ---------------------------------------------------------------- camera */
+/* the camera row under the sliders: which camera, which corner, how big; shown while the camera is on */
+#camRow {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+#camRow[hidden] {
+  display: none;
+}
+#camRow label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-8px);
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+}
+#camRow label b {
+  color: var(--text);
+  font-weight: var(--font-weight-semibold);
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#camSel {
+  max-width: 200px;
+  font-size: var(--font-size-12px);
+  padding: 0 var(--spacing-6px);
+}
+#camSize {
+  width: 140px;
+}
+#camRow .corners {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-6px);
+}
+#camRow .corners .hint {
+  margin-left: var(--spacing-4px);
+}
+/* a corner button is a little slide with a dot where the picture would go */
+#camRow .corner {
+  width: 30px;
+  min-width: 30px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  position: relative;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--muted);
+}
+#camRow .corner i {
+  position: absolute;
+  width: 9px;
+  height: 7px;
+  border-radius: 2px;
+  background: currentColor;
+}
+#camRow .corner.top-left i {
+  left: 3px;
+  top: 3px;
+}
+#camRow .corner.top-right i {
+  right: 3px;
+  top: 3px;
+}
+#camRow .corner.bottom-left i {
+  left: 3px;
+  bottom: 3px;
+}
+#camRow .corner.bottom-right i {
+  right: 3px;
+  bottom: 3px;
+}
+#camRow .corner:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+#camRow .corner[aria-pressed='true'] {
+  color: var(--accent-text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+#camRow .corner:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+#camNote {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#camNote.err {
+  color: var(--text-emphasis-error-default);
+}
+/* the picture on the stage: a layer that follows the slide image, and the box inside it */
+.cam-layer {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  overflow: visible;
+}
+.cam-layer[hidden] {
+  display: none;
+}
+.cam-box {
+  position: absolute;
+  pointer-events: auto;
+  box-sizing: border-box;
+  border-radius: 4%/7%;
+  overflow: hidden;
+  background: #000;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cam-box.dragging {
+  cursor: grabbing;
+  border-color: var(--accent);
+}
+.cam-box video,
+.cam-box canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* the live picture is mirrored like a mirror; the recording is not */
+.cam-box video.live {
+  transform: scaleX(-1);
+}
+.cam-box video[hidden],
+.cam-box canvas[hidden] {
+  display: none;
+}
+.cam-box .badge {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.3px;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  pointer-events: none;
+}
+.cam-box .badge:empty {
+  display: none;
+}
+.cam-box:hover .badge,
+.cam-box.dragging .badge {
+  opacity: 1;
+}
+/* the resize handle sits on the corner free to move; it shows on hover */
+.cam-box .handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+}
+.cam-box .handle::after {
+  content: '';
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.8));
+}
+.cam-box.handle-left .handle {
+  right: auto;
+  left: 0;
+  cursor: nesw-resize;
+}
+.cam-box.handle-left .handle::after {
+  right: auto;
+  left: 4px;
+  border-right: 0;
+  border-left: 2px solid #fff;
+}
+.cam-box.handle-top .handle {
+  bottom: auto;
+  top: 0;
+  cursor: nesw-resize;
+}
+.cam-box.handle-top .handle::after {
+  bottom: auto;
+  top: 4px;
+  border-bottom: 0;
+  border-top: 2px solid #fff;
+}
+.cam-box.handle-left.handle-top .handle {
+  cursor: nwse-resize;
+}
+.cam-box:hover .handle,
+.cam-box.dragging .handle {
+  opacity: 1;
+}
+/* the flags and the tip stay above the picture */
+#overlay,
+#capFlag,
+#previewFlag {
+  z-index: 3;
+}
+
 /* ---------------------------------------------------------------- side panel */
 #side {
   grid-area: side;

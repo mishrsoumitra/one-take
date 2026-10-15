@@ -1,5 +1,6 @@
 /** Small per-browser preferences (not project data) kept in localStorage; every access is fail-safe. */
 import { type NoiseFilterMode } from '../audio/mic.js';
+import { DEFAULT_CAMERA_LAYOUT, normalizeLayout, type CameraLayout } from '../core/overlay.js';
 import { type CaptureMode } from '../core/recorder.js';
 
 const KEY = 'one-take.prefs';
@@ -31,6 +32,10 @@ export interface Prefs {
    * computer has one, in the browser and in ffmpeg. On until the user says no.
    */
   hardwareEncoding: boolean;
+  /** Record the camera along with the voice: the switch under the level meter. */
+  camera: boolean;
+  /** Where the camera picture sits on the slide and how big it is. */
+  cameraLayout: CameraLayout;
 }
 
 const DEFAULT_PREFS: Prefs = {
@@ -44,6 +49,8 @@ const DEFAULT_PREFS: Prefs = {
   cameraDeviceId: '',
   voiceCheck: true,
   hardwareEncoding: true,
+  camera: false,
+  cameraLayout: { ...DEFAULT_CAMERA_LAYOUT },
 };
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -78,6 +85,8 @@ export function loadPrefs(): Prefs {
         typeof parsed.cameraDeviceId === 'string' ? parsed.cameraDeviceId : DEFAULT_PREFS.cameraDeviceId,
       voiceCheck: bool(parsed.voiceCheck, DEFAULT_PREFS.voiceCheck),
       hardwareEncoding: bool(parsed.hardwareEncoding, DEFAULT_PREFS.hardwareEncoding),
+      camera: bool(parsed.camera, DEFAULT_PREFS.camera),
+      cameraLayout: normalizeLayout(parsed.cameraLayout),
     };
   } catch {
     return { ...DEFAULT_PREFS };

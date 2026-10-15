@@ -167,6 +167,17 @@ export class Recorder {
     return this.queue;
   }
 
+  /**
+   * Index of the earliest block that may still end up in a phrase: the oldest phrase waiting for its
+   * review, else the one being spoken, else the pre-roll. Whatever records alongside the microphone
+   * can let go of everything before it.
+   */
+  get heldFrom(): number {
+    let from = this.vad.heldFrom;
+    for (const finished of this.waiting) if (!finished.dropped) from = Math.min(from, finished.start);
+    return from;
+  }
+
   /** Whether sound reaching the mic right now can become a phrase. */
   get gateOpen(): boolean {
     return !this._muted && !this._paused && (this._mode === 'auto' || this._held);

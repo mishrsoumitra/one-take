@@ -1,5 +1,14 @@
 import { PRESENTATION_EXTENSIONS } from '@one-take/shared';
 
+import {
+  CAMERA_SIZE_DEFAULT,
+  CAMERA_SIZE_MAX,
+  CAMERA_SIZE_MIN,
+  CORNER_LABELS,
+  CORNERS,
+  type Corner,
+} from '../core/overlay.js';
+
 import { h, label } from './dom.js';
 import { icon, nstMark, type IconName } from './icon.js';
 import { kbd, shortcut } from './kbd.js';
@@ -19,8 +28,20 @@ export interface LayoutRefs {
   micSelect: HTMLSelectElement;
   /** Which noise filter runs over the microphone (deep, classic, off); next to the picker. */
   noiseFilter: HTMLSelectElement;
-  /** Which camera the lip check watches, or none. */
+  /** Which camera to use: watched for the lip check (or not, with "off") and recorded with the switch next to it. */
   camSelect: HTMLSelectElement;
+  /** Record the camera along with the voice; next to the camera picker. */
+  camOn: HTMLInputElement;
+  /** The camera row under the sliders: which corner, how big, what the camera is doing. Shown while the camera is recorded. */
+  camRow: HTMLElement;
+  /** The four corner buttons, keyed by corner. */
+  camCorners: Record<Corner, HTMLButtonElement>;
+  camSize: HTMLInputElement;
+  camSizeV: HTMLElement;
+  /** What the camera is doing: opening, the error, or where the picture is. */
+  camNote: HTMLElement;
+  /** What the lip check sees, in the camera row while the stage shows the camera picture instead of the self-view. */
+  camLips: HTMLElement;
   /** Enrolls the speaker's voice for the voice check, or does it again. */
   btnVoice: HTMLButtonElement;
   /** The camera's picture in a corner of the stage while the lip check watches it, with a note under it. */
@@ -115,6 +136,20 @@ function modeOption(id: string, name: IconName, text: string, title: string): HT
     { id, class: 'opt', title, attrs: { role: 'radio', 'aria-checked': 'false' } },
     icon(name, 16),
     label(text),
+  );
+}
+
+/** One corner button: a little slide with a dot in the corner the camera picture would go in. */
+function cornerButton(corner: Corner): HTMLButtonElement {
+  return h(
+    'button',
+    {
+      class: `corner ${corner}`,
+      id: `cam-${corner}`,
+      title: `Put the camera picture ${CORNER_LABELS[corner].toLowerCase()}`,
+      attrs: { 'aria-label': CORNER_LABELS[corner], 'aria-pressed': 'false' },
+    },
+    h('i', { attrs: { 'aria-hidden': 'true' } }),
   );
 }
 
@@ -416,10 +451,10 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     {
       id: 'camSel',
       title:
-        'The lip check: the camera watches your mouth while you record, so a phrase someone else says while your lips are still is marked as another voice. The picture stays on this computer. The choice is remembered.',
+        'Which camera to use. While you record, it watches your mouth for the lip check, so a phrase someone else says while your lips are still is marked as another voice; tick Record camera next to it to put its picture in the video too. Off: no lip check (the picture can still be recorded). The picture stays on this computer. The choice is remembered.',
     },
     h('option', { value: '' }, 'Default camera'),
-    h('option', { value: 'off' }, 'Camera off'),
+    h('option', { value: 'off' }, 'Off (no lip check)'),
   );
   const btnVoice = h(
     'button',
@@ -432,6 +467,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('mic', 16),
     label('Learn my voice'),
   );
+  const camOn = h('input', { type: 'checkbox', id: 'camOn' });
   const micSettings = h(
     'span',
     { id: 'micSettings' },
@@ -443,7 +479,62 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     ),
     h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Noise filter'), noiseFilter),
     h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Camera'), camSelect),
+    h(
+      'label',
+      {
+        class: 'check',
+        id: 'camSwitch',
+        title:
+          'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
+      },
+      camOn,
+      h('span', { class: 'label' }, 'Record camera'),
+    ),
     btnVoice,
+  );
+  const camCorners: Record<Corner, HTMLButtonElement> = {
+    'top-left': cornerButton('top-left'),
+    'top-right': cornerButton('top-right'),
+    'bottom-left': cornerButton('bottom-left'),
+    'bottom-right': cornerButton('bottom-right'),
+  };
+  const camSize = h('input', {
+    type: 'range',
+    id: 'camSize',
+    min: Math.round(CAMERA_SIZE_MIN * 100),
+    max: Math.round(CAMERA_SIZE_MAX * 100),
+    step: 1,
+    value: String(Math.round(CAMERA_SIZE_DEFAULT * 100)),
+  });
+  const camSizeV = h('b', { id: 'camSizeV' }, `${Math.round(CAMERA_SIZE_DEFAULT * 100)} %`);
+  const camNote = h('span', { class: 'hint', id: 'camNote' });
+  const camLips = h('span', { class: 'note', id: 'camLips', hidden: true });
+  const camRow = h(
+    'div',
+    { id: 'camRow', hidden: true },
+    h(
+      'span',
+      {
+        class: 'corners',
+        title: 'Which corner of the slide the picture goes in. Drag the picture itself to put it anywhere.',
+        attrs: { role: 'group', 'aria-label': 'Camera picture position' },
+      },
+      h('span', { class: 'label' }, 'Position'),
+      ...(Object.keys(CORNERS) as Corner[]).map((c) => camCorners[c]),
+      h('span', { class: 'hint' }, 'or drag it on the slide'),
+    ),
+    h(
+      'label',
+      {
+        title:
+          'How wide the picture is, as a share of the slide. Drag its corner on the slide to do the same.',
+      },
+      h('span', { class: 'label' }, 'Size'),
+      camSize,
+      camSizeV,
+    ),
+    camNote,
+    camLips,
   );
   const thr = h('input', { type: 'range', id: 'thr', min: -70, max: -20, step: 1, value: '-45' });
   const thrV = h('b', { id: 'thrV' }, '-45 dB');
@@ -501,6 +592,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
         shortcut('mic on / off', 'R'),
       ),
     ),
+    camRow,
   );
 
   /* ------------------------------------------------------------- side panel */
@@ -530,6 +622,13 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     micSelect,
     noiseFilter,
     camSelect,
+    camOn,
+    camRow,
+    camCorners,
+    camSize,
+    camSizeV,
+    camNote,
+    camLips,
     btnVoice,
     selfBox,
     selfView,

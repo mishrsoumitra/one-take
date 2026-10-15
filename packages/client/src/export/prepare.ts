@@ -9,6 +9,7 @@
  */
 import { type Enhance, type TranscriptWord } from '@one-take/shared';
 
+import { clipVideoAtSpeed } from '../core/clip-video.js';
 import { cutRange } from '../core/edit.js';
 import {
   FILLER_THRESHOLD,
@@ -219,7 +220,12 @@ export async function prepareSegments(
       if (enhance.evenLoudness)
         current = { ...current, pcm: withGain(current.pcm, evenGain(current.pcm, current.sampleRate)) };
       if (speed !== 1) {
-        current = { ...current, pcm: stretchPcm(current.pcm, current.sampleRate, speed) };
+        current = {
+          ...current,
+          pcm: stretchPcm(current.pcm, current.sampleRate, speed),
+          // the picture keeps its frames and runs through them faster, in step with the voice
+          video: current.video ? clipVideoAtSpeed(current.video, speed) : current.video,
+        };
         await yieldToPage();
       }
       out.push(current);

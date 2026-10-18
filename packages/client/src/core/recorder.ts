@@ -96,6 +96,8 @@ export class Recorder {
   private _held = false;
   private _muted = false;
   private _paused = false;
+  /** The pen is on the slide: nothing is heard until it has rested (see `ink.ts`). */
+  private _inking = false;
   private _slide: number;
   private readonly review: PhraseReview | null;
   /** Phrases finished but not yet reviewed, oldest first. */
@@ -149,6 +151,11 @@ export class Recorder {
     return this._paused;
   }
 
+  /** A drawing is being made: the voice and the pen are never recorded together. */
+  get inking(): boolean {
+    return this._inking;
+  }
+
   get slide(): number {
     return this._slide;
   }
@@ -180,7 +187,7 @@ export class Recorder {
 
   /** Whether sound reaching the mic right now can become a phrase. */
   get gateOpen(): boolean {
-    return !this._muted && !this._paused && (this._mode === 'auto' || this._held);
+    return !this._muted && !this._paused && !this._inking && (this._mode === 'auto' || this._held);
   }
 
   private sync(): void {
@@ -229,16 +236,45 @@ export class Recorder {
     this.sync();
   }
 
+  /**
+   * The pen went down (true) or has rested (false). Down ends the phrase being spoken where it is,
+   * with its trailing quiet trimmed as ever, and nothing heard while the pen is on the slide can
+   * become a phrase; up lets the detector listen again.
+   */
+  setInking(inking: boolean): void {
+    if (inking === this._inking) return;
+    if (inking) this.vad.end();
+    this._inking = inking;
+    this.sync();
+  }
+
+  /**
+   * Runs `fn` once every phrase finished so far has been reviewed and stored. A drawing that ends
+   * while a phrase is still under its second listen is stored after that phrase, so clips always
+   * land in the order they were made.
+   */
+  after(fn: () => void): Promise<void> {
+    this.queue = this.queue.then(fn);
+    return this.queue;
+  }
+
   /** The slide changed. A sentence in progress is split: the part so far is stored on the old slide. */
   setSlide(index: number): void {
     if (index === this._slide) return;
-    if (this.vad.speaking) {
-      // whether the part being stored itself continued an earlier part: read before the split marks the rest as one
-      const continuation = this.vad.continuing;
-      const part = this.vad.split();
-      if (part) this.finish(part.blocks, continuation, part.endBlock, true);
-    }
+    this.splitPhrase();
     this._slide = index;
+  }
+
+  /**
+   * Something happened on the slide mid-sentence (a slide change, the slide wiped clean): the part
+   * spoken so far is stored now, and what follows continues it. Nothing happens while no one speaks.
+   */
+  splitPhrase(): void {
+    if (!this.vad.speaking) return;
+    // whether the part being stored itself continued an earlier part: read before the split marks the rest as one
+    const continuation = this.vad.continuing;
+    const part = this.vad.split();
+    if (part) this.finish(part.blocks, continuation, part.endBlock, true);
   }
 
   /**

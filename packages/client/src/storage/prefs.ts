@@ -1,5 +1,6 @@
 /** Small per-browser preferences (not project data) kept in localStorage; every access is fail-safe. */
 import { type NoiseFilterMode } from '../audio/mic.js';
+import { DEFAULT_PEN, normalizePen, type PenSettings } from '../core/ink.js';
 import { DEFAULT_CAMERA_LAYOUT, normalizeLayout, type CameraLayout } from '../core/overlay.js';
 import { type CaptureMode } from '../core/recorder.js';
 
@@ -7,6 +8,25 @@ const KEY = 'one-take.prefs';
 
 /** grauity's two themes; the class on <html> picks one. */
 export type Theme = 'dark' | 'light';
+
+/**
+ * What is recorded along with the voice: nothing (`voice`), the camera's picture (`camera`), or the
+ * camera and the pen's drawings over the slides (`annotate`).
+ */
+export type RecordMode = 'voice' | 'camera' | 'annotate';
+
+export const RECORD_MODES: readonly RecordMode[] = ['voice', 'camera', 'annotate'];
+
+export const RECORD_MODE_LABELS: Record<RecordMode, string> = {
+  voice: 'Voice',
+  camera: 'Voice + camera',
+  annotate: 'Voice + camera + pen',
+};
+
+/** The camera is recorded in these modes. */
+export function recordsCamera(mode: RecordMode): boolean {
+  return mode !== 'voice';
+}
 
 export interface Prefs {
   /** The welcome tour has been shown (or dismissed) once. */
@@ -34,10 +54,12 @@ export interface Prefs {
    * choice: forcing the hardware there softened the 360p picture for no gain.
    */
   hardwareEncoding: boolean;
-  /** Record the camera along with the voice: the switch under the level meter. */
-  camera: boolean;
+  /** What is recorded along with the voice: the switch under the level meter. */
+  record: RecordMode;
   /** Where the camera picture sits on the slide and how big it is. */
   cameraLayout: CameraLayout;
+  /** The pen as it was last set: tool, colour and width. */
+  pen: PenSettings;
 }
 
 const DEFAULT_PREFS: Prefs = {
@@ -51,12 +73,20 @@ const DEFAULT_PREFS: Prefs = {
   cameraDeviceId: '',
   voiceCheck: true,
   hardwareEncoding: true,
-  camera: false,
+  record: 'voice',
   cameraLayout: { ...DEFAULT_CAMERA_LAYOUT },
+  pen: { ...DEFAULT_PEN },
 };
 
 function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+/** The record switch; before it had three options, `camera: true` meant the camera. */
+function recordMode(value: unknown, legacyCamera: unknown): RecordMode {
+  if (value === 'voice' || value === 'camera' || value === 'annotate') return value;
+  if (legacyCamera === true) return 'camera';
+  return DEFAULT_PREFS.record;
 }
 
 function noiseFilter(value: unknown): NoiseFilterMode {
@@ -71,7 +101,7 @@ export function loadPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw) as Partial<Record<keyof Prefs, unknown>>;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof Prefs | 'camera', unknown>>;
     return {
       welcomeSeen: bool(parsed.welcomeSeen, DEFAULT_PREFS.welcomeSeen),
       tips: bool(parsed.tips, DEFAULT_PREFS.tips),
@@ -87,8 +117,9 @@ export function loadPrefs(): Prefs {
         typeof parsed.cameraDeviceId === 'string' ? parsed.cameraDeviceId : DEFAULT_PREFS.cameraDeviceId,
       voiceCheck: bool(parsed.voiceCheck, DEFAULT_PREFS.voiceCheck),
       hardwareEncoding: bool(parsed.hardwareEncoding, DEFAULT_PREFS.hardwareEncoding),
-      camera: bool(parsed.camera, DEFAULT_PREFS.camera),
+      record: recordMode(parsed.record, parsed.camera),
       cameraLayout: normalizeLayout(parsed.cameraLayout),
+      pen: normalizePen(parsed.pen),
     };
   } catch {
     return { ...DEFAULT_PREFS };

@@ -213,6 +213,15 @@ button.chip:hover:not(:disabled) {
   border-color: var(--border-emphasis-success-default);
   background: var(--bg-subtle-success-default);
 }
+/* the pen is on the slide: the mic hears nothing until it has rested */
+.pill.ink {
+  color: var(--text-emphasis-yellow-default);
+  border-color: var(--border-emphasis-yellow-default);
+  background: var(--bg-subtle-yellow-default);
+}
+.pill.ink .dot {
+  background: currentColor;
+}
 /* press to speak, waiting for the key: the mic is on but nothing is being heard */
 .pill.hold {
   color: var(--text-emphasis-primary-default);

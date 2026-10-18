@@ -3,11 +3,13 @@
  * but it works everywhere the microphone works.
  */
 import { type Slide } from '../app/types.js';
+import { drawInk } from '../core/ink.js';
 import { type CameraLayout } from '../core/overlay.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 
 import { ExportCancelledError } from './encoder.js';
+import { InkTrack, type InkPicture } from './ink-track.js';
 import { drawOverlay, overlayBox, OverlayTrack, type OverlayPicture } from './overlay.js';
 
 export interface RealtimeOptions {
@@ -64,8 +66,11 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
     layout && typeof VideoDecoder !== 'undefined' && OverlayTrack.hasVideo(timeline)
       ? new OverlayTrack(timeline)
       : null;
+  const inkTrack = InkTrack.hasInk(timeline) ? new InkTrack(timeline) : null;
   let picture: OverlayPicture | null = null;
+  let ink: InkPicture | null = null;
   let drawnSerial = -1;
+  let drawnInk = -1;
   const draw = async (index: number) => {
     let bmp = bitmaps.get(index);
     if (!bmp) {
@@ -82,12 +87,11 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
     const left = Math.round((width - dw) / 2);
     const top = Math.round((height - dh) / 2);
     g.drawImage(bmp, left, top, dw, dh);
+    const area = { x: left, y: top, width: dw, height: dh };
+    if (ink) drawInk(g, ink.strokes, area);
+    drawnInk = ink?.serial ?? -1;
     if (picture && layout) {
-      drawOverlay(
-        g,
-        picture.frame,
-        overlayBox(layout, { x: left, y: top, width: dw, height: dh }, picture.aspect),
-      );
+      drawOverlay(g, picture.frame, overlayBox(layout, area, picture.aspect));
       drawnSerial = picture.serial;
     }
   };
@@ -149,7 +153,13 @@ export async function recordRealtime(options: RealtimeOptions): Promise<Blob> {
               fetching = false;
             });
         }
-        if (slide !== shown || now - lastDraw > 0.5 || (picture?.serial ?? -1) !== drawnSerial) {
+        if (inkTrack) ink = inkTrack.at(cur, Math.max(0, now));
+        if (
+          slide !== shown ||
+          now - lastDraw > 0.5 ||
+          (picture?.serial ?? -1) !== drawnSerial ||
+          (ink?.serial ?? -1) !== drawnInk
+        ) {
           shown = slide;
           lastDraw = now;
           void draw(slide);

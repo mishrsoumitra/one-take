@@ -1,6 +1,7 @@
 import { type Slide } from '../app/types.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { verdictLabel } from '../core/identity.js';
+import { describeInk } from '../core/ink.js';
 import { segmentDuration, totalDuration, type Segment } from '../core/timeline.js';
 
 import { clear, h } from './dom.js';
@@ -33,7 +34,7 @@ export class TimelineList {
         h(
           'div',
           { id: 'segEmpty' },
-          'Nothing recorded yet. Each phrase you say appears here, in the order it will play. Drag to reorder, ▶ to play from there, ✕ to delete.',
+          'Nothing recorded yet. Each phrase you say (and each drawing you make with the pen) appears here, in the order it will play. Drag to reorder, ▶ to play from there, ✕ to delete.',
         ),
       );
       this.info.textContent = '';
@@ -49,12 +50,15 @@ export class TimelineList {
         who && who.verdict !== 'you'
           ? h('span', { class: `who ${who.verdict}`, title: reasons }, verdictLabel(who.verdict))
           : null;
+      // a drawing made with the pen, not a phrase: what it drew, and a pen mark in place of a verdict
+      const ink = seg.ink;
+      const inkTitle = ink ? `A drawing: ${describeInk(ink)}, ${fmtSec(segmentDuration(seg))}` : '';
       const row = h(
         'div',
         {
-          class: `seg${who?.verdict === 'other' ? ' other' : ''}`,
+          class: `seg${who?.verdict === 'other' ? ' other' : ''}${ink ? ' ink' : ''}`,
           draggable: true,
-          title: who?.verdict === 'you' ? reasons : undefined,
+          title: ink ? inkTitle : who?.verdict === 'you' ? reasons : undefined,
           dataset: { i: String(i) },
           on: {
             click: () => this.handlers.onSelect(i),
@@ -80,11 +84,18 @@ export class TimelineList {
         h(
           'div',
           { class: 'meta' },
-          h('b', null, `Slide ${seg.slide + 1}`),
+          h(
+            'b',
+            null,
+            `Slide ${seg.slide + 1}`,
+            ink ? h('span', { class: 'pen-mark' }, icon('pen', 16)) : null,
+          ),
           h(
             'small',
             { class: seg.joined ? 'join' : '' },
-            `${fmtSec(segmentDuration(seg))}${seg.joined ? ' · continues' : ''}`,
+            ink
+              ? `${fmtSec(segmentDuration(seg))} · ${describeInk(ink)}`
+              : `${fmtSec(segmentDuration(seg))}${seg.joined ? ' · continues' : ''}`,
           ),
           badge,
         ),
@@ -107,8 +118,8 @@ export class TimelineList {
           'button',
           {
             class: 'icon xs del',
-            title: 'Delete this phrase',
-            attrs: { 'aria-label': `Delete phrase ${i + 1}` },
+            title: ink ? 'Delete this drawing' : 'Delete this phrase',
+            attrs: { 'aria-label': `Delete ${ink ? 'drawing' : 'phrase'} ${i + 1}` },
             on: {
               click: (e) => {
                 e.stopPropagation();

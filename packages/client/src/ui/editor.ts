@@ -27,6 +27,7 @@ import {
 } from '../core/edit.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { listenAgain } from '../core/hindsight.js';
+import { describeInk } from '../core/ink.js';
 import { type CameraLayout } from '../core/overlay.js';
 import { type CaptureMode } from '../core/recorder.js';
 import { speechRanges, trimSilences, type Range as SpeechRange } from '../core/silence.js';
@@ -39,12 +40,14 @@ import {
   type Timeline,
 } from '../core/timeline.js';
 import { audioOf, VOICING_LABELS, type Voicing } from '../core/versions.js';
+import { InkTrack } from '../export/ink-track.js';
 import { OverlayTrack } from '../export/overlay.js';
 import { type CameraCapture } from '../video/camera.js';
 
 import { CamStage } from './cam-stage.js';
 import { clear, h, label, setLabel } from './dom.js';
 import { icon, setButtonIcon } from './icon.js';
+import { InkStage } from './ink-stage.js';
 import { kbd, shortcut } from './kbd.js';
 import { LevelMeter } from './meter.js';
 import { SnippetPlayer } from './snippet.js';
@@ -103,6 +106,9 @@ export class Editor {
   private readonly meter: LevelMeter;
   /** The camera picture over the slide on the editor's screen: recorded frames while playing, live during a take. */
   private readonly cam: CamStage;
+  /** The pen's drawings over the slide on the editor's screen, as they stand at the playhead. */
+  private readonly inkStage: InkStage;
+  private inkTrack: InkTrack | null = null;
   private overlay: OverlayTrack | null = null;
   private painting = false;
   private paintedSerial = -1;
@@ -484,6 +490,8 @@ export class Editor {
       btnDone,
     };
     this.meter = new LevelMeter(takeMeter, takeNote);
+    // the drawings under the camera picture, as in the video
+    this.inkStage = new InkStage({ stage: screen, img: slideImg });
     this.cam = new CamStage({
       stage: screen,
       img: slideImg,
@@ -582,6 +590,7 @@ export class Editor {
     this.closeTake();
     this.voicing.stop();
     this.cam.hide();
+    this.inkStage.hide();
     this.el.classList.remove('on');
     if (this.previouslyFocused instanceof HTMLElement) this.previouslyFocused.focus();
     this.deps.onClose();
@@ -810,6 +819,7 @@ export class Editor {
   /** Everything derived from the list: the timeline, the clip rows, the scrub blocks, the tools. */
   private rebuild(): void {
     this.tl = buildTimeline(this.list, 'recorded', this.deps.settings());
+    this.inkTrack = InkTrack.hasInk(this.tl) ? new InkTrack(this.tl) : null;
     this.selected = Math.max(0, Math.min(this.list.length - 1, this.selected));
     this.position = Math.max(0, Math.min(this.tl.total, this.position));
     this.renderClips();
@@ -839,12 +849,15 @@ export class Editor {
     this.list.forEach((seg, i) => {
       const slide = slides[seg.slide];
       const joined = seg.joined && this.list[i - 1]?.id === seg.prevId;
+      const ink = seg.ink;
       const row = h(
         'div',
         {
-          class: 'seg',
+          class: `seg${ink ? ' ink' : ''}`,
           dataset: { i: String(i) },
-          title: `Clip ${i + 1}: slide ${seg.slide + 1}, ${fmtSec(segmentDuration(seg))}`,
+          title: ink
+            ? `Clip ${i + 1}: a drawing on slide ${seg.slide + 1}, ${describeInk(ink)}, ${fmtSec(segmentDuration(seg))}`
+            : `Clip ${i + 1}: slide ${seg.slide + 1}, ${fmtSec(segmentDuration(seg))}`,
           attrs: { role: 'button', tabindex: '0' },
           on: {
             click: () => this.select(i, true),
@@ -858,11 +871,18 @@ export class Editor {
         h(
           'div',
           { class: 'meta' },
-          h('b', null, `Slide ${seg.slide + 1}`),
+          h(
+            'b',
+            null,
+            `Slide ${seg.slide + 1}`,
+            ink ? h('span', { class: 'pen-mark' }, icon('pen', 16)) : null,
+          ),
           h(
             'small',
             { class: joined ? 'join' : '' },
-            `${fmtSec(segmentDuration(seg))}${joined ? ' · continues' : ''}`,
+            ink
+              ? `${fmtSec(segmentDuration(seg))} · ${describeInk(ink)}`
+              : `${fmtSec(segmentDuration(seg))}${joined ? ' · continues' : ''}`,
           ),
         ),
       );
@@ -923,10 +943,13 @@ export class Editor {
       this.voicing.render(null);
       return;
     }
-    this.voicing.render(seg);
+    // a drawing has no sound to choose between
+    this.voicing.render(seg.ink ? null : seg);
     e.btnPrev.disabled = this.selected === 0;
     e.btnNext.disabled = this.selected >= this.list.length - 1;
-    e.clipTitle.textContent = `Clip ${this.selected + 1} of ${this.list.length} · ${fmtSec(segmentDuration(seg))}`;
+    e.clipTitle.textContent = `Clip ${this.selected + 1} of ${this.list.length} · ${fmtSec(segmentDuration(seg))}${
+      seg.ink ? ` · drawing (${describeInk(seg.ink)})` : ''
+    }`;
     this.fillSlideSelect(e.slideSelect, seg.slide);
     this.drawWave();
     this.updateClipButtons();
@@ -956,9 +979,16 @@ export class Editor {
     const it = this.tl.items[this.selected];
     const inside = seg && it ? this.position - it.start : -1;
     e.btnSplit.disabled = !seg || inside <= 0.05 || inside >= segmentDuration(seg) - 0.05;
+    // a drawing is replaced by a voice when re-recorded; the hint says what the bars are
+    setLabel(e.btnRerecord, seg?.ink ? 'Replace with voice' : 'Re-record');
+    e.btnRerecord.title = seg?.ink
+      ? 'Record a phrase in place of this drawing'
+      : 'Record this clip again; the new voice takes its place';
     e.waveHint.textContent = range
       ? `Selected ${fmtSec(range.from)} to ${fmtSec(range.to)} (${fmtSec(range.to - range.from)}). Cut it, keep only it, or play it.`
-      : 'Drag across the waveform to select a stretch of audio. Click to put the playhead there.';
+      : seg?.ink
+        ? 'A drawing: each bar is a stroke, drawn when the bar is. Drag to select a stretch of it; click to put the playhead there.'
+        : 'Drag across the waveform to select a stretch of audio. Click to put the playhead there.';
   }
 
   /* ------------------------------------------------------------------ */
@@ -1072,6 +1102,11 @@ export class Editor {
       const ranges = new Map<string, SpeechRange[]>();
       let done = 0;
       for (const seg of list) {
+        // a drawing is silence on purpose: it stays as it is
+        if (seg.ink) {
+          done += segmentDuration(seg);
+          continue;
+        }
         const show = (sec: number) => {
           const pct = total > 0 ? Math.min(100, Math.round(((done + sec) / total) * 100)) : 100;
           this.e.info.textContent = `Listening for pauses… ${pct}%`;
@@ -1204,6 +1239,9 @@ export class Editor {
     e.scrubHead.style.left = `${(f * 100).toFixed(3)}%`;
     e.scrubHead.hidden = this.list.length === 0;
     e.btnPlay.disabled = this.list.length === 0;
+    // the drawings as they stand at the playhead (none while a take is auditioned: it has no drawings)
+    const ink = hit && this.inkTrack && !this.auditioning ? this.inkTrack.at(hit.index, this.position) : null;
+    this.inkStage.show(ink?.strokes ?? []);
     this.drawWave();
     this.updateClipButtons();
   }
@@ -1241,14 +1279,28 @@ export class Editor {
       g.fillRect(a, 0, 1, hPx);
       g.fillRect(b - 1, 0, 1, hPx);
     }
-    // the waveform of the version the clip plays
-    const bars = peaks(audioOf(seg), Math.max(1, Math.floor(w / 2)));
     const mid = hPx / 2;
-    g.fillStyle = colour('--wave-bar', '#8b93a7');
-    for (let i = 0; i < bars.length; i++) {
-      const v = bars[i] ?? 0;
-      const half = Math.max(1, v * (mid - 4));
-      g.fillRect(i * 2, mid - half, 1.4, half * 2);
+    if (seg.ink) {
+      // a drawing: one bar per stroke, in its colour, from the moment it starts to the moment it ends
+      for (const s of seg.ink.strokes) {
+        const from = (s.points[0]?.t ?? 0) / 1000;
+        const to = (s.points[s.points.length - 1]?.t ?? 0) / 1000;
+        const a = x(from);
+        const b = Math.max(a + 2, x(to));
+        g.fillStyle = s.color;
+        g.globalAlpha = s.tool === 'highlighter' ? 0.5 : 0.9;
+        g.fillRect(a, mid - 10, b - a, 20);
+      }
+      g.globalAlpha = 1;
+    } else {
+      // the waveform of the version the clip plays
+      const bars = peaks(audioOf(seg), Math.max(1, Math.floor(w / 2)));
+      g.fillStyle = colour('--wave-bar', '#8b93a7');
+      for (let i = 0; i < bars.length; i++) {
+        const v = bars[i] ?? 0;
+        const half = Math.max(1, v * (mid - 4));
+        g.fillRect(i * 2, mid - half, 1.4, half * 2);
+      }
     }
     // tick every second
     g.fillStyle = colour('--wave-tick', 'rgba(255,255,255,.15)');
@@ -1475,6 +1527,7 @@ export class Editor {
     setLabel(this.e.btnListen, 'Stop');
     setButtonIcon(this.e.btnListen, 'square-filled');
     this.startOverlay(tl);
+    this.inkStage.hide();
     await this.player.start(tl, 0);
   }
 

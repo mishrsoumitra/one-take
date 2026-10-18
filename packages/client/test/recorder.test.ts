@@ -123,6 +123,83 @@ describe('Recorder in auto mode', () => {
     // 500 ms of speech, no pre-roll from the muted part
     expect(h.phrases[0]?.blocks).toHaveLength(50);
   });
+
+  it('ends the phrase where the pen goes down and hears nothing until it is up again', async () => {
+    const h = harness('auto');
+    h.feed(quiet, 300);
+    h.feed(loud, 600);
+    expect(h.rec.speaking).toBe(true);
+    h.rec.setInking(true);
+    expect(h.rec.inking).toBe(true);
+    expect(h.rec.gateOpen).toBe(false);
+    expect(h.rec.speaking).toBe(false);
+    // a voice while the pen is on the slide is not a phrase
+    h.feed(loud, 1000);
+    expect(h.rec.speaking).toBe(false);
+    h.rec.setInking(false);
+    expect(h.rec.gateOpen).toBe(true);
+    // the pen is up: the next voice is a phrase of its own, with no pre-roll from the pen's stretch
+    h.feed(loud, 500);
+    h.rec.end();
+    await h.rec.settled();
+    expect(h.phrases).toHaveLength(2);
+    expect(h.phrases[0]?.blocks.length).toBeGreaterThanOrEqual(60);
+    expect(h.phrases[0]?.blocks.length).toBeLessThanOrEqual(60 + 23 + 15);
+    expect(h.phrases[1]?.blocks).toHaveLength(50);
+    expect(h.phrases[1]?.joined).toBe(false);
+    expect(h.speaking).toEqual([true, false, true, false]);
+  });
+
+  it('runs what comes after the phrases still under review, in order', async () => {
+    const h = harness('auto');
+    const order: string[] = [];
+    const rec = new Recorder(
+      10,
+      settings,
+      { mode: 'auto', slide: 0, review: levelReview(settings, 10) },
+      {
+        onPhrase: (p) => {
+          order.push(`phrase ${p.blocks.length}`);
+          return `p${order.length}`;
+        },
+        onSpeakingChange: () => undefined,
+      },
+    );
+    for (let i = 0; i < 30; i++) rec.process(quiet());
+    for (let i = 0; i < 60; i++) rec.process(loud());
+    // the pen goes down: the phrase ends and goes to its review; a drawing finished later lands after it
+    rec.setInking(true);
+    const stored = rec.after(() => order.push('drawing'));
+    expect(order).toEqual([]);
+    await stored;
+    // the phrase (its 600 ms plus the pre-roll) first, the drawing after it
+    expect(order).toHaveLength(2);
+    expect(order[0]).toMatch(/^phrase (6|7|8)\d$/);
+    expect(order[1]).toBe('drawing');
+    // with nothing pending, it runs at once (on the next microtask)
+    await rec.after(() => order.push('wipe'));
+    expect(order[2]).toBe('wipe');
+    expect(h.phrases).toHaveLength(0);
+  });
+
+  it('splits the phrase being spoken on request, the rest continuing the part stored', async () => {
+    const h = harness('auto');
+    h.feed(quiet, 300);
+    h.feed(loud, 600);
+    h.rec.splitPhrase();
+    h.feed(loud, 400);
+    h.feed(quiet, HOLD);
+    await h.rec.settled();
+    expect(h.phrases).toHaveLength(2);
+    expect(h.phrases[0]?.slide).toBe(0);
+    expect(h.phrases[1]?.slide).toBe(0);
+    expect(h.phrases[1]?.joined).toBe(true);
+    expect(h.phrases[1]?.prevId).toBe(h.phrases[0]?.id);
+    // with no one speaking, nothing happens
+    h.rec.splitPhrase();
+    await h.rec.settled();
+    expect(h.phrases).toHaveLength(2);
+  });
 });
 
 describe('the second listen on finished phrases', () => {

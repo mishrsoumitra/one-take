@@ -33,6 +33,7 @@ import { Segmenter } from '../vision/segmenter.js';
 
 import { CameraCleaner } from './camera-clean.js';
 import { encodeLecture, ExportCancelledError, type EncodeProgress, type EncodeResult } from './encoder.js';
+import { InkTrack } from './ink-track.js';
 import { OverlayTrack } from './overlay.js';
 import { mapWords, needsPreparation, prepareSegments, transcriptionAudio } from './prepare.js';
 import { createBufferSink, createFileSink, createServerSink, type Sink } from './sinks.js';
@@ -737,6 +738,7 @@ async function encodeWithSink(
       slides: options.slides,
       captions,
       camera: overlay && layout ? { track: overlay, layout, clean } : null,
+      ink: InkTrack.hasInk(timeline) ? new InkTrack(timeline) : null,
       plan: options.plan.browser,
       target: sink.target,
       fastStart: sink.fastStart,

@@ -327,6 +327,9 @@ export class ExportDialog {
     cameraSection: HTMLElement;
     cameraInclude: HTMLInputElement;
     cameraNote: HTMLElement;
+    /** The pen's drawings: shown when any clip draws on a slide. */
+    inkSection: HTMLElement;
+    inkNote: HTMLElement;
     cameraBackground: HTMLSelectElement;
     cameraBackdrop: HTMLInputElement;
     cameraExposure: HTMLInputElement;
@@ -831,6 +834,17 @@ export class ExportDialog {
       ),
     );
     e.cameraSection.id = 'cameraSection';
+    // The pen's drawings over the slides: always in the video, as they were made.
+    e.inkNote = h('div', { class: 'hint', id: 'inkNote' });
+    e.inkSection = section(
+      'Drawings',
+      row(
+        'Pen',
+        e.inkNote,
+        'Every drawing made with the pen is drawn into the video as it was made, stroke by stroke, and stays on its slide for the phrases after it. Delete a drawing in the editor or the timeline to leave it out.',
+      ),
+    );
+    e.inkSection.id = 'inkSection';
     // The Sound section: the studio's switches and the flagged phrases.
     const sound = new SoundSection({
       snippet: this.snippet,
@@ -1024,6 +1038,7 @@ export class ExportDialog {
           section('Audio', row('Codec', e.audioCodec), row('Bitrate', e.audioBitrate)),
           section('Sound', sound.el),
           e.cameraSection,
+          e.inkSection,
           section(
             'Enhance',
             row(
@@ -1509,6 +1524,18 @@ export class ExportDialog {
         : 'The video shows the slides alone.';
     }
     e.cameraBackdrop.hidden = r.enhance.camera.background !== 'replace';
+
+    // Drawings: clips made with the pen
+    const drawings = tl.items.filter((it) => it.seg.ink && it.seg.ink.strokes.length > 0).length;
+    const wipes = tl.items.filter((it) => it.seg.ink?.wipe).length;
+    e.inkSection.hidden = drawings === 0 && wipes === 0;
+    if (!e.inkSection.hidden) {
+      const strokes = tl.items.reduce((n, it) => n + (it.seg.ink?.strokes.length ?? 0), 0);
+      const seconds = tl.items.reduce((n, it) => n + (it.seg.ink ? it.dur : 0), 0);
+      e.inkNote.textContent = `${drawings} drawing${drawings === 1 ? '' : 's'} (${strokes} stroke${strokes === 1 ? '' : 's'}, ${formatDuration(seconds)} of the video)${wipes > 0 ? ` and ${wipes} clear${wipes === 1 ? '' : 's'}` : ''}.${
+        r.fps < 24 ? ` At ${r.fps} fps the pen will move in steps; 24 or 30 fps suits a drawing.` : ''
+      }`;
+    }
 
     // Destination
     const serverOk = server !== null;

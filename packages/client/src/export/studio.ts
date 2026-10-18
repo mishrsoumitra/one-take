@@ -69,6 +69,8 @@ export function planStudio(segments: readonly Segment[], options: StudioPlanOpti
   let voiceSec = 0;
   for (const seg of segments) {
     if (options.dropped?.has(seg.id)) continue;
+    // a drawing is silence: there is nothing in it for the models to clean or keep
+    if (seg.ink) continue;
     const denoise = settings.denoise && (info?.denoise ?? false) && (options.redo === true || !seg.deep);
     let voice: StudioVoice = 'off';
     if (info?.voice) {

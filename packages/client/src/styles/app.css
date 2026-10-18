@@ -878,11 +878,187 @@ button.x .ico {
 .cam-box.dragging .handle {
   opacity: 1;
 }
-/* the flags and the tip stay above the picture */
+/* the flags, the tip and the slide arrows stay above the picture and the drawings */
 #overlay,
 #capFlag,
-#previewFlag {
+#previewFlag,
+.nav {
   z-index: 3;
+}
+
+/* ---------------------------------------------------------------- the pen */
+/* the drawings on the stage: a canvas that follows the slide image, under the camera picture */
+.ink-layer {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+.ink-layer[hidden] {
+  display: none;
+}
+.ink-layer canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+/* while the pen is out, the slide takes the pointer */
+.ink-layer.drawing {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+/* the flag turns yellow while the pen is on the slide and the mic hears nothing */
+#capFlag.ink {
+  background: color-mix(in srgb, var(--yellow-400) 85%, transparent);
+  color: var(--neutral-1000);
+}
+#capFlag.ink .dot {
+  background: var(--neutral-1000);
+  animation: none;
+}
+/* the pen's toolbar: a column at the left of the stage */
+#penBar {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-8px);
+  padding: var(--spacing-8px) var(--spacing-6px);
+  border-radius: var(--corner-radius-12px);
+  background: color-mix(in srgb, var(--neutral-900) 82%, transparent);
+  border: 1px solid var(--alpha-12);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: var(--backdrop-blur-8px);
+  color: var(--neutral-0);
+}
+#penBar[hidden] {
+  display: none;
+}
+#penBar .group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: var(--spacing-6px);
+  border-bottom: 1px solid var(--alpha-12);
+}
+#penBar .group:last-of-type {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+#penBar button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: var(--corner-radius-8px);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--neutral-200);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#penBar button:hover:not(:disabled) {
+  background: var(--alpha-12);
+  color: var(--neutral-0);
+}
+#penBar button:active:not(:disabled) {
+  transform: none;
+}
+#penBar button[aria-checked='true'] {
+  background: var(--alpha-20);
+  border-color: var(--alpha-20);
+  color: var(--neutral-0);
+}
+#penBar button:disabled {
+  opacity: 0.4;
+}
+#penBar button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+/* the pen takes the chosen colour, the highlighter is a slanted translucent bar */
+#penBar .tool.pen[aria-checked='true'] .ico {
+  color: var(--pen, currentColor);
+}
+#penBar .marker {
+  width: 14px;
+  height: 7px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+  transform: rotate(-35deg);
+}
+#penBar .tool.highlighter[aria-checked='true'] .marker {
+  background: var(--pen, currentColor);
+  opacity: 0.8;
+}
+#penBar .swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  border-radius: 50%;
+  background: var(--swatch);
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--alpha-20);
+}
+#penBar .swatch:hover:not(:disabled) {
+  background: var(--swatch);
+  transform: scale(1.1);
+}
+#penBar .swatch[aria-checked='true'] {
+  background: var(--swatch);
+  border-color: var(--neutral-0);
+}
+#penBar .width i {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  background: currentColor;
+}
+#penBar .width[aria-checked='true'] i {
+  background: var(--pen, currentColor);
+}
+#penBar .note {
+  font-size: var(--font-size-11px);
+  color: var(--neutral-300);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+#penBar.off .note {
+  color: var(--yellow-400);
+}
+/* the record switch sits with the pickers in the bottom bar */
+#recordPick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-8px);
+  cursor: default;
+}
+#recordSwitch .opt {
+  white-space: nowrap;
+}
+/* a drawing in the timeline: a pen after the slide number */
+.seg.ink .meta b {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-4px);
+}
+.seg .pen-mark {
+  color: var(--text-emphasis-yellow-default);
+  display: inline-flex;
+}
+.seg .pen-mark .ico {
+  font-size: 13px;
 }
 
 /* ---------------------------------------------------------------- side panel */
@@ -2369,10 +2545,10 @@ button.x .ico {
 }
 @media (max-width: 1620px) {
   /* the mode switch keeps its icons (an ear, a hand); the titles still say what each one does */
-  .segmented .opt .label {
+  #modeSwitch .opt .label {
     display: none;
   }
-  .segmented .opt {
+  #modeSwitch .opt {
     padding: 0 var(--spacing-6px);
   }
 }
@@ -2430,6 +2606,13 @@ button.x .ico {
   /* the picker's own text says what it is */
   #micSettings .pick .label {
     display: none;
+  }
+  /* the record switch keeps its icons (a mic, a camera, a pen); the titles still say what each one does */
+  #recordSwitch .opt .label {
+    display: none;
+  }
+  #recordSwitch .opt {
+    padding: 0 var(--spacing-6px);
   }
 }
 @media (max-width: 900px) {

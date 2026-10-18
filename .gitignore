@@ -14,6 +14,7 @@ coverage/
 /packages/e2e/fixtures/
 .claude/worktrees/
 /packages/e2e/camera-out/
+/packages/e2e/ink-out/
 /packages/client/public/models/
 __pycache__/
 *.pyc

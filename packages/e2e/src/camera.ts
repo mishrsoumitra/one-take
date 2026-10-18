@@ -72,17 +72,17 @@ if (values.lips === 'off') {
 /* ------------------------------------------------------------ the switch and the live picture */
 page.step('camera on');
 check(
-  await ev<boolean>('!document.getElementById("camOn").disabled'),
-  'the camera switch is enabled (WebCodecs present)',
+  await ev<boolean>('!document.getElementById("recCamera").disabled'),
+  'the camera option is enabled (WebCodecs present)',
 );
 check(
   await ev<boolean>('document.getElementById("camRow").hidden'),
   'the camera row is hidden while the camera is off',
 );
-await ev('document.getElementById("camOn").click()');
+await ev('document.getElementById("recCamera").click()');
 check(await page.waitFor('__onetake.camera.on', 100, 100), 'the camera opened');
 check(await ev<boolean>('!document.getElementById("camRow").hidden'), 'the camera row appears');
-check(await ev<boolean>('__onetake.prefs().camera === true'), 'the switch is remembered');
+check(await ev<boolean>('__onetake.prefs().record === "camera"'), 'the switch is remembered');
 const info = await ev<{ label: string; width: number; height: number; codec: string }>(
   '__onetake.camera.info',
 );
@@ -517,7 +517,7 @@ for (let i = 0; i < 100 && (await ev<number>('__onetake.state.segments.length'))
   );
   check(restored.frames > 0 && restored.key && restored.bytes, 'the frames came back as encoded bytes');
   check(
-    await ev<boolean>('document.getElementById("camOn").checked'),
+    await ev<boolean>('document.getElementById("recCamera").getAttribute("aria-checked") === "true"'),
     'the camera switch is remembered as on',
   );
   check(await ev<boolean>('!__onetake.camera.on'), 'the camera does not open by itself after a reload');

@@ -9,6 +9,7 @@ import { h } from './dom.js';
 export type IconName =
   | 'arrow-up'
   | 'bin'
+  | 'camera'
   | 'check'
   | 'chevron-left'
   | 'chevron-right'
@@ -37,6 +38,7 @@ export type IconName =
   | 'square-filled'
   | 'sun'
   | 'upload'
+  | 'video'
   | 'waveform';
 
 /** An icon glyph; decorative, so hidden from assistive technology. */

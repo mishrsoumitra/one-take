@@ -26,11 +26,13 @@ import {
 
 import { type Slide } from '../app/types.js';
 import { type Cue } from '../core/captions.js';
+import { drawInk } from '../core/ink.js';
 import { type CameraLayout } from '../core/overlay.js';
 import { segmentToFloat } from '../core/pcm.js';
 import { type Timeline } from '../core/timeline.js';
 import { BT709_LIMITED, rgbaToI420 } from '../core/yuv.js';
 
+import { type InkPicture, type InkTrack } from './ink-track.js';
 import { drawOverlay, overlayBox, type OverlayPicture, type OverlayTrack } from './overlay.js';
 
 export const EXPORT_SAMPLE_RATE = 48000;
@@ -72,6 +74,8 @@ export interface EncodeOptions {
     layout: CameraLayout;
     clean?: (frame: VideoFrame) => Promise<CanvasImageSource>;
   } | null;
+  /** The pen's drawings over the slides, drawn as they were made. */
+  ink?: InkTrack | null;
 }
 
 export interface EncodeResult {
@@ -255,6 +259,7 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
   const chunkFrames = Math.round(rate * AUDIO_CHUNK_SECONDS);
   const cues = options.captions ?? [];
   const camera = options.camera ?? null;
+  const inkTrack = options.ink ?? null;
   let cueAt = 0;
   let frames = 0;
   let audioPos = 0; // samples emitted
@@ -320,8 +325,9 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     index: number,
     caption: readonly string[] | null,
     picture: OverlayPicture | null,
+    ink: InkPicture | null,
   ): Promise<VideoSample> {
-    const key = `${index}|${caption?.join('\n') ?? ''}|${picture?.serial ?? ''}`;
+    const key = `${index}|${caption?.join('\n') ?? ''}|${picture?.serial ?? ''}|${ink?.serial ?? ''}`;
     if (key === currentKey && slideFrame) return slideFrame;
     currentKey = key;
     const bmp = await bitmaps.get(index);
@@ -330,8 +336,10 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
     const left = Math.round((width - bmp.width) / 2);
     const top = Math.round((height - bmp.height) / 2);
     g.drawImage(bmp, left, top);
+    const area = { x: left, y: top, width: bmp.width, height: bmp.height };
+    // the pen's strokes sit on the slide, under the camera picture and the subtitle
+    if (ink) drawInk(g, ink.strokes, area);
     if (picture && camera) {
-      const area = { x: left, y: top, width: bmp.width, height: bmp.height };
       const source = camera.clean ? await camera.clean(picture.frame) : picture.frame;
       drawOverlay(g, source, overlayBox(camera.layout, area, picture.aspect));
     }
@@ -359,7 +367,8 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
       checkAbort();
       const at = frames * frameDuration;
       const picture = camera ? await camera.track.pictureAt(item, at) : null;
-      const base = await drawSlide(slideIndex, cues.length ? captionAt(at) : null, picture);
+      const ink = inkTrack ? inkTrack.at(item, at) : null;
+      const base = await drawSlide(slideIndex, cues.length ? captionAt(at) : null, picture, ink);
       const frame = base.clone();
       frame.setTimestamp(frames / fps);
       frame.setDuration(frameDuration);
@@ -410,7 +419,14 @@ export async function encodeLecture(options: EncodeOptions): Promise<EncodeResul
       if (it.gap > 0) await pushSamples(new Float32Array(Math.round(it.gap * rate)));
       await pushSamples(segmentToFloat(it.seg.pcm, it.seg.sampleRate, rate, it.fadeIn, it.fadeOut));
       const prev = timeline.items[k - 1];
-      await pushFrames(audioPos / rate, it.seg.slide, k === 0 || prev?.seg.slide !== it.seg.slide, k);
+      // up to where the audio really is, the chunk still being filled included, so a slide change or
+      // the end of a drawing lands on the right frame rather than up to a chunk early
+      await pushFrames(
+        (audioPos + accN) / rate,
+        it.seg.slide,
+        k === 0 || prev?.seg.slide !== it.seg.slide,
+        k,
+      );
       report(k + 1);
     }
     if (accN > 0) await emitAudio(acc.subarray(0, accN));

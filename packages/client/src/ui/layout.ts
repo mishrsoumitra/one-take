@@ -30,8 +30,11 @@ export interface LayoutRefs {
   noiseFilter: HTMLSelectElement;
   /** Which camera to use: watched for the lip check (or not, with "off") and recorded with the switch next to it. */
   camSelect: HTMLSelectElement;
-  /** Record the camera along with the voice; next to the camera picker. */
-  camOn: HTMLInputElement;
+  /** What is recorded with the voice: nothing, the camera, or the camera and the pen; a three-option segmented control. */
+  recordSwitch: HTMLElement;
+  btnRecVoice: HTMLButtonElement;
+  btnRecCamera: HTMLButtonElement;
+  btnRecInk: HTMLButtonElement;
   /** The camera row under the sliders: which corner, how big, what the camera is doing. Shown while the camera is recorded. */
   camRow: HTMLElement;
   /** The four corner buttons, keyed by corner. */
@@ -451,7 +454,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     {
       id: 'camSel',
       title:
-        'Which camera to use. While you record, it watches your mouth for the lip check, so a phrase someone else says while your lips are still is marked as another voice; tick Record camera next to it to put its picture in the video too. Off: no lip check (the picture can still be recorded). The picture stays on this computer. The choice is remembered.',
+        'Which camera to use. While you record, it watches your mouth for the lip check, so a phrase someone else says while your lips are still is marked as another voice; choose Voice + camera next to it to put its picture in the video too. Off: no lip check (the picture can still be recorded). The picture stays on this computer. The choice is remembered.',
     },
     h('option', { value: '' }, 'Default camera'),
     h('option', { value: 'off' }, 'Off (no lip check)'),
@@ -467,7 +470,36 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('mic', 16),
     label('Learn my voice'),
   );
-  const camOn = h('input', { type: 'checkbox', id: 'camOn' });
+  // what is recorded with the voice: nothing, the camera's picture, or the camera and the pen's drawings
+  const btnRecVoice = modeOption(
+    'recVoice',
+    'mic',
+    'Voice',
+    'Voice only: the slides and what you say. The camera, if one is chosen, only watches your lips for the lip check.',
+  );
+  const btnRecCamera = modeOption(
+    'recCamera',
+    'video',
+    'Voice + camera',
+    'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
+  );
+  const btnRecInk = modeOption(
+    'recInk',
+    'pen',
+    'Voice + camera + pen',
+    'Record your camera, and draw on the slides with the pen while the mic is on. A drawing is a clip of its own: while the pen is on the slide nothing is heard, and the strokes appear in the video just as you made them. Everything drawn on a slide stays there for the phrases after it.',
+  );
+  const recordSwitch = h(
+    'div',
+    {
+      class: 'segmented',
+      id: 'recordSwitch',
+      attrs: { role: 'radiogroup', 'aria-label': 'What is recorded with the voice' },
+    },
+    btnRecVoice,
+    btnRecCamera,
+    btnRecInk,
+  );
   const micSettings = h(
     'span',
     { id: 'micSettings' },
@@ -480,15 +512,15 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Noise filter'), noiseFilter),
     h('label', { class: 'pick' }, h('span', { class: 'label' }, 'Camera'), camSelect),
     h(
-      'label',
+      'span',
       {
-        class: 'check',
-        id: 'camSwitch',
+        class: 'pick',
+        id: 'recordPick',
         title:
-          'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
+          'What goes into the video with your voice: the slides alone, your camera, or your camera and your drawings.',
       },
-      camOn,
-      h('span', { class: 'label' }, 'Record camera'),
+      h('span', { class: 'label' }, 'Record'),
+      recordSwitch,
     ),
     btnVoice,
   );
@@ -622,7 +654,10 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     micSelect,
     noiseFilter,
     camSelect,
-    camOn,
+    recordSwitch,
+    btnRecVoice,
+    btnRecCamera,
+    btnRecInk,
     camRow,
     camCorners,
     camSize,

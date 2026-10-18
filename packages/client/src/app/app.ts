@@ -20,6 +20,14 @@ import { faceTrack } from '../core/faces.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { judgeSpeaker, type SpeakerVerdict } from '../core/identity.js';
 import {
+  boardBefore,
+  InkSession,
+  WIPE_MS,
+  type ClipInk,
+  type InkStroke,
+  type PenSettings,
+} from '../core/ink.js';
+import {
   clampSize,
   cornerOf,
   CORNERS,
@@ -45,6 +53,7 @@ import {
 import { withVersion, type Voicing } from '../core/versions.js';
 import { VoiceDetector } from '../core/voice.js';
 import { detectBrowserCapabilities } from '../export/capabilities.js';
+import { InkTrack } from '../export/ink-track.js';
 import { OverlayTrack } from '../export/overlay.js';
 import { runExport } from '../export/runner.js';
 import { planStudio, runStudio } from '../export/studio.js';
@@ -52,7 +61,14 @@ import { type FetchProgress } from '../models/fetch.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { VoiceCheck, type VoiceResult } from '../speaker/voice-check.js';
 import { ProjectStore } from '../storage/db.js';
-import { loadPrefs, savePrefs, type Prefs, type Theme } from '../storage/prefs.js';
+import {
+  loadPrefs,
+  recordsCamera,
+  savePrefs,
+  type Prefs,
+  type RecordMode,
+  type Theme,
+} from '../storage/prefs.js';
 import { loadProfile, saveProfile } from '../storage/profile.js';
 import { CamStage } from '../ui/cam-stage.js';
 import { Confirm } from '../ui/confirm.js';
@@ -63,10 +79,12 @@ import { ExportDialog } from '../ui/export-dialog.js';
 import { Filmstrip } from '../ui/filmstrip.js';
 import { FolderPicker } from '../ui/folder-picker.js';
 import { setButtonIcon } from '../ui/icon.js';
+import { InkStage } from '../ui/ink-stage.js';
 import { installKeyboard } from '../ui/keyboard.js';
 import { buildLayout, type LayoutRefs } from '../ui/layout.js';
 import { Library } from '../ui/library.js';
 import { LevelMeter } from '../ui/meter.js';
+import { PenBar } from '../ui/pen-bar.js';
 import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
 import { Welcome } from '../ui/welcome.js';
@@ -110,10 +128,25 @@ export class App {
   private readonly camera: CameraCapture;
   /** The camera picture over the slide on the stage, live or played back. */
   private readonly camStage: CamStage;
+  /** The pen's drawings over the slide on the stage: the board while recording, the recorded strokes while playing. */
+  private readonly inkStage: InkStage;
+  /** The pen's toolbar on the stage, in the pen mode. */
+  private readonly penBar: PenBar;
+  /** The drawing being made right now, from the first pen-down until the pen has rested (see `core/ink.ts`). */
+  private ink: InkSession | null = null;
+  /** Fires when the pen has rested long enough to end the drawing. */
+  private inkTimer = 0;
+  /** Drawings finished but not yet stored (they wait their turn behind phrases under review), so the stage keeps showing them. */
+  private pendingInk: { slide: number; ink: ClipInk }[] = [];
+  /** Why the camera is off, when it failed to open. */
+  private cameraError: string | null = null;
   /** The recorded pictures being played during a preview. */
   private previewOverlay: OverlayTrack | null = null;
   private previewPainting = false;
   private previewSerial = -1;
+  /** The recorded drawings being played during a preview. */
+  private previewInk: InkTrack | null = null;
+  private previewInkSerial = -1;
   private readonly preview: PreviewPlayer;
   private readonly refs: LayoutRefs;
   private readonly toast: Toast;
@@ -190,6 +223,21 @@ export class App {
     this.toast = new Toast(document.body);
     this.confirm = new Confirm(document.body);
     this.camera = new CameraCapture({ onState: (state, error) => this.onCameraState(state, error) });
+    // the drawings go under the camera picture, as in the video
+    this.inkStage = new InkStage({
+      stage: this.refs.stage,
+      img: this.refs.slideImg,
+      onStrokeStart: (x, y) => this.penDown(x, y),
+      onPoint: (x, y) => this.penMove(x, y),
+      onStrokeEnd: () => this.penUp(),
+    });
+    this.penBar = new PenBar({
+      stage: this.refs.stage,
+      pen: () => this.prefs.pen,
+      onPen: (pen) => this.setPen(pen),
+      onUndo: () => this.undoStroke(),
+      onClear: () => this.clearSlide(),
+    });
     this.camStage = new CamStage({
       stage: this.refs.stage,
       img: this.refs.slideImg,
@@ -265,9 +313,11 @@ export class App {
         this.store.state.exporting = exporting;
         this.syncPaused();
         this.updateButtons();
+        this.syncInk();
       },
       onBeforeExport: () => {
         if (this.store.state.previewing) this.stopPreview();
+        this.endInk();
         this.recorder?.end();
       },
     });
@@ -321,16 +371,16 @@ export class App {
     this.list.render([], [], false);
     void this.listMics();
     if (!CameraCapture.supported()) {
-      // the switch stays visible so the feature is known, with the reason it is off
-      this.refs.camOn.disabled = true;
-      this.refs.camOn.checked = false;
-      const label = this.refs.camOn.parentElement;
-      if (label) label.title = 'Recording the camera needs WebCodecs: open the app in Chrome or Edge.';
-    } else {
-      // the camera is remembered as wanted, but it only opens on the user's say-so or with the mic
-      this.refs.camOn.checked = this.prefs.camera;
+      // the option stays visible so the feature is known, with the reason it is off; the pen mode
+      // still works, with the slides alone under the drawings
+      this.refs.btnRecCamera.disabled = true;
+      this.refs.btnRecCamera.title = 'Recording the camera needs WebCodecs: open the app in Chrome or Edge.';
+      if (this.prefs.record === 'camera') this.prefs = savePrefs({ record: 'voice' });
     }
+    // the mode is remembered, but the camera only opens on the user's say-so or with the mic
+    this.updateRecordSwitch();
     this.syncCameraControls();
+    this.syncInk();
     void this.listCameras();
     if (!('mediaDevices' in navigator)) {
       this.toast.show('This browser cannot use the microphone here. Open the app in Chrome.');
@@ -490,10 +540,9 @@ export class App {
       this.setNoiseFilter(asFilterMode(r.noiseFilter.value));
       r.noiseFilter.blur();
     };
-    r.camOn.onchange = () => {
-      void this.setCameraOn(r.camOn.checked);
-      r.camOn.blur();
-    };
+    r.btnRecVoice.onclick = () => void this.setRecordMode('voice');
+    r.btnRecCamera.onclick = () => void this.setRecordMode('camera');
+    r.btnRecInk.onclick = () => void this.setRecordMode('annotate');
     r.camSelect.onchange = () => {
       this.setCamera(r.camSelect.value);
       r.camSelect.blur();
@@ -712,12 +761,15 @@ export class App {
     if (slide) this.refs.slideImg.src = slide.url;
     this.refs.slideNo.textContent = `${s.current + 1} / ${s.slides.length}`;
     this.updateSlideStats();
+    this.syncInk();
   }
 
   goTo(index: number): void {
     const s = this.store.state;
     if (s.previewing) return;
     if (index === s.current || index < 0 || index >= s.slides.length) return;
+    // A drawing in progress ends here and stays on the slide being left.
+    this.endInk();
     // A sentence in progress is split here: the part so far goes on the slide being left.
     this.recorder?.setSlide(index);
     this.showSlide(index);
@@ -789,6 +841,9 @@ export class App {
         : 'Step 2 · Click Start mic (or press R), then just talk. Pauses are cut out automatically.';
     }
     if (s.muted) return 'Muted. Press M or click Unmute to continue recording.';
+    if (this.ink) {
+      return 'Drawing. The mic hears nothing while the pen is on the slide. Rest the pen for a second, or speak, and the drawing is kept as a clip.';
+    }
     if (hold && s.held) {
       return s.speaking
         ? 'Recording. Let go when you finish the thought; what you held is kept, the dead air is not.'
@@ -804,7 +859,9 @@ export class App {
       return 'Recording. Pause whenever you like: the phrase is kept, the pause is not.';
     }
     if (n === 0) {
-      return 'Listening. Speak whenever you are ready. Your voice should push the meter below past the white line.';
+      return this.prefs.record === 'annotate'
+        ? 'Listening. Speak whenever you are ready, or draw on the slide with the pen: the strokes go into the video just as you make them.'
+        : 'Listening. Speak whenever you are ready. Your voice should push the meter below past the white line.';
     }
     return 'Recording works. Use → ← to change slides as you talk; Backspace removes the last phrase.';
   }
@@ -1152,19 +1209,33 @@ export class App {
   /* ------------------------------------------------------------------ */
 
   /**
-   * The camera switch. On: the camera opens at once, so the picture can be framed and placed before
-   * recording, and is recorded whenever the mic is on. Off: it closes; phrases already recorded keep
-   * their pictures.
+   * The record switch. With the camera: it opens at once, so the picture can be framed and placed
+   * before recording, and is recorded whenever the mic is on. With the pen: the toolbar appears, and
+   * the slide takes the pen while the mic is on. Voice alone: the camera closes. Phrases already
+   * recorded keep their pictures and drawings whatever is chosen.
    */
-  async setCameraOn(on: boolean): Promise<void> {
-    this.prefs = savePrefs({ camera: on });
-    this.refs.camOn.checked = on;
+  async setRecordMode(mode: RecordMode): Promise<void> {
+    const before = this.prefs.record;
+    if (mode === 'camera' && !CameraCapture.supported()) mode = 'voice';
+    this.prefs = savePrefs({ record: mode });
+    this.updateRecordSwitch();
     this.syncCameraControls();
-    if (on) {
-      await this.openCamera();
+    // a drawing in progress is kept as it is when the pen is put away
+    if (before === 'annotate' && mode !== 'annotate') this.endInk();
+    this.syncInk();
+    this.updateCoach();
+    if (recordsCamera(mode)) {
+      if (this.camera.state === 'off' || this.camera.state === 'error') await this.openCamera();
     } else {
       this.camera.close();
     }
+  }
+
+  private updateRecordSwitch(): void {
+    const mode = this.prefs.record;
+    this.refs.btnRecVoice.setAttribute('aria-checked', String(mode === 'voice'));
+    this.refs.btnRecCamera.setAttribute('aria-checked', String(mode === 'camera'));
+    this.refs.btnRecInk.setAttribute('aria-checked', String(mode === 'annotate'));
   }
 
   /** Opens (or reopens, after a device change) the chosen camera; the state callback does the rest. */
@@ -1176,6 +1247,7 @@ export class App {
   }
 
   private onCameraState(state: CameraState, error?: string): void {
+    this.cameraError = state === 'error' ? (error ?? 'The camera could not be opened.') : null;
     if (state === 'on') {
       // switched on while the mic is already running: phrases from here on get a picture
       if (this.store.state.armed && this.recorder) this.camera.record(BLOCK_MS);
@@ -1183,8 +1255,11 @@ export class App {
       this.warmChecks();
     } else if (state === 'error') {
       this.toast.show(error ?? 'The camera could not be opened.');
-      this.prefs = savePrefs({ camera: false });
-      this.refs.camOn.checked = false;
+      // the camera mode falls back to the voice alone; the pen mode keeps the pen and goes on without a picture
+      if (this.prefs.record === 'camera') {
+        this.prefs = savePrefs({ record: 'voice' });
+        this.updateRecordSwitch();
+      }
     }
     // the lip check watches the same camera: a clone of its track once it is open, its own stream otherwise
     if (
@@ -1219,11 +1294,11 @@ export class App {
     this.editor.relayoutCamera();
   }
 
-  /** The camera row: shown while the camera switch is on; the corner buttons, the slider and the note follow the state. */
+  /** The camera row: shown while the camera is recorded; the corner buttons, the slider and the note follow the state. */
   private syncCameraControls(): void {
     const r = this.refs;
     const layout = this.prefs.cameraLayout;
-    r.camRow.hidden = !r.camOn.checked;
+    r.camRow.hidden = !recordsCamera(this.prefs.record);
     const corner = cornerOf(layout);
     for (const [name, button] of Object.entries(r.camCorners) as [Corner, HTMLButtonElement][]) {
       button.setAttribute('aria-pressed', String(name === corner));
@@ -1241,11 +1316,206 @@ export class App {
         note = `${this.camera.info?.label ?? 'Camera'} · ${describeLayout(layout)}`;
         break;
       case 'error':
+        // in the pen mode the drawings go on without a picture; say why there is none
+        note = this.cameraError ? `Camera off · ${this.cameraError}` : '';
+        break;
       case 'off':
         break;
     }
     r.camNote.textContent = note;
     r.camNote.title = note;
+    r.camNote.classList.toggle('err', this.camera.state === 'error');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The pen: drawings on the slide                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The pen touched the slide at (x, y), fractions of the slide. In the pen mode with the mic on it
+   * starts a stroke: the first stroke opens a drawing, and from here until the pen rests the mic
+   * hears nothing (the phrase being spoken ends where it is). False refuses the stroke.
+   */
+  private penDown(x: number, y: number): boolean {
+    const s = this.store.state;
+    const recorder = this.recorder;
+    if (!s.armed || s.previewing || s.exporting || this.prefs.record !== 'annotate' || !recorder)
+      return false;
+    const now = performance.now();
+    if (!this.ink) {
+      this.ink = new InkSession(now, s.current);
+      s.inking = true;
+      this.refs.capFlagText.textContent = 'DRAWING';
+    }
+    clearTimeout(this.inkTimer);
+    recorder.setInking(true);
+    this.ink.strokeStart(now, this.prefs.pen, x, y);
+    this.syncInk();
+    this.updateStatus();
+    return true;
+  }
+
+  private penMove(x: number, y: number): void {
+    if (this.ink?.point(performance.now(), x, y)) this.inkStage.show(this.liveBoard());
+  }
+
+  /** The pen left the slide: the stroke is done, the mic may listen again, and the rest begins. */
+  private penUp(): void {
+    const ink = this.ink;
+    if (!ink?.down) return;
+    ink.strokeEnd(performance.now());
+    this.recorder?.setInking(false);
+    this.syncInk();
+    this.armInkRest();
+  }
+
+  /** Ends the drawing once the pen has rested for `INK_REST_MS`, unless a stroke or a voice comes first. */
+  private armInkRest(): void {
+    clearTimeout(this.inkTimer);
+    const ink = this.ink;
+    const at = ink?.restEndsAt ?? null;
+    if (!ink || at === null) return;
+    this.inkTimer = window.setTimeout(
+      () => {
+        if (this.ink === ink && ink.rested(performance.now())) this.endInk();
+      },
+      Math.max(0, at - performance.now()) + 5,
+    );
+  }
+
+  /**
+   * The drawing is over (the pen rested, a voice began, the slide changed, the mic stopped, the pen
+   * was put away): it becomes a clip, stored in its turn behind any phrase still under review.
+   */
+  private endInk(): void {
+    const ink = this.ink;
+    if (!ink) return;
+    clearTimeout(this.inkTimer);
+    this.ink = null;
+    this.store.state.inking = false;
+    this.recorder?.setInking(false);
+    const finished = ink.finish(performance.now());
+    if (finished) this.storeInk(ink.slide, finished.ink, finished.durationMs);
+    this.syncInk();
+    this.updateStatus();
+  }
+
+  /** Drops the drawing being made (the speaker changed their mind); false when there is none. */
+  private discardInk(): boolean {
+    const ink = this.ink;
+    if (!ink) return false;
+    clearTimeout(this.inkTimer);
+    this.ink = null;
+    this.store.state.inking = false;
+    this.recorder?.setInking(false);
+    this.syncInk();
+    this.updateStatus();
+    return true;
+  }
+
+  /** Queues a drawing (or a wipe) as a clip on `slide`, after the phrases finished before it. */
+  private storeInk(slide: number, ink: ClipInk, durationMs: number): void {
+    const pending = { slide, ink };
+    this.pendingInk.push(pending);
+    const store = () => {
+      const k = this.pendingInk.indexOf(pending);
+      if (k >= 0) this.pendingInk.splice(k, 1);
+      this.addInkSegment(slide, ink, durationMs);
+    };
+    if (this.recorder) void this.recorder.after(store);
+    else store();
+  }
+
+  /** A drawing as a clip: silence for the time it took, with the strokes to draw over it. */
+  private addInkSegment(slide: number, ink: ClipInk, durationMs: number): Segment {
+    const seg: Segment = {
+      id: this.nextSegmentId(),
+      slide,
+      sampleRate: this.sampleRate,
+      pcm: new Int16Array(Math.max(1, Math.round((durationMs / 1000) * this.sampleRate))),
+      joined: false,
+      prevId: null,
+      createdAt: Date.now(),
+      video: null,
+      ink,
+    };
+    this.store.state.segments.push(seg);
+    void this.db.putSegment(seg);
+    this.saveMeta();
+    this.list.render(this.store.state.segments, this.store.state.slides, true);
+    this.updateSlideStats();
+    this.updateButtons();
+    this.syncInk();
+    return seg;
+  }
+
+  /** The strokes on the current slide as they stand: stored, waiting to be stored, and being drawn. */
+  private liveBoard(): InkStroke[] {
+    const s = this.store.state;
+    const all: Pick<Segment, 'slide' | 'ink'>[] = [...s.segments, ...this.pendingInk];
+    const board = boardBefore(all, all.length, s.current);
+    return this.ink?.slide === s.current ? board.concat(this.ink.all) : board;
+  }
+
+  /**
+   * The stage's drawing layer and the pen's toolbar: the board of the current slide with the drawing
+   * in progress, drawable in the pen mode while the mic is on; the toolbar in the pen mode.
+   */
+  private syncInk(): void {
+    const s = this.store.state;
+    // the preview paints the recorded strokes itself
+    if (s.previewing && this.previewInk) return;
+    const pen = this.prefs.record === 'annotate' && s.slides.length > 0;
+    const enabled = pen && s.armed && !s.exporting && !s.previewing;
+    this.inkStage.setDrawable(enabled);
+    const board = this.liveBoard();
+    this.inkStage.show(board);
+    this.penBar.show(pen);
+    this.penBar.render({
+      canUndo: (this.ink?.strokeCount ?? 0) > 0,
+      canClear: board.length > 0,
+      enabled,
+    });
+  }
+
+  /** The pen's tool, colour or width changed; remembered for next time. */
+  setPen(pen: PenSettings): void {
+    this.prefs = savePrefs({ pen });
+    this.syncInk();
+  }
+
+  /** Takes back the last stroke of the drawing being made. */
+  undoStroke(): void {
+    const ink = this.ink;
+    if (!ink?.undoStroke(performance.now())) {
+      this.toast.show('Nothing to take back: a stroke can be undone while the drawing is being made.');
+      return;
+    }
+    // nothing left of the drawing: the mic may listen again at once
+    if (ink.strokeCount === 0 && !ink.down) this.discardInk();
+    else if (!ink.down) this.armInkRest();
+    this.syncInk();
+  }
+
+  /**
+   * Clears the slide as a step in the recording: the drawing in progress is kept, then a wipe takes
+   * everything on the slide away. A sentence being spoken is split there, so its first part still
+   * shows the drawings and the rest shows the clean slide.
+   */
+  clearSlide(): void {
+    const s = this.store.state;
+    if (!s.armed || this.prefs.record !== 'annotate' || !this.recorder) {
+      this.toast.show('Start the mic to clear the slide as part of the recording.');
+      return;
+    }
+    if (this.liveBoard().length === 0) {
+      this.toast.show('Nothing to clear on this slide.');
+      return;
+    }
+    this.endInk();
+    this.recorder.splitPhrase();
+    this.storeInk(s.current, { wipe: true, strokes: [] }, WIPE_MS);
+    this.syncInk();
   }
 
   /** Preview and export pause the recorder; it stops listening until they end. */
@@ -1353,6 +1623,8 @@ export class App {
         onSpeakingChange: (speaking, key) => {
           this.store.state.speaking = speaking;
           if (speaking) {
+            // a voice while the pen rests: the drawing is over and the phrase follows it
+            this.endInk();
             this.refs.capFlagText.textContent = 'RECORDING';
             this.phraseStarted(key);
           } else {
@@ -1363,7 +1635,7 @@ export class App {
       },
     );
     // the camera first, so the first phrase has its picture too; a camera that fails is reported and left off
-    if (this.prefs.camera && this.camera.state === 'off') await this.openCamera();
+    if (recordsCamera(this.prefs.record) && this.camera.state === 'off') await this.openCamera();
     this.tape = null;
     try {
       const info = await this.mic.start({
@@ -1400,6 +1672,7 @@ export class App {
     this.syncPaused();
     this.updateStatus();
     this.updateButtons();
+    this.syncInk();
     this.meterLoop();
     // the checks come up alongside: the voice model into its worker, the camera into the lip worker
     if (this.prefs.voiceCheck && this.profile) {
@@ -1419,6 +1692,8 @@ export class App {
   }
 
   stopMic(): void {
+    // a drawing in progress is kept, in its turn behind the phrases still under review
+    this.endInk();
     const recorder = this.recorder;
     recorder?.end();
     this.mic.stop();
@@ -1443,6 +1718,7 @@ export class App {
     this.updateSelfView();
     this.updateStatus();
     this.updateButtons();
+    this.syncInk();
     this.drawMeter();
   }
 
@@ -1519,6 +1795,7 @@ export class App {
     this.list.render(this.store.state.segments, this.store.state.slides, scroll);
     this.updateSlideStats();
     this.updateButtons();
+    this.syncInk();
     return seg;
   }
 
@@ -1648,14 +1925,23 @@ export class App {
     this.list.render(s.segments, s.slides, false);
     this.updateSlideStats();
     this.updateButtons();
-    this.toast.show(`Removed phrase ${index + 1} (${fmtSec(segmentDuration(seg))}, slide ${seg.slide + 1})`, {
-      label: 'Undo',
-      run: () => this.undoDelete(),
-    });
+    this.syncInk();
+    this.toast.show(
+      `Removed ${seg.ink ? 'drawing' : 'phrase'} ${index + 1} (${fmtSec(segmentDuration(seg))}, slide ${seg.slide + 1})`,
+      {
+        label: 'Undo',
+        run: () => this.undoDelete(),
+      },
+    );
   }
 
   deleteLast(): void {
     const s = this.store.state;
+    // the drawing being made is not stored yet either
+    if (this.discardInk()) {
+      this.toast.show('Dropped the drawing you were making. Go again.');
+      return;
+    }
     // the phrase being spoken, or one just finished and still being gone over, is not stored yet
     if (this.recorder?.discard()) {
       this.toast.show('Dropped the phrase you were just saying. Go again.');
@@ -1670,6 +1956,11 @@ export class App {
 
   undoDelete(): void {
     const s = this.store.state;
+    // while a drawing is being made, undo takes back its last stroke
+    if ((this.ink?.strokeCount ?? 0) > 0) {
+      this.undoStroke();
+      return;
+    }
     const d = s.deleted.pop();
     if (!d) return;
     s.segments.splice(Math.min(d.index, s.segments.length), 0, d.seg);
@@ -1678,6 +1969,7 @@ export class App {
     this.list.render(s.segments, s.slides, false);
     this.updateSlideStats();
     this.updateButtons();
+    this.syncInk();
   }
 
   moveSegment(from: number, to: number): void {
@@ -1687,6 +1979,7 @@ export class App {
     s.segments.splice(to, 0, seg);
     this.saveMeta();
     this.list.render(s.segments, s.slides, false);
+    this.syncInk();
   }
 
   timeline(order: PhraseOrder): Timeline {
@@ -1725,6 +2018,7 @@ export class App {
     this.list.render(s.segments, s.slides, false);
     this.updateSlideStats();
     this.updateButtons();
+    this.syncInk();
   }
 
   /* ------------------------------------------------------------------ */
@@ -1743,6 +2037,9 @@ export class App {
     else if (s.muted) {
       pill.classList.add('muted');
       text = 'Muted';
+    } else if (s.inking) {
+      pill.classList.add('ink');
+      text = 'Drawing';
     } else if (s.speaking) {
       pill.classList.add('rec');
       text = 'Recording';
@@ -1756,7 +2053,11 @@ export class App {
     this.refs.statusText.textContent = text;
     // the rest of the sentence leaves on narrow windows so the top bar stays one row
     if (text === 'Hold Space') this.refs.statusText.append(h('span', { class: 'long' }, ' to speak'));
-    this.refs.capFlag.classList.toggle('on', s.armed && s.speaking && !s.muted && !s.previewing);
+    this.refs.capFlag.classList.toggle(
+      'on',
+      s.armed && (s.speaking || s.inking) && !s.muted && !s.previewing,
+    );
+    this.refs.capFlag.classList.toggle('ink', s.inking && !s.speaking);
     // the hold button lives on the stage only in press to speak with the mic on
     const holdShown = s.armed && s.mode === 'hold' && !s.previewing && !s.exporting;
     this.refs.btnHold.hidden = !holdShown;
@@ -1846,6 +2147,7 @@ export class App {
     const s = this.store.state;
     if (s.segments.length === 0) return;
     if (s.previewing) this.stopPreview();
+    this.endInk();
     const tl = this.timeline('recorded');
     this.previewTimeline = tl;
     s.previewing = true;
@@ -1862,6 +2164,11 @@ export class App {
       this.camStage.showPlayback(this.camera.aspect);
       this.updateSelfView();
     }
+    // and the recorded drawings appear as they were made
+    this.previewInk = InkTrack.hasInk(tl) ? new InkTrack(tl) : null;
+    this.previewInkSerial = -1;
+    this.syncInk();
+    if (this.previewInk) this.inkStage.show([]);
     await this.preview.start(tl, fromIndex);
   }
 
@@ -1873,6 +2180,12 @@ export class App {
     this.list.setPlaying(this.store.state.segments.indexOf(it.seg));
     this.refs.previewTime.textContent = `${fmtTime(now)} / ${fmtTime(total)}`;
     this.paintPreview(index, now);
+    const ink = this.previewInk?.at(index, now) ?? null;
+    const serial = ink?.serial ?? -1;
+    if (this.previewInk && serial !== this.previewInkSerial) {
+      this.previewInkSerial = serial;
+      this.inkStage.show(ink?.strokes ?? []);
+    }
   }
 
   /** The camera frame for this moment of the preview; a frame still decoding is skipped, never waited for. */
@@ -1904,7 +2217,9 @@ export class App {
     this.preview.stop();
     this.previewOverlay?.close();
     this.previewOverlay = null;
+    this.previewInk = null;
     this.syncCamStage();
+    this.syncInk();
     this.list.setPlaying(null);
     this.refs.previewFlag.classList.remove('on');
     setLabel(this.refs.btnPreview, 'Preview');
@@ -1982,6 +2297,7 @@ export class App {
     this.list.render(this.store.state.segments, this.store.state.slides, true);
     this.updateSlideStats();
     this.updateButtons();
+    this.syncInk();
     this.toast.show(
       `Restored ${this.store.state.segments.length} phrases (${fmtTime(totalDuration(this.store.state.segments))})`,
     );
@@ -1998,6 +2314,7 @@ export class App {
     if (s.exporting) return;
     // Nothing said from here on is recorded: the phrase in progress ends now, so the count below is
     // right, and the mic goes back to listening if the user keeps working.
+    this.endInk();
     this.recorder?.setPaused(true);
     const n = s.segments.length;
     if (n > 0) {
@@ -2033,8 +2350,10 @@ export class App {
     this.refs.deckName.hidden = true;
     this.refs.deckName.textContent = '';
     this.list.render([], [], false);
+    this.pendingInk = [];
     this.updateSlideStats();
     this.updateButtons();
+    this.syncInk();
     this.toast.show(
       n > 0
         ? `Slides closed. ${n === 1 ? 'The phrase was' : `${n} phrases were`} deleted.`
@@ -2062,7 +2381,19 @@ export class App {
       mic: this.mic,
       camera: this.camera,
       camStage: this.camStage,
-      setCameraOn: (on: boolean) => this.setCameraOn(on),
+      setRecordMode: (mode: RecordMode) => this.setRecordMode(mode),
+      setCameraOn: (on: boolean) => this.setRecordMode(on ? 'camera' : 'voice'),
+      /** The pen, driven without a pointer: a stroke from `penDown` through `penMove`s to `penUp`. */
+      inkStage: this.inkStage,
+      penBar: this.penBar,
+      ink: () => this.ink,
+      pendingInk: () => this.pendingInk.length,
+      penDown: (x: number, y: number) => this.penDown(x, y),
+      penMove: (x: number, y: number) => this.penMove(x, y),
+      penUp: () => this.penUp(),
+      setPen: (pen: PenSettings) => this.setPen(pen),
+      undoStroke: () => this.undoStroke(),
+      clearSlide: () => this.clearSlide(),
       cameraLayout: () => this.prefs.cameraLayout,
       setCameraLayout: (layout: CameraLayout) => this.setCameraLayout(layout, true),
       voiceCheck: this.voiceCheck,

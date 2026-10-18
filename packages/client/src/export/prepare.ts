@@ -18,6 +18,7 @@ import {
   type FillerCandidate,
   type FillerSensitivity,
 } from '../core/fillers.js';
+import { inkAtSpeed } from '../core/ink.js';
 import { Downsampler } from '../core/speech.js';
 import { stretchedLength, stretchPcm } from '../core/stretch.js';
 import {
@@ -66,7 +67,8 @@ export async function scanFillers(
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     let candidates = scanned.get(seg);
     if (!candidates) {
-      candidates = scoreFillers(toAnalysisRate(seg.pcm, seg.sampleRate));
+      // a drawing is silence: no filler can be in it
+      candidates = seg.ink ? [] : scoreFillers(toAnalysisRate(seg.pcm, seg.sampleRate));
       scanned.set(seg, candidates);
       await yieldToPage();
     }
@@ -222,9 +224,14 @@ export async function prepareSegments(
       if (speed !== 1) {
         current = {
           ...current,
-          pcm: stretchPcm(current.pcm, current.sampleRate, speed),
+          // a drawing's silence is simply shorter; a voice keeps its pitch
+          pcm: current.ink
+            ? new Int16Array(Math.max(1, Math.round(current.pcm.length / speed)))
+            : stretchPcm(current.pcm, current.sampleRate, speed),
           // the picture keeps its frames and runs through them faster, in step with the voice
           video: current.video ? clipVideoAtSpeed(current.video, speed) : current.video,
+          // and the pen moves faster with it
+          ...(current.ink ? { ink: inkAtSpeed(current.ink, speed) } : {}),
         };
         await yieldToPage();
       }
@@ -291,6 +298,8 @@ export function transcriptionAudio(segments: readonly Segment[]): TranscriptionA
   const gap = new Int16Array(Math.round(TRANSCRIBE_RATE * TRANSCRIBE_GAP_SEC));
   let position = 0;
   for (const seg of segments) {
+    // a drawing has no words in it, and silence only tempts the recogniser to invent some
+    if (seg.ink) continue;
     const floats = new Float32Array(seg.pcm.length);
     for (let i = 0; i < floats.length; i++) floats[i] = (seg.pcm[i] ?? 0) / 32768;
     const down =

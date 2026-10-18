@@ -16,6 +16,8 @@ export interface AppState {
   /** Press-to-speak: the talk key or button is down right now. */
   held: boolean;
   speaking: boolean;
+  /** A drawing is being made with the pen: the mic hears nothing until the pen has rested. */
+  inking: boolean;
   previewing: boolean;
   exporting: boolean;
 }
@@ -37,6 +39,7 @@ export class Store {
     mode: 'auto',
     held: false,
     speaking: false,
+    inking: false,
     previewing: false,
     exporting: false,
   };

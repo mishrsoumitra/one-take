@@ -7,6 +7,7 @@
  */
 import { concatClipVideo, sliceClipVideo, type ClipVideo } from './clip-video.js';
 import { cutFaces, sliceFaces, type FaceTrack } from './faces.js';
+import { cutInk, sliceInk, type ClipInk } from './ink.js';
 import { segmentDuration, type Segment, type Timeline } from './timeline.js';
 import { mapAudio } from './versions.js';
 
@@ -37,10 +38,16 @@ function withFaces(seg: Segment, faces: FaceTrack | null | undefined): Segment {
   return faces ? { ...rest, faces } : rest;
 }
 
+/** A segment with its drawing set, or without one. */
+function withInk(seg: Segment, ink: ClipInk | undefined): Segment {
+  const { ink: _ink, ...rest } = seg;
+  return ink ? { ...rest, ink } : rest;
+}
+
 /**
- * The stretch `[fromSample, toSample)` of a phrase: every version of its sound, its picture and its
- * film cut the same way, in one place, so no edit can leave one of them behind. Null when nothing
- * worth keeping is in the stretch.
+ * The stretch `[fromSample, toSample)` of a phrase: every version of its sound, its picture, its
+ * film and its drawing cut the same way, in one place, so no edit can leave one of them behind.
+ * Null when nothing worth keeping is in the stretch.
  */
 export function sliceSegment(seg: Segment, fromSample: number, toSample: number): Segment | null {
   const lo = Math.max(0, Math.min(seg.pcm.length, Math.min(fromSample, toSample)));
@@ -49,9 +56,13 @@ export function sliceSegment(seg: Segment, fromSample: number, toSample: number)
   const sliced = mapAudio(seg, (pcm) => pcm.slice(lo, hi));
   if (!sliced) return null;
   const sr = seg.sampleRate;
-  return withFaces(
-    { ...sliced, video: seg.video ? videoBetween(seg, lo, hi) : seg.video },
-    seg.faces ? sliceFaces(seg.faces, lo / sr, hi / sr) : undefined,
+  const ms = (sample: number) => (sample / sr) * 1000;
+  return withInk(
+    withFaces(
+      { ...sliced, video: seg.video ? videoBetween(seg, lo, hi) : seg.video },
+      seg.faces ? sliceFaces(seg.faces, lo / sr, hi / sr) : undefined,
+    ),
+    seg.ink ? sliceInk(seg.ink, ms(lo), ms(hi)) : undefined,
   );
 }
 
@@ -94,7 +105,10 @@ export function cutRange(seg: Segment, fromSec: number, toSec: number): Segment 
     ? concatClipVideo(videoBetween(seg, 0, lo), videoBetween(seg, hi, seg.pcm.length))
     : seg.video;
   const sr = seg.sampleRate;
-  return withFaces({ ...cut, video }, seg.faces ? cutFaces(seg.faces, lo / sr, hi / sr) : undefined);
+  return withInk(
+    withFaces({ ...cut, video }, seg.faces ? cutFaces(seg.faces, lo / sr, hi / sr) : undefined),
+    seg.ink ? cutInk(seg.ink, (lo / sr) * 1000, (hi / sr) * 1000) : undefined,
+  );
 }
 
 /** Keeps only the audio between `fromSec` and `toSec` (the opposite of {@link cutRange}). */

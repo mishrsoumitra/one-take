@@ -2,6 +2,7 @@
 import { type ClipVideo } from './clip-video.js';
 import { type FaceTrack } from './faces.js';
 import { type SpeakerVerdict } from './identity.js';
+import { type ClipInk } from './ink.js';
 import { type Voicing } from './versions.js';
 
 export interface Segment {
@@ -31,6 +32,11 @@ export interface Segment {
   choice?: Voicing;
   /** The speaker's mouth over the phrase, for the studio's voice extraction. */
   faces?: FaceTrack;
+  /**
+   * A drawing made with the pen instead of a phrase (see `ink.ts`): `pcm` is silence of the time the
+   * drawing took, and the strokes appear over the slide as the clip plays.
+   */
+  ink?: ClipInk;
 }
 
 export interface TimelineItem {

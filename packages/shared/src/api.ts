@@ -429,6 +429,8 @@ export interface ServerCapabilities {
   platform: string;
   homeDirectory: string;
   defaultDirectory: string;
+  /** Where recordings are kept on disk (see recordings.ts): `<data dir>/recordings` unless told otherwise. */
+  recordingsDirectory: string;
   ffmpeg: FfmpegInfo | null;
   ffprobePath: string | null;
   /** Handy folders for the folder picker (home, Desktop, Movies, ...). Only existing ones are listed. */

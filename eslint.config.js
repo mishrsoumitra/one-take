@@ -19,6 +19,7 @@ export default defineConfig(
       'packages/e2e/camera-out/**',
       'packages/e2e/ink-out/**',
       'packages/e2e/studio-out/**',
+      'packages/e2e/recordings-out/**',
       'packages/e2e/fixtures/**',
       'e2e-out/**',
     ],

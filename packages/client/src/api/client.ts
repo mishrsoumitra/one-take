@@ -1,17 +1,25 @@
 import {
+  SHA256_HEADER,
   type ApiErrorBody,
   type CreateExportJobRequest,
+  type CreateRecording,
   type CreateStudioJobRequest,
   type DirectoryListing,
   type ExportJob,
   type ExportRecord,
   type JobEvent,
+  type PhraseMeta,
+  type RecordingPhrase,
+  type RecordingRecord,
+  type RecordingSummary,
   type ServerCapabilities,
   type StudioEvent,
   type StudioJob,
   type SystemLoad,
   type TranscriptionEvent,
   type TranscriptionJob,
+  type UpdateRecording,
+  type UploadReceipt,
 } from '@one-take/shared';
 
 export class ApiRequestError extends Error {
@@ -214,6 +222,103 @@ export class ApiClient {
     }
     const bytes = await res.arrayBuffer();
     return new Int16Array(bytes, 0, Math.floor(bytes.byteLength / 2));
+  }
+
+  /* ---------------------------------------------------------------- recordings on disk */
+
+  /** Every recording mirrored to this computer, newest first. */
+  listRecordings(): Promise<RecordingSummary[]> {
+    return this.json<RecordingSummary[]>('GET', '/api/recordings', undefined, AbortSignal.timeout(10_000));
+  }
+
+  getRecording(id: string, signal?: AbortSignal): Promise<RecordingRecord> {
+    return this.json<RecordingRecord>('GET', `/api/recordings/${encodeURIComponent(id)}`, undefined, signal);
+  }
+
+  createRecording(body: CreateRecording): Promise<RecordingRecord> {
+    return this.json<RecordingRecord>('POST', '/api/recordings', body);
+  }
+
+  updateRecording(id: string, patch: UpdateRecording): Promise<RecordingRecord> {
+    return this.json<RecordingRecord>('PATCH', `/api/recordings/${encodeURIComponent(id)}`, patch);
+  }
+
+  async deleteRecording(id: string): Promise<void> {
+    await this.json('DELETE', `/api/recordings/${encodeURIComponent(id)}`);
+  }
+
+  async revealRecording(id: string): Promise<void> {
+    await this.json('POST', `/api/recordings/${encodeURIComponent(id)}/reveal`);
+  }
+
+  /** One of the deck's files, checked against its hash on the way in. */
+  async uploadRecordingDeck(
+    id: string,
+    index: number,
+    file: Blob,
+    sha256: string,
+    signal?: AbortSignal,
+  ): Promise<UploadReceipt> {
+    const res = await fetch(`${this.base}/api/recordings/${encodeURIComponent(id)}/deck/${index}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream', [SHA256_HEADER]: sha256 },
+      body: file,
+      signal: signal ?? null,
+    });
+    return (await this.parse(res)) as UploadReceipt;
+  }
+
+  async fetchRecordingDeck(id: string, index: number, signal?: AbortSignal): Promise<Blob> {
+    const res = await fetch(`${this.base}/api/recordings/${encodeURIComponent(id)}/deck/${index}`, {
+      signal: signal ?? null,
+    });
+    if (!res.ok) await this.parse(res);
+    return res.blob();
+  }
+
+  /** A phrase's file with what the manifest should say about it; the server keeps it only when the hash matches. */
+  async uploadRecordingPhrase(
+    id: string,
+    phraseId: string,
+    meta: PhraseMeta,
+    bytes: Uint8Array,
+    sha256: string,
+    signal?: AbortSignal,
+  ): Promise<RecordingPhrase> {
+    const params = new URLSearchParams({
+      slide: String(meta.slide),
+      seconds: String(meta.seconds),
+      sitting: String(meta.sitting),
+      kind: meta.kind,
+      camera: meta.camera ? '1' : '0',
+      createdAt: String(meta.createdAt),
+    });
+    const res = await fetch(
+      `${this.base}/api/recordings/${encodeURIComponent(id)}/phrases/${encodeURIComponent(phraseId)}?${params.toString()}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream', [SHA256_HEADER]: sha256 },
+        body: bytes as BodyInit,
+        signal: signal ?? null,
+      },
+    );
+    return (await this.parse(res)) as RecordingPhrase;
+  }
+
+  async fetchRecordingPhrase(id: string, phraseId: string, signal?: AbortSignal): Promise<Uint8Array> {
+    const res = await fetch(
+      `${this.base}/api/recordings/${encodeURIComponent(id)}/phrases/${encodeURIComponent(phraseId)}`,
+      { signal: signal ?? null },
+    );
+    if (!res.ok) await this.parse(res);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  deleteRecordingPhrase(id: string, phraseId: string): Promise<RecordingRecord> {
+    return this.json<RecordingRecord>(
+      'DELETE',
+      `/api/recordings/${encodeURIComponent(id)}/phrases/${encodeURIComponent(phraseId)}`,
+    );
   }
 
   private async octets(path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<StudioJob> {

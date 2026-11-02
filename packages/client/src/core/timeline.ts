@@ -15,6 +15,12 @@ export interface Segment {
   joined: boolean;
   prevId: string | null;
   createdAt: number;
+  /**
+   * Which sitting of the recording it was made in: 1 the first time the deck was opened, one more
+   * each time the recording was continued (see `storage/remote.ts`). Missing on phrases from before
+   * sittings existed, which count as the first.
+   */
+  sitting?: number;
   /** The camera's picture of the speaker while this was said; missing when the camera was off. */
   video?: ClipVideo | null;
   /** Whose voice it is, once the lip and voice checks have judged the phrase (see `identity.ts`). */

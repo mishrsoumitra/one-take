@@ -11,6 +11,7 @@ import { JobManager } from '../src/services/jobs.js';
 import { ExportLibrary } from '../src/services/library.js';
 import { LoadMonitor } from '../src/services/load.js';
 import { ModelStore } from '../src/services/models.js';
+import { RecordingStore } from '../src/services/recordings.js';
 import { StudioManager } from '../src/services/studio.js';
 import { TranscriptionManager } from '../src/services/transcribe.js';
 
@@ -57,6 +58,7 @@ function makeApp(
       staticDir,
       defaultDirectory: tmp,
       dataDir: path.join(tmp, 'data'),
+      recordingsDir: path.join(tmp, 'data', 'recordings'),
       modelDirs,
       ffmpegPath: null,
       ffprobePath: null,
@@ -95,12 +97,14 @@ function makeApp(
       cacheDir: path.join(tmp, 'data', 'models'),
       fetch: () => Promise.reject(new TypeError('fetch failed (the test is offline)')),
     }),
+    recordings: new RecordingStore(path.join(tmp, 'data', 'recordings')),
     capabilities: () => ({
       name: 'one-take-server',
       version: 't',
       platform: 'test',
       homeDirectory: tmp,
       defaultDirectory: tmp,
+      recordingsDirectory: path.join(tmp, 'data', 'recordings'),
       ffmpeg: null,
       ffprobePath: null,
       shortcuts: [],
@@ -507,5 +511,138 @@ describe('app', () => {
     expect(body.error.message).toMatch(/could not reach models.example.test/);
     expect(body.error.message).toMatch(/npm run models/);
     await offline.close();
+  });
+});
+
+describe('recordings', () => {
+  it('mirrors a recording over HTTP: create, deck, phrases, state, read back, delete', async () => {
+    const app = makeApp();
+    const host = { host: 'localhost' };
+    const deckBytes = Buffer.from('%PDF-1.4 over http');
+    const deckSha = createHash('sha256').update(deckBytes).digest('hex');
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/recordings',
+      headers: host,
+      payload: {
+        deck: {
+          name: 'talk.pdf',
+          kind: 'pdf',
+          slides: 3,
+          hash: createHash('sha256').update('picked').digest('hex'),
+          files: [{ name: 'talk.pdf', type: 'application/pdf', bytes: deckBytes.length, sha256: deckSha }],
+          origin: null,
+        },
+      },
+    });
+    expect(create.statusCode).toBe(201);
+    const rec = create.json<{ id: string; deckReady: boolean; path: string }>();
+    expect(rec.deckReady).toBe(false);
+    // the deck, with the hash in the header
+    const deck = await app.inject({
+      method: 'PUT',
+      url: `/api/recordings/${rec.id}/deck/0`,
+      headers: { ...host, 'content-type': 'application/octet-stream', 'x-one-take-sha256': deckSha },
+      payload: deckBytes,
+    });
+    expect(deck.statusCode).toBe(200);
+    expect(deck.json()).toEqual({ id: '0', sha256: deckSha, bytes: deckBytes.length });
+    const deckBack = await app.inject({
+      method: 'GET',
+      url: `/api/recordings/${rec.id}/deck/0`,
+      headers: host,
+    });
+    expect(deckBack.statusCode).toBe(200);
+    expect(deckBack.headers['content-type']).toBe('application/pdf');
+    expect(deckBack.rawPayload).toEqual(deckBytes);
+    // a phrase, with its details in the query string; a wrong hash is refused and leaves nothing behind
+    const phrase = Buffer.from('a phrase, packed');
+    const phraseSha = createHash('sha256').update(phrase).digest('hex');
+    const query = 'slide=1&seconds=2.5&sitting=1&kind=voice&camera=0&createdAt=1700000000000';
+    const wrong = await app.inject({
+      method: 'PUT',
+      url: `/api/recordings/${rec.id}/phrases/p1?${query}`,
+      headers: { ...host, 'content-type': 'application/octet-stream', 'x-one-take-sha256': deckSha },
+      payload: phrase,
+    });
+    expect(wrong.statusCode).toBe(409);
+    expect(wrong.json()).toMatchObject({ error: { code: 'hash_mismatch' } });
+    const put = await app.inject({
+      method: 'PUT',
+      url: `/api/recordings/${rec.id}/phrases/p1?${query}`,
+      headers: { ...host, 'content-type': 'application/octet-stream', 'x-one-take-sha256': phraseSha },
+      payload: phrase,
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json()).toMatchObject({ id: 'p1', sha256: phraseSha, slide: 1, seconds: 2.5, camera: false });
+    const badMeta = await app.inject({
+      method: 'PUT',
+      url: `/api/recordings/${rec.id}/phrases/p2?slide=x`,
+      headers: { ...host, 'content-type': 'application/octet-stream' },
+      payload: phrase,
+    });
+    expect(badMeta.statusCode).toBe(400);
+    // the state
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: `/api/recordings/${rec.id}`,
+      headers: host,
+      payload: { current: 2, sitting: 2, order: ['p1'], exportRequest: { fileName: 'talk' } },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json()).toMatchObject({ current: 2, sitting: 2, deckReady: true });
+    const badPatch = await app.inject({
+      method: 'PATCH',
+      url: `/api/recordings/${rec.id}`,
+      headers: host,
+      payload: { current: -1 },
+    });
+    expect(badPatch.statusCode).toBe(400);
+    // the list and the phrase back
+    const list = await app.inject({ method: 'GET', url: '/api/recordings', headers: host });
+    expect(list.json()).toMatchObject([
+      { id: rec.id, name: 'talk.pdf', phrases: 1, seconds: 2.5, current: 2 },
+    ]);
+    const back = await app.inject({
+      method: 'GET',
+      url: `/api/recordings/${rec.id}/phrases/p1`,
+      headers: host,
+    });
+    expect(back.statusCode).toBe(200);
+    expect(back.headers['x-one-take-sha256']).toBe(phraseSha);
+    expect(back.rawPayload).toEqual(phrase);
+    const gone = await app.inject({
+      method: 'DELETE',
+      url: `/api/recordings/${rec.id}/phrases/p1`,
+      headers: host,
+    });
+    expect(gone.json()).toMatchObject({ phrases: [] });
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/recordings/${rec.id}/phrases/p1`, headers: host }))
+        .statusCode,
+    ).toBe(404);
+    // and the whole recording
+    const removed = await app.inject({ method: 'DELETE', url: `/api/recordings/${rec.id}`, headers: host });
+    expect(removed.json()).toEqual({ ok: true });
+    expect(
+      (await app.inject({ method: 'GET', url: `/api/recordings/${rec.id}`, headers: host })).statusCode,
+    ).toBe(404);
+    expect(
+      (await app.inject({ method: 'GET', url: '/api/recordings/a%2Fb', headers: host })).statusCode,
+    ).toBe(400);
+    await app.close();
+  });
+
+  it('validates a new recording', async () => {
+    const app = makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/recordings',
+      headers: { host: 'localhost' },
+      payload: { deck: { name: '' } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { code: 'bad_request' } });
+    await app.close();
   });
 });

@@ -67,7 +67,7 @@ export interface LayoutRefs {
   /** Opens the editor: play with a scrub bar, re-record, cut, add or remove clips. */
   btnEdit: HTMLButtonElement;
   btnExport: HTMLButtonElement;
-  /** Opens the list of exported videos: play, show in folder, delete. */
+  /** Opens the Library: the recordings saved on this computer, and the exported videos. */
   btnLibrary: HTMLButtonElement;
   btnHelp: HTMLButtonElement;
   /** Switches between grauity's dark and light themes. */
@@ -77,6 +77,10 @@ export interface LayoutRefs {
   /** The big "choose a file" button inside the empty stage. */
   btnChoose: HTMLButtonElement;
   btnEmptyHelp: HTMLButtonElement;
+  /** On the empty stage: the recordings saved on this computer, to continue one. Hidden while there are none. */
+  saved: HTMLElement;
+  savedList: HTMLElement;
+  btnSavedAll: HTMLButtonElement;
   drop: HTMLElement;
   /** Under the drop zone: which deck formats the server can convert right now. */
   dropHint: HTMLElement;
@@ -251,10 +255,11 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     {
       id: 'btnLibrary',
       class: 'ghost',
-      title: 'Your exported videos: watch them, show them in the folder, or delete them',
+      title:
+        'The Library: your recordings saved on this computer (continue one, or start again on its deck) and your exported videos',
     },
     icon('folder'),
-    label('Exports'),
+    label('Library'),
   );
   const btnHelp = h(
     'button',
@@ -323,6 +328,19 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     dropHint,
   );
   const btnEmptyHelp = h('button', { class: 'ghost', id: 'btnEmptyHelp' }, 'Show me how it works');
+  const savedList = h('div', { class: 'saved-list', id: 'savedList' });
+  const btnSavedAll = h('button', { class: 'ghost', id: 'btnSavedAll' }, 'All recordings\u2026');
+  const saved = h(
+    'div',
+    { id: 'saved', hidden: true },
+    h(
+      'div',
+      { class: 'saved-head' },
+      h('span', null, 'Or continue a recording saved on this computer'),
+      btnSavedAll,
+    ),
+    savedList,
+  );
   const empty = h(
     'div',
     { id: 'empty' },
@@ -334,6 +352,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       'Then start the mic and just talk. Only the moments you speak are kept, so the video sounds like one continuous take.',
     ),
     drop,
+    saved,
     h(
       'div',
       { class: 'then' },
@@ -689,6 +708,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     empty,
     btnChoose,
     btnEmptyHelp,
+    saved,
+    savedList,
+    btnSavedAll,
     drop,
     dropHint,
     slideImg,

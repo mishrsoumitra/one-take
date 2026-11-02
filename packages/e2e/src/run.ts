@@ -834,9 +834,21 @@ await ev('document.getElementById("btnLibrary").click()');
 await sleep(400);
 check(
   await ev<boolean>('document.getElementById("libraryModal").classList.contains("on")'),
-  'the Exports button opens the list',
+  'the Library button opens the dialog',
 );
-check(await page.waitFor('document.querySelectorAll("#libraryList .rec").length > 0'), 'the list fills');
+check(
+  await ev<boolean>('document.getElementById("libTabRecordings").getAttribute("aria-selected") === "true"'),
+  'the Library opens on the Recordings tab',
+);
+check(
+  await page.waitFor('document.querySelectorAll("#recordingsList .rec").length > 0'),
+  'the Recordings tab lists this recording',
+);
+await ev('document.getElementById("libTabExports").click()');
+check(
+  await page.waitFor('document.querySelectorAll("#libraryList .rec").length > 0'),
+  'the Exported videos tab fills',
+);
 const rows = await ev<string[]>(
   '[...document.querySelectorAll("#libraryList .rec .name")].map((e) => e.textContent)',
 );

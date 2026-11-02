@@ -1,3 +1,5 @@
+import { type RecordingSitting } from '@one-take/shared';
+
 import { type Slide } from '../app/types.js';
 import { fmtSec, fmtTime } from '../core/format.js';
 import { verdictLabel } from '../core/identity.js';
@@ -14,10 +16,22 @@ export interface TimelineListHandlers {
   onMove: (from: number, to: number) => void;
 }
 
-/** The list of recorded phrases in playback order, with play, delete and drag-to-reorder. */
+/** When a sitting began, for its divider: `2 Nov, 15:30`. */
+function sittingWhen(iso: string | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * The list of recorded phrases in playback order, with play, delete and drag-to-reorder. When the
+ * recording was made over more than one sitting, a divider marks where each later sitting begins.
+ */
 export class TimelineList {
   private rows: HTMLElement[] = [];
   private dragFrom: number | null = null;
+  private sittings: readonly RecordingSitting[] = [];
 
   constructor(
     private readonly container: HTMLElement,
@@ -25,10 +39,18 @@ export class TimelineList {
     private readonly handlers: TimelineListHandlers,
   ) {}
 
+  /** What is known about each sitting (when it began, on which slide), for the dividers. */
+  setSittings(sittings: readonly RecordingSitting[]): void {
+    this.sittings = sittings;
+  }
+
   render(segments: readonly Segment[], slides: readonly Slide[], scrollToEnd: boolean): void {
     const keep = this.container.scrollTop;
     clear(this.container);
     this.rows = [];
+    // a divider before the first phrase of every sitting, once there is more than one
+    const sittingOf = (seg: Segment) => seg.sitting ?? 1;
+    const several = new Set(segments.map(sittingOf)).size > 1;
     if (segments.length === 0) {
       this.container.appendChild(
         h(
@@ -42,6 +64,24 @@ export class TimelineList {
     }
     const frag = document.createDocumentFragment();
     segments.forEach((seg, i) => {
+      const previous = segments[i - 1];
+      if (several && (previous === undefined || sittingOf(previous) !== sittingOf(seg))) {
+        const n = sittingOf(seg);
+        const info = this.sittings.find((x) => x.n === n);
+        const when = sittingWhen(info?.startedAt);
+        frag.appendChild(
+          h(
+            'div',
+            {
+              class: 'sitting',
+              title:
+                'The phrases below were recorded in this sitting; the export plays every sitting as one video.',
+            },
+            h('span', null, `Sitting ${n}`),
+            info ? h('small', null, `from slide ${info.fromSlide + 1}${when ? ` · ${when}` : ''}`) : null,
+          ),
+        );
+      }
       const slide = slides[seg.slide];
       // whose voice the checks said it was: a badge when it is not the speaker's, the reasons on hover
       const who = seg.speaker;

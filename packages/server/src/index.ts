@@ -14,6 +14,7 @@ import { JobManager } from './services/jobs.js';
 import { ExportLibrary } from './services/library.js';
 import { LoadMonitor } from './services/load.js';
 import { ModelStore } from './services/models.js';
+import { RecordingStore } from './services/recordings.js';
 import { detectStudio, StudioManager } from './services/studio.js';
 import {
   applyBenchmark,
@@ -97,6 +98,7 @@ async function main(): Promise<void> {
     platform: process.platform,
     homeDirectory: os.homedir(),
     defaultDirectory: config.defaultDirectory,
+    recordingsDirectory: config.recordingsDir,
     ffmpeg,
     ffprobePath,
     shortcuts,
@@ -147,6 +149,7 @@ async function main(): Promise<void> {
     cacheDir: modelCacheDir(config.dataDir),
     log: (m) => app.log.info(m),
   });
+  const recordings = new RecordingStore(config.recordingsDir, { log: (m) => app.log.info(m) });
   const app = buildApp({
     config,
     jobs,
@@ -157,6 +160,7 @@ async function main(): Promise<void> {
     transcription,
     studio,
     models,
+    recordings,
   });
 
   const shutdown = async (signal: string) => {
@@ -203,6 +207,7 @@ async function main(): Promise<void> {
   );
   app.log.info(`default output folder: ${config.defaultDirectory}`);
   app.log.info(`finished exports are listed in ${library.filePath}`);
+  app.log.info(`recordings are kept in ${recordings.dir}`);
 
   // The races (each encoder, then the CPU against each hardware decoder) run a few seconds after the
   // server answers, so start-up stays quick and they rarely overlap the browser's own encoder test on

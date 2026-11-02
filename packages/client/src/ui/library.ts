@@ -1,8 +1,10 @@
 /**
- * The exports dialog: every video the local server has saved, newest first, to watch in place, show in
- * the file manager, or delete. The list comes from the server (`GET /api/library`), which remembers
- * its exports across restarts; files saved through the browser's own save dialog never pass through
- * the server and are not listed.
+ * The Library: two tabs. **Recordings** lists every recording mirrored to this computer (see
+ * `recordings.ts`), to continue, start again, show or delete. **Exported videos** lists every video
+ * the local server has saved, newest first, to watch in place, show in the file manager, or delete;
+ * that list comes from the server (`GET /api/library`), which remembers its exports across
+ * restarts, and files saved through the browser's own save dialog never pass through the server
+ * and are not listed.
  */
 import {
   AUDIO_CODEC_INFO,
@@ -19,6 +21,7 @@ import { ApiRequestError, type ApiClient } from '../api/client.js';
 import { type Confirm } from './confirm.js';
 import { h, replaceChildren } from './dom.js';
 import { icon } from './icon.js';
+import { type RecordingsPanel } from './recordings.js';
 import { type Toast } from './toast.js';
 
 export interface LibraryDeps {
@@ -26,7 +29,11 @@ export interface LibraryDeps {
   serverCaps: () => ServerCapabilities | null;
   confirm: Confirm;
   toast: Toast;
+  /** The Recordings tab's contents. */
+  recordings: RecordingsPanel;
 }
+
+export type LibraryTab = 'recordings' | 'exports';
 
 /** Containers the <video> element plays in place; the rest open in the default player. */
 const PLAYS_IN_PAGE = new Set(['mp4', 'fmp4', 'webm', 'mov']);
@@ -52,6 +59,9 @@ export class Library {
   private readonly status: HTMLElement;
   private readonly btnRefresh: HTMLButtonElement;
   private readonly btnClose: HTMLButtonElement;
+  private readonly tabButtons: Record<LibraryTab, HTMLButtonElement>;
+  private readonly panes: Record<LibraryTab, HTMLElement>;
+  private tab: LibraryTab = 'recordings';
   private records: ExportRecord[] = [];
   /** The export whose player is open, if any. */
   private playingId: string | null = null;
@@ -71,13 +81,32 @@ export class Library {
       'Refresh',
     );
     this.btnClose = h('button', { id: 'btnLibraryClose', on: { click: () => this.close() } }, 'Close');
-    this.overlay = h(
-      'div',
-      { class: 'modal library', id: 'libraryModal' },
+    const tabButton = (tab: LibraryTab, text: string, title: string) =>
       h(
+        'button',
+        {
+          class: 'tab',
+          id: tab === 'recordings' ? 'libTabRecordings' : 'libTabExports',
+          title,
+          attrs: { role: 'tab', 'aria-selected': 'false' },
+          on: { click: () => this.show(tab) },
+        },
+        icon(tab === 'recordings' ? 'mic' : 'play', 16),
+        text,
+      );
+    this.tabButtons = {
+      recordings: tabButton(
+        'recordings',
+        'Recordings',
+        'Recordings saved on this computer as you make them: continue one, or start again on its deck',
+      ),
+      exports: tabButton('exports', 'Exported videos', 'The videos the local server has saved'),
+    };
+    this.panes = {
+      recordings: deps.recordings.el,
+      exports: h(
         'div',
-        { class: 'box', attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'libraryTitle' } },
-        h('h3', { id: 'libraryTitle' }, 'Exported videos'),
+        { class: 'pane', id: 'exportsPane' },
         this.summary,
         this.list,
         this.status,
@@ -86,9 +115,27 @@ export class Library {
           { class: 'hint note' },
           'Videos saved to a folder on this computer are listed, even after the server restarts. Files saved through the browser (save dialog or download) are not.',
         ),
+      ),
+    };
+    this.overlay = h(
+      'div',
+      { class: 'modal library', id: 'libraryModal' },
+      h(
+        'div',
+        { class: 'box', attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'libraryTitle' } },
+        h('h3', { id: 'libraryTitle' }, 'Library'),
+        h(
+          'div',
+          { class: 'tabs', id: 'libraryTabs', attrs: { role: 'tablist' } },
+          this.tabButtons.recordings,
+          this.tabButtons.exports,
+        ),
+        this.panes.recordings,
+        this.panes.exports,
         h('div', { class: 'actions' }, this.btnRefresh, h('div', { class: 'spacer' }), this.btnClose),
       ),
     );
+    this.show(this.tab);
     this.overlay.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
         ev.stopPropagation();
@@ -110,7 +157,14 @@ export class Library {
     return this.records;
   }
 
-  open(): void {
+  /** Which tab is showing. */
+  get currentTab(): LibraryTab {
+    return this.tab;
+  }
+
+  /** Opens the dialog on a tab (the one last shown otherwise) and loads its list. */
+  open(tab?: LibraryTab): void {
+    if (tab) this.show(tab);
     this.overlay.classList.add('on');
     this.btnClose.focus();
     void this.load();
@@ -121,8 +175,28 @@ export class Library {
     this.overlay.classList.remove('on');
   }
 
-  /** Fetches the list from the server and redraws it. */
+  private show(tab: LibraryTab): void {
+    if (tab !== this.tab) this.stopPlayback();
+    const changed = tab !== this.tab;
+    this.tab = tab;
+    for (const t of ['recordings', 'exports'] as const) {
+      this.tabButtons[t].setAttribute('aria-selected', String(t === tab));
+      this.panes[t].hidden = t !== tab;
+    }
+    if (changed && this.isOpen) void this.load();
+  }
+
+  /** Fetches the showing tab's list from the server and redraws it. */
   async load(): Promise<void> {
+    if (this.tab === 'recordings') {
+      this.btnRefresh.disabled = true;
+      try {
+        await this.deps.recordings.load();
+      } finally {
+        this.btnRefresh.disabled = false;
+      }
+      return;
+    }
     if (this.loading) return;
     this.loading = true;
     this.btnRefresh.disabled = true;

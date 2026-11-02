@@ -57,7 +57,8 @@ Everything runs on your own computer. The browser records and encodes, and a sma
 - **Save anywhere.** A folder picker browses the computer running the server. Files never leave the machine.
 - **Built for long lectures.** Streaming writes, encoder back-pressure, free-space checks, crash-safe fragments, cancel at any stage, and no in-memory assembly. See [Large exports](#large-exports).
 - **Uses your hardware encoder and decoder.** The dedicated video engine (Apple's media engine through VideoToolbox, NVIDIA NVENC, Intel Quick Sync, VAAPI) does the encoding wherever your machine has one, in the browser and in ffmpeg, and ffmpeg's decoding of the upload it compresses (`-hwaccel`), until you untick **Use the hardware encoder and decoder** in the export dialog. A start-up system check (CPU, memory, GPU, disk, ffmpeg hardware encoders and decoders, each one self-tested) and measured encoder and decoder races show what the machine can do; a *Fastest / Balanced / Smallest file* mode and a resource map show what each export stage will cost.
-- **Your exports in one list.** Every video saved to a folder on this computer is listed under **Exports** in the top bar, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
+- **Record in sittings.** Every recording is mirrored to a folder on this computer as you make it: the deck, each phrase the moment it is stored, and where you are. Come back another day, in any browser, even one whose storage was wiped, and **continue from the slide you left**, or **start again** on the same deck while the earlier recording stays. The export plays every sitting as one video.
+- **Your recordings and exports in one place.** **Library** in the top bar lists the recordings saved on this computer (continue, start again, show, delete) and every video saved to a folder here, even after the server restarts: watch it in the app, show it in Finder or Explorer, or delete it.
 - **Faster, cleaner, with subtitles.** At export time the lecture can be played at 1.25×, 1.5× or 2× with the voice keeping its pitch (a time-stretch in plain code, no library), the volume evened out from phrase to phrase, and the "um"s and "uh"s cut: a filler is found by its shape in the spectrum, a held, flat, central vowel standing between two pauses, with a list to listen to each one before it goes. With whisper installed, the server transcribes the speech and the export gets subtitles drawn into the picture, `.srt` and `.vtt` files next to the video, and a `.txt` transcript. The audio never leaves the machine.
 - **A studio for the export.** Once `npm run studio` has set it up, the local server runs heavy models over the recording as the microphone heard it, before any filter: MossFormer2's deep clean over the whole recording, and AV-MossFormer2's target speaker extraction to keep only your voice in the phrases where another voice was heard (the camera's film of your mouth tells it which voice is yours; without a face, the separation model and your voice profile do). Every clip then has three versions, **Original**, **Cleaned** and **Only my voice**, to hear and choose in the editor, and the flagged phrases get a review list like the filler list. Each wait can be skipped. The camera's picture can get a blurred or plain background and even exposure and colour before it goes into the frame.
 - **Nothing lost.** Every phrase is saved to IndexedDB the moment it ends. Close the tab and come back later. The slides, the phrases and your settings are all still there.
@@ -231,9 +232,21 @@ The **Plan** panel shows the two stages (what the browser encodes, what the serv
 
 To close the slides and start over, click the **×** after the deck's name in the top bar. Slides with nothing recorded on them close at once; otherwise the app asks before deleting the phrases, because they cannot be brought back.
 
-### 11. Find, watch or delete an exported video
+### 11. Leave, and come back another day
 
-Click **Exports** in the top bar (or **Exported videos…** at the bottom of the export dialog). Every video the local server has saved is listed, newest first, with its format, size, duration, where it went and which encoder made it. **Play** streams an MP4, MOV or WebM into a player right there; an HLS or DASH folder opens in the file manager instead. **Show in folder** opens Finder or Explorer at the file. **Delete** asks once, then removes the file from disk and the entry from the list; an HLS or DASH folder is deleted only while it holds nothing but the export. A video you moved or deleted outside the app is shown as *not on disk*, with **Remove from list** in place of Delete.
+You do not have to record a deck in one go. Everything you record is mirrored to a folder on this computer the moment it exists (see [Saving your work and resuming](#saving-your-work-and-resuming)), so you can stop after slide 5, close the browser, and pick it up later:
+
+- **Open the app again in the same browser** and click **Resume** on the banner: the deck, the phrases and the slide you were on come back, and a new sitting begins. New phrases go after the ones so far.
+- **Open the app in another browser, or after clearing the browser's storage**: the empty stage lists the recordings saved on this computer. **Continue** loads the deck and every phrase from the disk and puts you on the slide you left; **Start again** begins a new recording of the same deck from slide 1, and the earlier recording stays.
+- **Load the same deck again** (the same PowerPoint file, PDF or images) and the app asks: **Continue from slide N**, or **Start a new recording**.
+
+Each visit is a **sitting**. The timeline marks where each later sitting begins, and the Library counts them. At export, every sitting plays in one video, with its camera pictures and drawings. The × after the deck's name now only closes the slides in this browser: the recording stays on this computer, under **Library › Recordings**, until you delete it there.
+
+### 12. The Library: recordings and exported videos
+
+Click **Library** in the top bar. The **Recordings** tab lists every recording saved on this computer, newest first, with its deck, how many phrases and sittings it has, whether it carries camera pictures or drawings, the slide it was left on, when it was last saved and its size on disk. **Continue** picks it up, **Start again** begins a new recording of the same deck, **Show in folder** opens its folder, and **Delete** removes the folder after asking once (deleting the recording you are working on also closes the slides). The recording you have open is marked *open now*.
+
+The **Exported videos** tab (also reached through **Exported videos…** at the bottom of the export dialog) lists every video the local server has saved, newest first, with its format, size, duration, where it went and which encoder made it. **Play** streams an MP4, MOV or WebM into a player right there; an HLS or DASH folder opens in the file manager instead. **Show in folder** opens Finder or Explorer at the file. **Delete** asks once, then removes the file from disk and the entry from the list; an HLS or DASH folder is deleted only while it holds nothing but the export. A video you moved or deleted outside the app is shown as *not on disk*, with **Remove from list** in place of Delete.
 
 The list is kept by the server (see [Where files go](#where-files-go)), so it survives restarts. Files saved with **Save in browser** never pass through the server and are not listed.
 
@@ -685,15 +698,21 @@ When the two agree, that is the verdict. When one has nothing to say, the other 
 
 ## Saving your work and resuming
 
-Everything is written to IndexedDB (database `one-take`) the moment it exists:
+Your work is kept in two places: the browser, which is the working copy, and a folder on this computer, which mirrors it.
 
-- the slide source (the PDF or the image files), so slides can be re-rendered,
-- every phrase as 16-bit PCM with its slide index, sample rate and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made), and, when the camera was on, its picture as the encoded frames the camera produced (about 4 MB a minute),
-- the project state: phrase order, current slide, your detector settings and the last export settings.
+**In the browser.** Everything is written to IndexedDB (database `one-take`) the moment it exists:
 
-The recording mode (Auto or Press to speak), the theme, the tips setting, the microphone, the noise filter, the Record switch (voice, camera, pen), which camera, where its picture goes and how big it is, the pen's tool, colour and width, and the hardware encoder switch are browser preferences, kept in `localStorage` rather than with the project. The list of exported videos lives on the server side (see [Where files go](#where-files-go)).
+- the slide source (the PDF or the image files) and the hash of what you picked, so slides can be re-rendered and the deck recognised,
+- every phrase as 16-bit PCM with its slide index, sample rate, the sitting it was made in and whether it continues the previous phrase (an edit writes the changed phrases back the moment it is made), and, when the camera was on, its picture as the encoded frames the camera produced (about 4 MB a minute),
+- the project state: phrase order, current slide, the sittings, your detector settings, the last export settings and which recording on disk it belongs to.
 
-Reload the tab or close it and come back, and you continue where you left off. The **×** after the deck's name clears all of it. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted; a warning goes to the console.
+The recording mode (Auto or Press to speak), the theme, the tips setting, the microphone, the noise filter, the Record switch (voice, camera, pen), which camera, where its picture goes and how big it is, the pen's tool, colour and width, and the hardware encoder switch are browser preferences, kept in `localStorage` rather than with the project.
+
+**On this computer.** While the local server runs, the project is mirrored to a folder of its own under the recordings folder (`~/.one-take/recordings/<id>/`, see [Where files go](#where-files-go)). Loading a deck creates the recording and uploads the deck's files. Every phrase and drawing goes up as one file the moment it is stored, hashed with SHA-256; the server keeps a file only when the hash it computed matches the one the app announced, and the manifest records every phrase with its hash, size, slide, length and sitting. The project state follows a moment after each change, and anything still waiting is sent at least every 15 seconds. Edits, deletions and undo are mirrored too. A phrase the disk already holds with the same hash is never sent twice. When the server cannot be reached, the phrases wait in the browser and go up as soon as it answers again; the server pill in the bottom bar says *Recording saved on this computer*, *Saving…*, or how many are waiting.
+
+**Coming back.** Reload the tab or close it and come back, and **Resume** continues where you left off, in a new sitting. In another browser, or after the browser's storage was cleared, the empty stage and **Library › Recordings** list the recordings on this computer: **Continue** downloads the deck and every phrase (each checked against its hash) and puts you on the slide you left; **Start again** begins a new recording of the same deck, copying the deck on the server, and the earlier recording stays. Loading a deck whose hash matches a saved recording asks which of the two you want. If the recording's folder was deleted while you were working, a new one is made and everything is uploaded again.
+
+The **×** after the deck's name closes the slides in this browser; the recording stays on this computer until you delete it in the Library. If IndexedDB is unavailable (some private windows), the app still works but nothing is persisted in the browser; a warning goes to the console. Without the server, the project lives in the browser alone, as before.
 
 ## Design system
 
@@ -730,7 +749,8 @@ Every flag has an environment variable with the same meaning. A flag wins over t
 | `--host`              | `ONE_TAKE_HOST`         | `127.0.0.1`            | Address to listen on.                                                      |
 | `--port`, `-p`        | `ONE_TAKE_PORT`         | `4317`                 | Port.                                                                      |
 | `--dir`, `-d`         | `ONE_TAKE_DIR`          | `~/Movies/One Take`    | Suggested output folder. Created on start.                                 |
-| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), the races' figures (`benchmark.json`), its temporary files, whisper.cpp models and the client models it fetched itself (`models/`), and the studio (`studio/`). |
+| `--data-dir`          | `ONE_TAKE_DATA_DIR`     | `~/.one-take`          | Where the server keeps its list of finished exports (`exports.json`), the races' figures (`benchmark.json`), its temporary files, whisper.cpp models and the client models it fetched itself (`models/`), the studio (`studio/`) and, unless `--recordings-dir` says otherwise, the recordings (`recordings/`). |
+| `--recordings-dir`    | `ONE_TAKE_RECORDINGS_DIR` | `<data dir>/recordings` | Where recordings are mirrored, one folder each (see [Where files go](#where-files-go)).              |
 | `--whisper`           | `ONE_TAKE_WHISPER`      | found on `PATH`        | The whisper program for transcripts: `whisper-cli` (whisper.cpp) or `whisper` (openai-whisper).         |
 | `--whisper-model`     | `ONE_TAKE_WHISPER_MODEL` | `base.en` / first `ggml-*.bin` found | A model name for openai-whisper, a `ggml-*.bin` file for whisper.cpp.                    |
 | `--studio-python`     | `ONE_TAKE_STUDIO_PYTHON` | `<data dir>/studio/venv/bin/python` | A Python with the studio's packages (ClearerVoice-Studio), instead of the environment `npm run studio` makes. |
@@ -763,6 +783,23 @@ Subtitle and transcript files asked for in the export dialog are written next to
 Finished exports are also written to `exports.json` in the data folder (`~/.one-take` by default; `--data-dir` to change it): path, size, format, duration, codecs, the ffmpeg encoder that made each one, and its subtitle files. That file feeds the **Exports** list in the app and survives restarts; the videos themselves stay where they were saved. Deleting from the list removes the file (or the HLS/DASH folder, provided it still holds nothing but the export) and the entry; an entry whose file has gone can be dropped on its own. The file is written whole and renamed into place, and a damaged one is set aside rather than stopping the server.
 
 The data folder also holds `benchmark.json` (the encoder and decoder races' figures, with the ffmpeg they are for and when they were measured; a week old or for another ffmpeg, they are measured again) and `models/`, where a client model the server had to fetch itself lands (see [Quick start](#quick-start)).
+
+**Recordings** live under `recordings/` in the data folder (`--recordings-dir` to put them elsewhere), one folder per recording, named after the moment it was made and a hash (`20261102-153012-1a2b3c4d5e6f`):
+
+```
+recordings/20261102-153012-1a2b3c4d5e6f/
+├── recording.json           the manifest: the deck (name, kind, slide count, the hash of what was picked,
+│                            each file's size and SHA-256), every phrase (slide, length, sitting, voice or
+│                            drawing, camera or not, size, SHA-256), the order, the current slide, the
+│                            sittings, the detector settings, the last export settings
+├── deck/0000-slides.pdf     the deck's files, as the app renders slides from them (the converted PDF for a
+│                            PowerPoint deck)
+└── phrases/<id>.phrase      one file per phrase or drawing, in the app's own format (see below)
+```
+
+Every upload streams through a SHA-256 hash into a temporary name and is renamed into place only when the hash matches the one the app announced in the `x-one-take-sha256` header; a file that did not arrive whole is never kept. The manifest is written whole and renamed into place, writes to one recording are serialised, and a folder whose manifest cannot be read is skipped in the list (and logged) rather than taking the server down. Deleting a recording in the Library removes its folder.
+
+A `.phrase` file is a small JSON header followed by the phrase's binary parts, each on a four-byte boundary: `OTP1`, the header's length, the header (the phrase with every typed array replaced by a reference), then the audio versions (16-bit samples), the camera's encoded frames and the film of the mouth as bytes. Nothing in the phrase is interpreted by the server; the app packs and unpacks it (`packages/client/src/storage/pack.ts`).
 
 ### Security
 
@@ -821,6 +858,17 @@ All endpoints are under `/api`. Bodies and answers are JSON unless noted. The zo
 | `POST`   | `/api/library/:id/reveal`     | Opens the file manager at the export.                                                            |
 | `POST`   | `/api/library/:id/open`       | Opens the export with the default application (the video player, or the folder).                 |
 | `DELETE` | `/api/library/:id`            | Deletes the file or export folder (and its subtitle files) and forgets the record; `?files=0` only forgets it. Returns `{ record, deleted }`. |
+| `GET`    | `/api/recordings`             | Every recording on this computer, newest first: deck name and hash, slides, phrases, seconds, sittings, the slide it was left on, camera and pen flags, size, folder. |
+| `POST`   | `/api/recordings`             | `{ deck: { name, kind, slides, hash, files: [{ name, type, bytes, sha256 }], origin }, deckFrom?, settings? }`. Makes the folder and the manifest; with `deckFrom`, copies the deck's files from that recording (they must match file for file). Returns `201` with the recording. |
+| `GET`    | `/api/recordings/:id`         | The recording: the deck and whether every file of it has landed, every phrase with its hash, the order, the current slide, the sitting and the sittings, the settings, the last export settings, the folder and its size. |
+| `PATCH`  | `/api/recordings/:id`         | The project state, every field optional: `order`, `current`, `sitting`, `sittings`, `settings`, `exportRequest`, `counter`. |
+| `DELETE` | `/api/recordings/:id`         | Deletes the recording's folder.                                                                  |
+| `POST`   | `/api/recordings/:id/reveal`  | Opens the file manager at the recording's folder.                                                |
+| `PUT`    | `/api/recordings/:id/deck/:index` | One of the deck's files as `application/octet-stream`; its size and SHA-256 must be the ones announced. `x-one-take-sha256` may carry the hash too. Returns `{ id, sha256, bytes }`. |
+| `GET`    | `/api/recordings/:id/deck/:index` | The file back, with its type. `404 deck_file_missing` until it has been uploaded.            |
+| `PUT`    | `/api/recordings/:id/phrases/:phrase?slide=&seconds=&sitting=&kind=&camera=&createdAt=` | A phrase's file as `application/octet-stream`; `x-one-take-sha256` is checked against the bytes (`409 hash_mismatch` and nothing kept when it differs). Returns the phrase's manifest entry. A second upload of the same id replaces the first. |
+| `GET`    | `/api/recordings/:id/phrases/:phrase` | The file back, with its hash in `x-one-take-sha256`.                                     |
+| `DELETE` | `/api/recordings/:id/phrases/:phrase` | Forgets the phrase and deletes its file. Returns the recording.                          |
 | `POST`   | `/api/transcribe?language=en&duration=5400` | 16 kHz mono WAV as `application/octet-stream`; answers `201` with a running transcription job. `language` is a code or `auto`. |
 | `POST`   | `/api/studio`                       | A studio job from its manifest (the clips, what each needs, the voice profile); answers `201` with the job, waiting for its uploads. |
 | `PUT`    | `/api/studio/:id/audio`             | Every clip's 16-bit PCM in order, as `application/octet-stream`.                                     |
@@ -986,6 +1034,7 @@ one-take/
     │       ├── performance.ts    performance modes, browser capability probe results, applyPerformanceMode()
     │       ├── resources.ts      resource map per export stage and performance warnings
     │       ├── models.ts         the model files for the voice and lip checks: names, URLs, checksums
+    │       ├── recordings.ts     recordings on disk: the manifest's schemas (the deck, a phrase's details, the state) and the wire types
     │       └── util.ts           formatBytes, formatDuration, sanitizeFileName
     ├── server/               Fastify server (Node 22+)
     │   └── src/
@@ -993,12 +1042,13 @@ one-take/
     │       ├── doctor.ts         `npm run doctor` / `npm run bench`: system check and the encoder and decoder races without the server
     │       ├── config.ts         flags and environment variables, where model files are looked for
     │       ├── app.ts            app factory: loopback checks, error handler, static client, routes
-    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete), transcribe (WAV in, words out), models (a client model file, found or fetched)
+    │       ├── routes/           capabilities and system, fs, convert (.pptx → PDF), exports (chunk upload, finish, SSE, cancel, reveal), library (list, stream, reveal, open, delete), recordings (create, the deck and the phrases up and down with their hashes, the state, delete), transcribe (WAV in, words out), models (a client model file, found or fetched)
     │       ├── services/
     │       │   ├── jobs.ts       JobManager: positioned writes, finish, process (with the hardware decoder when the switch is on), cancel, cleanup
     │       │   ├── ffmpeg.ts     detection, pure buildFfmpegArgs() (-hwaccel included), the test clip, encoder and decoder self-tests and timings, progress parsing, runFfmpeg()
     │       │   ├── models.ts     ModelStore: a client model's verified copy from the built client, public/models, the data folder or the studio, fetched from its publisher when nowhere
     │       │   ├── library.ts    ExportLibrary: finished exports in exports.json, read back with what the disk says now, deleted safely
+    │       │   ├── recordings.ts RecordingStore: one folder per recording (manifest, deck, phrases), uploads hashed as they stream in and kept only when the hash matches, writes serialised per recording
 │       │   ├── transcribe.ts detectTranscription() (whisper-cli or openai-whisper on the PATH), TranscriptionManager (runs it, parses its progress and JSON)
 │       │   ├── studio.ts     detectStudio() (the Python environment and the models), StudioWorker (the long-lived worker process), StudioManager (jobs: uploads cut into clips, the deep clean as one recording, each voice from the cleaned audio)
 │       ├── py/studio.py      the studio worker: ClearerVoice's models over JSON lines (the deep clean, a voice by its face or by the profile, the band merge back to 48 kHz, the second-voice measure)
@@ -1016,14 +1066,14 @@ one-take/
     │       ├── video/            camera.ts (CameraCapture: the live camera, frames encoded with WebCodecs on the microphone's block clock, a phrase's stretch cut out on request), reader.ts (ClipReader: a clip's pieces decoded in order for the export and the preview)
     │       ├── core/             voice.ts (the voice detector: frame maths, live floor, pitch repeat, steadiness), hindsight.ts (the second listen: a finished clip scored with the whole of it in view), denoise.ts (the classic noise filter), fbank.ts (Kaldi's log mel filterbank for the speaker model), speaker.ts (the voice check's arithmetic: cosine, mean vector, the bars, the windows), lips.ts (mouth opening from landmarks, lip activity over a span), identity.ts (the verdict table and its reasons), fillers.ts (the filler-word detector: pauses, steadiness, formants, pitch glide), stretch.ts (time-stretch without pitch change), captions.ts (words → cues, SRT / VTT / transcript writers), fft.ts and biquad.ts, speech.ts (scoring the mic and clips: downsampler, frames), VoiceActivityDetector (vad.ts: lenient live phrases from scores and levels), silence.ts (the cuts: ranges from scores, a verdict for a phrase, removing pauses after the fact), Recorder (auto / press to speak, the review queue), timeline builder, edit.ts (cut, split, replace, insert; the picture follows), clip-video.ts (a phrase's camera picture as pieces of encoded frames: slicing, joining, speed), overlay.ts (where the picture sits on the slide: corners, anywhere, size), ink.ts (the pen: a drawing's strokes with their times, the live session with its rest and gaps, the board a slide shows, slicing and speed, drawing onto a canvas), PCM helpers, I420 slide frames (yuv.ts)
     │       ├── slides/           PDF (pdf.js) and image rasterisation, natural sort
-    │       ├── storage/          IndexedDB project store (idb), prefs (localStorage), the voice profile
+    │       ├── storage/          IndexedDB project store (idb), prefs (localStorage), the voice profile, pack.ts (a phrase as one file), remote.ts (RecordingSync: the mirror of the project on this computer, a queue that retries)
     │       ├── models/           fetch.ts: a model's bytes from the server's /models (which fetches a missing one itself), the cache storage or its publisher, checked; the reasons when none had it
     │       ├── speaker/          voice-check.ts: the speaker model in its worker, fed each live phrase, compared with the profile
     │       ├── vision/           lips.ts: the camera into the lip worker, the samples kept for each phrase's span
     │       ├── workers/          speaker.worker.ts (onnxruntime-web, windows of a phrase), lips.worker.ts (MediaPipe Face Landmarker on the camera's frames)
     │       ├── export/           capabilities, prepare (fillers cut, volume, speed, the audio for the recogniser, word times onto the final timeline), encoder (mediabunny, subtitles, the drawings and the camera picture drawn in), overlay (which camera frame goes with each moment of the timeline), ink-track (which strokes are on screen at each moment), sinks (server / file / memory), runner (prepare, transcribe, encode, finish), real-time fallback
     │       ├── api/              typed client for the server API with SSE and polling
-    │       ├── ui/               layout, cam-stage (the camera picture over the slide: live or played back, drag to move, handle to resize), ink-stage (the drawings over the slide, and the pen's input), pen-bar (the pen's toolbar), editor, export dialog, exports list (library.ts), folder picker, film strip, timeline list (with the voice badges), meter, enroll (the voice enrollment), keyboard, toast, icon (grauity icons + the Newton School mark)
+    │       ├── ui/               layout, cam-stage (the camera picture over the slide: live or played back, drag to move, handle to resize), ink-stage (the drawings over the slide, and the pen's input), pen-bar (the pen's toolbar), editor, export dialog, the Library (library.ts: the Recordings and Exported videos tabs; recordings.ts: the recordings' rows and actions), choice (a question with more than one way forward), folder picker, film strip, timeline list (with the voice badges and the sitting dividers), meter, enroll (the voice enrollment), keyboard, toast, icon (grauity icons + the Newton School mark)
     │       └── styles/           theme.css (Mona Sans, token aliases), grauity.css (grauity components in plain CSS), app.css (layout)
     │   └── public/fonts/         Mona Sans (variable weight, OFL); public/models/ holds the fetched models (not in git)
     └── e2e/                  end-to-end runner (no test framework, no dependencies)
@@ -1032,6 +1082,7 @@ one-take/
             ├── stress.ts         talks through the app for minutes or hours, checking phrases, timelines, heap, resume and export
             ├── camera.ts         the camera with a fake device: placement, size, dragging, a picture on every phrase, the export frame, the editor, the reload
             ├── ink.ts            the pen: a drawing that ends a phrase and one that the pen's rest ends, undo and clear, the board per slide, the strokes in the export's frames, the preview, the editor, the reload
+            ├── recordings.ts     recordings on disk: a deck spoken over in one browser lands phrase by phrase with matching hashes; a fresh browser continues it, records more with the camera and the pen, exports both sittings as one video; a third continues again, starts afresh, is offered the recording when the deck is loaded again, deletes one
             ├── harness.ts        shared: server and Chrome start-up, a page over the DevTools Protocol, real key and mouse input
             ├── cdp.ts            minimal Chrome DevTools Protocol client on Node's WebSocket
             └── make-fixtures.ts  writes the PDFs, the PowerPoint deck and the WAVs of speech (macOS text-to-speech) with pauses, typing and clicks
@@ -1060,6 +1111,7 @@ Dependencies are few on purpose. Client: `mediabunny` (muxing and WebCodecs), `p
 | `npm run models`       | Fetches the speaker model, the face model and the selfie segmenter (29 MB) into `packages/client/public/models`, checking each against its SHA-256; the server serves them from there, before or after the build. Optional when the machine is online at the first mic start: the server fetches a missing one itself into `~/.one-take/models`. |
 | `npm run studio`       | Makes the studio's Python environment under the server's data folder and fetches its models (about 1.7 GB of checkpoints plus PyTorch); run once, then restart the server. |
 | `npm run e2e:studio`   | Builds, then checks the studio and the clip versions in headless Chrome: the raw copy in step with the filtered one, the editor's switch, an export with the deep clean and the voice step, the skip. Where this machine has no studio it checks the greyed-out state. |
+| `npm run e2e:recordings` | Builds, then checks recordings on disk across three headless Chrome profiles: the phrases land with matching hashes, a browser with empty storage continues from the slide left, both sittings export as one video, start again, the choice when the same deck is loaded, delete. |
 
 ### Tooling
 

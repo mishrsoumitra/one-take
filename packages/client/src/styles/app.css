@@ -2648,3 +2648,194 @@ button.x .ico {
     max-width: calc(100% - 32px);
   }
 }
+
+/* ---------------------------------------------------------------- recordings on this computer */
+/* the server pill also says how the mirror stands */
+#meterWrap .pill.server.saving .dot {
+  background: var(--yellow-400);
+}
+#meterWrap .pill.server.behind {
+  border-color: var(--border-subtle-error-default);
+}
+#meterWrap .pill.server.behind .dot {
+  background: var(--error-500);
+}
+
+/* the Library's two tabs */
+.library .tabs {
+  display: flex;
+  gap: var(--spacing-4px);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--spacing-10px);
+}
+.library .tab {
+  border: 0;
+  border-radius: var(--corner-radius-8px) var(--corner-radius-8px) 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: var(--spacing-6px) var(--spacing-12px);
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  box-shadow: none;
+  gap: var(--spacing-6px);
+}
+.library .tab:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel2);
+}
+.library .tab[aria-selected='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.library .pane[hidden] {
+  display: none;
+}
+.library .rec.current {
+  border-color: var(--ok-line);
+}
+.library .rec .actions > button.continue:disabled {
+  opacity: 0.55;
+}
+
+/* the recordings on the empty stage */
+#saved {
+  width: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-8px);
+  margin-top: var(--spacing-6px);
+  text-align: left;
+}
+#saved .saved-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-8px);
+  color: var(--muted);
+  font-size: var(--font-size-13px, 13px);
+}
+#saved .saved-head button {
+  color: var(--accent-text);
+}
+.saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-6px);
+}
+.saved-rec {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: var(--spacing-10px);
+  align-items: center;
+  padding: var(--spacing-8px) var(--spacing-10px);
+  border-radius: var(--corner-radius-8px);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+}
+.saved-rec .ico-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--corner-radius-8px);
+  background: var(--bg);
+  color: var(--accent-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.saved-rec .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.saved-rec .meta .name {
+  font-size: var(--font-size-13px, 13px);
+  font-weight: var(--font-weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-rec .meta small {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-rec .actions {
+  display: flex;
+  gap: var(--spacing-6px);
+  margin: 0;
+}
+.saved-rec .actions > button {
+  height: 28px;
+  min-height: 28px;
+  padding: 2px var(--spacing-8px);
+  font-size: var(--font-size-12px);
+  gap: var(--spacing-4px);
+}
+
+/* a divider in the timeline where a later sitting begins */
+.sitting {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-8px);
+  padding: var(--spacing-8px) var(--spacing-6px) var(--spacing-2px);
+  color: var(--muted);
+  font-size: var(--font-size-11px);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.sitting::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  align-self: center;
+}
+.sitting small {
+  font-weight: var(--font-weight-regular);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--font-size-11px);
+}
+
+/* a question with more than one way forward */
+.choice .box {
+  width: 480px;
+}
+.choice p {
+  margin: 0 0 var(--spacing-12px);
+  color: var(--muted);
+  font-size: var(--font-size-14px);
+  line-height: 1.5;
+}
+.choice .choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-8px);
+}
+.choice .choice-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  height: auto;
+  min-height: 0;
+  padding: var(--spacing-10px) var(--spacing-14px);
+  text-align: left;
+  white-space: normal;
+}
+.choice .choice-btn .label {
+  font-weight: var(--font-weight-semibold);
+}
+.choice .choice-btn small {
+  color: var(--muted);
+  font-size: var(--font-size-12px);
+  font-weight: var(--font-weight-regular);
+}
+.choice .choice-btn.primary small {
+  color: inherit;
+  opacity: 0.85;
+}

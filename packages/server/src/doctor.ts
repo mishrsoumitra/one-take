@@ -182,6 +182,7 @@ async function main(): Promise<number> {
     platform: process.platform,
     homeDirectory: os.homedir(),
     defaultDirectory: directory,
+    recordingsDirectory: path.join(directory, 'recordings'),
     ffmpeg,
     ffprobePath: null,
     shortcuts: [],

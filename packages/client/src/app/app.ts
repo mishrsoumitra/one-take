@@ -7,17 +7,21 @@ import {
   planExport,
   stripExtension,
   type BrowserCapabilities,
+  type CreateRecording,
   type ExportRequest,
+  type RecordingSitting,
+  type RecordingSummary,
   type ServerCapabilities,
   type StudioClipResult,
 } from '@one-take/shared';
 
-import { ApiClient } from '../api/client.js';
+import { ApiClient, ApiRequestError } from '../api/client.js';
 import { MicCapture, type NoiseFilterMode } from '../audio/mic.js';
 import { PreviewPlayer } from '../audio/preview.js';
 import { RAW_MAX_SHIFT } from '../audio/take.js';
 import { faceTrack } from '../core/faces.js';
 import { fmtSec, fmtTime } from '../core/format.js';
+import { hashFiles, sha256Hex } from '../core/hash.js';
 import { judgeSpeaker, type SpeakerVerdict } from '../core/identity.js';
 import {
   boardBefore,
@@ -61,6 +65,7 @@ import { type FetchProgress } from '../models/fetch.js';
 import { loadSlides, releaseSlides, slideSourceFromFiles } from '../slides/loader.js';
 import { VoiceCheck, type VoiceResult } from '../speaker/voice-check.js';
 import { ProjectStore } from '../storage/db.js';
+import { unpackSegment } from '../storage/pack.js';
 import {
   loadPrefs,
   recordsCamera,
@@ -70,9 +75,11 @@ import {
   type Theme,
 } from '../storage/prefs.js';
 import { loadProfile, saveProfile } from '../storage/profile.js';
+import { RecordingSync, type SyncState } from '../storage/remote.js';
 import { CamStage } from '../ui/cam-stage.js';
+import { Choice } from '../ui/choice.js';
 import { Confirm } from '../ui/confirm.js';
-import { h, setLabel, syncRangeFill } from '../ui/dom.js';
+import { h, replaceChildren, setLabel, syncRangeFill } from '../ui/dom.js';
 import { Editor } from '../ui/editor.js';
 import { Enroll, type EnrollClip } from '../ui/enroll.js';
 import { ExportDialog } from '../ui/export-dialog.js';
@@ -82,9 +89,10 @@ import { setButtonIcon } from '../ui/icon.js';
 import { InkStage } from '../ui/ink-stage.js';
 import { installKeyboard } from '../ui/keyboard.js';
 import { buildLayout, type LayoutRefs } from '../ui/layout.js';
-import { Library } from '../ui/library.js';
+import { Library, type LibraryTab } from '../ui/library.js';
 import { LevelMeter } from '../ui/meter.js';
 import { PenBar } from '../ui/pen-bar.js';
+import { ago, describeRecording, RecordingsPanel, savedRecordingRow } from '../ui/recordings.js';
 import { TimelineList } from '../ui/timeline-list.js';
 import { Toast } from '../ui/toast.js';
 import { Welcome } from '../ui/welcome.js';
@@ -154,8 +162,25 @@ export class App {
   private readonly film: Filmstrip;
   private readonly list: TimelineList;
   private readonly exportDialog: ExportDialog;
-  /** The exported videos: list, play, show in folder, delete. */
+  /** The Library: the recordings saved on this computer, and the exported videos. */
   private readonly library: Library;
+  /** The Recordings tab: continue, start again, show, delete. */
+  private readonly recordings: RecordingsPanel;
+  /** The mirror of the project on this computer (see `storage/remote.ts`). */
+  private readonly sync: RecordingSync;
+  /** A question with more than one way forward (continue a recording, or start again). */
+  private readonly choice: Choice;
+  /** The recording on this computer this project is mirrored to, once there is one. */
+  private recordingId: string | null = null;
+  /**
+   * The sitting the project is in: 1 when a deck is first opened, one more each time the recording
+   * is opened again. Each phrase is tagged with it; `sittings` lists the ones that recorded something.
+   */
+  private sitting = 1;
+  private sittings: RecordingSitting[] = [];
+  private syncState: SyncState = { kind: 'off', reason: null };
+  /** The recordings on this computer, as last listed for the empty stage. */
+  private savedRecordings: RecordingSummary[] = [];
   private readonly editor: Editor;
   private readonly folderPicker: FolderPicker;
   private readonly welcome: Welcome;
@@ -195,6 +220,12 @@ export class App {
   private micStarting: Promise<void> | null = null;
   /** The microphone has been opened once: the browser now tells the microphones apart by name. */
   private micOpened = false;
+  /**
+   * The last block came through a filter, so the tape's copy differs from the phrase and is worth
+   * keeping. Read when a phrase is stored, which may be after the mic has stopped (its review was
+   * still running): the mic's own engine says `off` by then, the tape is still there.
+   */
+  private filteredBlocks = false;
   private sampleRate = 48000;
   private segmentCounter = 0;
   private metaTimer = 0;
@@ -222,6 +253,14 @@ export class App {
     this.applyTheme(this.prefs.theme);
     this.toast = new Toast(document.body);
     this.confirm = new Confirm(document.body);
+    this.choice = new Choice(document.body);
+    this.sync = new RecordingSync(this.api, {
+      onState: (state) => {
+        this.syncState = state;
+        this.updateSyncPill();
+      },
+      onLost: (id) => this.onRecordingLost(id),
+    });
     this.camera = new CameraCapture({ onState: (state, error) => this.onCameraState(state, error) });
     // the drawings go under the camera picture, as in the video
     this.inkStage = new InkStage({
@@ -308,7 +347,7 @@ export class App {
       profile: () => this.profile,
       onVersion: (seg, kind, pcm) => this.keepVersion(seg.id, kind, pcm),
       onTwoVoices: (seg, result) => this.flagTwoVoices(seg.id, result),
-      onOpenLibrary: () => this.library.open(),
+      onOpenLibrary: () => this.library.open('exports'),
       onExportingChange: (exporting) => {
         this.store.state.exporting = exporting;
         this.syncPaused();
@@ -321,11 +360,22 @@ export class App {
         this.recorder?.end();
       },
     });
+    this.recordings = new RecordingsPanel({
+      api: this.api,
+      serverCaps: () => this.serverCaps,
+      confirm: this.confirm,
+      toast: this.toast,
+      currentId: () => this.recordingId,
+      onContinue: (r) => void this.continueRecording(r.id),
+      onStartAgain: (r) => void this.startAgain(r),
+      onDeletedCurrent: (id) => this.forgetRecording(id),
+    });
     this.library = new Library(document.body, {
       api: this.api,
       serverCaps: () => this.serverCaps,
       confirm: this.confirm,
       toast: this.toast,
+      recordings: this.recordings,
     });
     this.editor = new Editor(document.body, {
       slides: () => this.store.state.slides,
@@ -398,19 +448,24 @@ export class App {
     if (meta?.exportRequest) this.exportRequest = normalizeExportRequest(meta.exportRequest, null);
     if (files || segments.length > 0) {
       const dur = segments.reduce((a, s) => a + s.pcm.length / s.sampleRate, 0);
-      this.refs.restoreText.textContent = `Previous session found: ${segments.length} phrases, ${fmtTime(dur)} recorded.`;
+      this.refs.restoreText.textContent = `Previous session found: ${segments.length} phrases, ${fmtTime(dur)} recorded${meta?.recordingId ? ', also saved on this computer' : ''}.`;
       this.refs.restore.classList.add('on');
+      this.refs.saved.hidden = true;
       this.refs.btnRestore.onclick = () => {
         this.refs.restore.classList.remove('on');
         void this.restore(meta, files, segments);
       };
       this.refs.btnDiscard.onclick = () => {
         this.refs.restore.classList.remove('on');
-        void this.db.clear();
+        void this.db.clear().then(() => this.showSavedRecordings());
+        if (meta?.recordingId) {
+          this.toast.show('Dropped from this browser. The recording stays on this computer, under Library.');
+        }
       };
-    } else if (!this.prefs.welcomeSeen) {
+    } else {
+      void this.showSavedRecordings();
       // First visit with nothing to resume: explain the three steps before anything else.
-      this.openWelcome();
+      if (!this.prefs.welcomeSeen) this.openWelcome();
     }
     this.updateSteps();
     this.updateCoach();
@@ -448,7 +503,50 @@ export class App {
         this.exportRequest.destination.directory = this.serverCaps.defaultDirectory;
       }
     }
+    this.updateSyncPill();
+    void this.showSavedRecordings();
     return this.serverCaps;
+  }
+
+  /**
+   * The server pill in the bottom bar also says how the recording on this computer stands: saved,
+   * saving, or waiting for the server.
+   */
+  private updateSyncPill(): void {
+    const pill = this.refs.serverPill;
+    const caps = this.serverCaps;
+    pill.classList.remove('saving', 'behind');
+    if (!caps) return;
+    const base = caps.ffmpeg ? 'Saves to this computer' : 'Saves to this computer · no ffmpeg';
+    const state = this.syncState;
+    let text = base;
+    let note = '';
+    if (this.recordingId) {
+      switch (state.kind) {
+        case 'saved':
+          text = 'Recording saved on this computer';
+          note = `Every phrase and the project state are mirrored to ${caps.recordingsDirectory}; this browser's copy can be dropped and the recording continued from the Library.`;
+          break;
+        case 'saving':
+          text = `Saving to this computer (${state.pending})…`;
+          pill.classList.add('saving');
+          break;
+        case 'waiting':
+          text = `${state.pending} to save · server not answering`;
+          note = `The last attempt failed (${state.reason}). The phrases wait in this browser and go up as soon as the server answers again.`;
+          pill.classList.add('behind');
+          break;
+        case 'off':
+          text = base;
+          break;
+      }
+    } else if (state.kind === 'off' && state.reason) {
+      text = `Recording not mirrored: ${state.reason}`;
+      note = 'The project is kept in this browser alone; the local server could not take it.';
+      pill.classList.add('behind');
+    }
+    this.refs.serverText.textContent = text;
+    if (note) pill.title = note;
   }
 
   /** One line under the drop zone saying which deck formats can be loaded directly right now. */
@@ -471,6 +569,7 @@ export class App {
     };
     r.btnHelp.onclick = () => this.openWelcome();
     r.btnLibrary.onclick = () => this.library.open();
+    r.btnSavedAll.onclick = () => this.library.open('recordings');
     r.btnTheme.onclick = () => {
       this.prefs = savePrefs({ theme: this.prefs.theme === 'dark' ? 'light' : 'dark' });
       this.applyTheme(this.prefs.theme);
@@ -604,7 +703,8 @@ export class App {
       () => this.dialogOpen(),
     );
     window.addEventListener('beforeunload', (e) => {
-      if (this.store.state.armed || this.store.state.exporting) {
+      // a phrase still on its way to the disk is kept in this browser, but the user may rather wait
+      if (this.store.state.armed || this.store.state.exporting || this.sync.pending > 0) {
         e.preventDefault();
       }
     });
@@ -623,6 +723,7 @@ export class App {
       this.editor.isOpen ||
       this.library.isOpen ||
       this.confirm.isOpen ||
+      this.choice.isOpen ||
       this.enroll.isOpen
     );
   }
@@ -635,13 +736,374 @@ export class App {
     }
     this.welcome.close();
     if (this.store.state.segments.length > 0 && !this.confirmReplace()) return;
+    // the hash of what was picked names the deck across sittings
+    const hash = await hashFiles(
+      picked.kind === 'presentation' ? [picked.file] : picked.files.map((f) => f.blob),
+    ).catch(() => null);
+    // a recording of this deck is already on this computer: continue it, or start again on the deck
+    if (hash && this.store.state.segments.length === 0 && this.serverCaps) {
+      const match = await this.matchingRecording(hash);
+      if (match) {
+        const answer = await this.choice.ask({
+          title: 'You have recorded this deck before',
+          message: `${match.name}: ${describeRecording(match)}, saved ${ago(match.updatedAt)}. Continue where you left off, or start a new recording of the same deck? The earlier recording stays on this computer either way.`,
+          options: [
+            {
+              id: 'continue',
+              label: `Continue from slide ${Math.max(match.lastSlide, match.current) + 1}`,
+              detail: 'The phrases so far come back and you go on from there.',
+              kind: 'primary',
+            },
+            {
+              id: 'again',
+              label: 'Start a new recording',
+              detail: 'From the first slide, with nothing recorded yet.',
+            },
+          ],
+          cancel: 'Not now',
+        });
+        if (answer === null) return;
+        if (answer === 'continue') {
+          await this.continueRecording(match.id);
+          return;
+        }
+      }
+    }
     const source = picked.kind === 'presentation' ? await this.convertPresentation(picked) : picked;
     if (!source) return;
+    if (hash) source.hash = hash;
     await this.loadSlideSource(source);
     await this.db.putSlideSource(source);
     this.saveMeta();
     // the mic is next: load what it will need now, after the gesture that chose the slides
     this.warmChecks();
+    // and the recording on this computer begins: the deck now, the phrases as they come
+    await this.openRecording(source, null);
+  }
+
+  /** The most recently worked-on recording of this deck on this computer, if any. */
+  private async matchingRecording(hash: string): Promise<RecordingSummary | null> {
+    try {
+      const all = await this.api.listRecordings();
+      this.savedRecordings = all;
+      return all.find((r) => r.deckHash === hash && r.deckReady && r.id !== this.recordingId) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* The recording on this computer                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Mirrors the project to a new recording on this computer: the deck goes up now (or is copied
+   * from `deckFrom`, another recording of the same deck), the phrases as they come. Without the
+   * server the project stays in this browser alone, and the pill says so.
+   */
+  private async openRecording(source: SlideSource, deckFrom: string | null): Promise<void> {
+    const previous = this.recordingId;
+    this.sync.detach();
+    this.recordingId = null;
+    if (this.store.state.segments.length === 0) {
+      this.sitting = 1;
+      this.sittings = [];
+      this.list.setSittings(this.sittings);
+      // a recording with nothing in it, left behind for this one, is not worth a folder
+      if (previous) void this.api.deleteRecording(previous).catch(() => undefined);
+    }
+    if (!this.serverCaps) {
+      this.updateSyncPill();
+      return;
+    }
+    try {
+      const files = await Promise.all(
+        source.files.map(async (f) => ({
+          name: f.name,
+          type: f.type,
+          bytes: f.blob.size,
+          sha256: await sha256Hex(f.blob),
+        })),
+      );
+      const deck: CreateRecording['deck'] = {
+        name: this.deckLabel(source, this.store.state.slides.length),
+        kind: source.kind,
+        slides: Math.max(1, this.store.state.slides.length),
+        hash: source.hash ?? (await hashFiles(source.files.map((f) => f.blob))),
+        files,
+        origin: source.origin ?? null,
+      };
+      const settings = { ...this.store.settings };
+      const sittings = this.sittings.length > 0 ? this.sittings : undefined;
+      let rec;
+      try {
+        rec = await this.api.createRecording({ deck, deckFrom: deckFrom ?? undefined, settings, sittings });
+      } catch (error) {
+        // the other recording's deck is not this one after all: upload it instead
+        if (!(error instanceof ApiRequestError && error.code === 'deck_differs')) throw error;
+        rec = await this.api.createRecording({ deck, settings, sittings });
+      }
+      if (!rec.deckReady) {
+        for (const [i, f] of source.files.entries()) {
+          const sha = files[i]?.sha256;
+          if (sha) await this.api.uploadRecordingDeck(rec.id, i, f.blob, sha);
+        }
+      }
+      this.recordingId = rec.id;
+      this.sync.attach(rec.id, []);
+      // phrases recorded while the deck was going up, or carried over under a new deck, follow now
+      for (const seg of this.store.state.segments) this.sync.putSegment(seg);
+      this.saveMeta();
+    } catch (error) {
+      console.warn('the recording could not be started on this computer', error);
+      this.sync.detach((error as Error).message);
+      this.toast.show(
+        `This recording is not being saved to this computer: ${(error as Error).message}. It is still kept in this browser.`,
+      );
+    }
+    this.updateSyncPill();
+  }
+
+  /**
+   * Picks the mirror up again after a reload (Resume): what the browser has that the disk lacks, or
+   * holds differently, goes up; what the disk has that the browser dropped meanwhile is deleted.
+   * A recording whose folder is gone, or a project from before recordings existed, gets a new one.
+   */
+  private async reattachRecording(id: string | null): Promise<void> {
+    if (!this.serverCaps) {
+      this.recordingId = id;
+      this.updateSyncPill();
+      return;
+    }
+    if (id) {
+      try {
+        const rec = await this.api.getRecording(id);
+        this.recordingId = id;
+        this.sync.attach(id, rec.phrases);
+        const onDisk = new Map(rec.phrases.map((p) => [p.id, p]));
+        for (const seg of this.store.state.segments) {
+          const there = onDisk.get(seg.id);
+          // the file's hash is only known once it is packed; the manifest's few facts catch most
+          // changes made while the server was away (a cut, a move, a re-record), and a phrase that
+          // changed in some other way goes up with its next change
+          const same =
+            there?.slide === seg.slide &&
+            Math.abs(there.seconds - segmentDuration(seg)) < 1e-6 &&
+            there.camera === Boolean(seg.video) &&
+            there.kind === (seg.ink ? 'ink' : 'voice');
+          if (!same) this.sync.putSegment(seg);
+        }
+        const here = new Set(this.store.state.segments.map((seg) => seg.id));
+        for (const p of rec.phrases) if (!here.has(p.id)) this.sync.deleteSegment(p.id);
+        this.saveMeta();
+        this.updateSyncPill();
+        return;
+      } catch (error) {
+        if (!(error instanceof ApiRequestError && error.status === 404)) {
+          this.recordingId = id;
+          this.sync.detach((error as Error).message);
+          this.toast.show(`The recording on this computer could not be reached: ${(error as Error).message}`);
+          return;
+        }
+        this.toast.show('The recording’s folder is gone from this computer; a new one is being made.');
+      }
+    }
+    const source = this.store.state.slideSource;
+    if (source) await this.openRecording(source, null);
+  }
+
+  /** The recording's folder was deleted on disk while this project was open: a new one takes over. */
+  private onRecordingLost(id: string): void {
+    if (this.recordingId !== id) return;
+    this.recordingId = null;
+    this.updateSyncPill();
+    const source = this.store.state.slideSource;
+    this.toast.show('The recording’s folder is gone from this computer; a new one is being made.');
+    if (source) void this.openRecording(source, null);
+  }
+
+  /** The recording open in the app was deleted from the Library: this browser lets go of it too. */
+  private forgetRecording(id: string): void {
+    if (this.recordingId !== id) return;
+    this.sync.detach();
+    this.recordingId = null;
+    void this.clearProject();
+  }
+
+  /** The first phrase of a sitting registers it, with the slide it began on. */
+  private ensureSitting(slide: number): void {
+    if (this.sittings.some((x) => x.n === this.sitting)) return;
+    this.sittings.push({ n: this.sitting, startedAt: new Date().toISOString(), fromSlide: slide });
+    this.list.setSittings(this.sittings);
+  }
+
+  /**
+   * The recordings saved on this computer, on the empty stage, so one can be continued with a
+   * click. Hidden while a deck is loaded, while the browser has its own session to resume, and
+   * without the server.
+   */
+  private async showSavedRecordings(): Promise<void> {
+    const r = this.refs;
+    const busy = () => this.store.state.slides.length > 0 || r.restore.classList.contains('on');
+    if (!this.serverCaps || busy()) {
+      r.saved.hidden = true;
+      return;
+    }
+    try {
+      this.savedRecordings = await this.api.listRecordings();
+    } catch {
+      this.savedRecordings = [];
+    }
+    const ready = this.savedRecordings.filter((x) => x.deckReady && x.phrases > 0);
+    r.saved.hidden = ready.length === 0 || busy();
+    replaceChildren(
+      r.savedList,
+      ...ready.slice(0, 3).map((x) =>
+        savedRecordingRow(x, {
+          onContinue: (rec) => void this.continueRecording(rec.id),
+          onStartAgain: (rec) => void this.startAgain(rec),
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Continues a recording from this computer: the deck (unless the same one is loaded), every
+   * phrase, and where it was left. The browser's copy, if any, is replaced; a new sitting begins.
+   */
+  async continueRecording(id: string): Promise<void> {
+    const s = this.store.state;
+    if (s.exporting) return;
+    if (s.armed) this.stopMic();
+    if (s.previewing) this.stopPreview();
+    this.welcome.close();
+    this.library.close();
+    this.showLoading('Loading the recording…');
+    try {
+      // what this browser holds of another recording is on its way to the disk: let it land first
+      if (this.recordingId && this.recordingId !== id && this.sync.pending > 0) {
+        this.refs.loadingText.textContent = 'Saving the last phrases first…';
+        await this.sync.flush();
+      }
+      const rec = await this.api.getRecording(id);
+      if (!rec.deckReady) throw new Error('its deck did not finish uploading; load the deck file instead');
+      let source = s.slideSource;
+      if (source?.hash !== rec.deck.hash || source.files.length !== rec.deck.files.length) {
+        const files: SlideSource['files'] = [];
+        for (const [i, f] of rec.deck.files.entries()) {
+          this.refs.loadingText.textContent = `Loading the deck (${i + 1} of ${rec.deck.files.length})…`;
+          files.push({ name: f.name, type: f.type, blob: await this.api.fetchRecordingDeck(id, i) });
+        }
+        source = { kind: rec.deck.kind, files, hash: rec.deck.hash };
+        if (rec.deck.origin) source.origin = rec.deck.origin;
+      }
+      const segments: Segment[] = [];
+      for (const [i, p] of rec.phrases.entries()) {
+        this.refs.loadingText.textContent = `Loading phrase ${i + 1} of ${rec.phrases.length}…`;
+        const bytes = await this.api.fetchRecordingPhrase(id, p.id);
+        if ((await sha256Hex(bytes)) !== p.sha256) {
+          throw new Error(`phrase ${i + 1} on disk does not match its hash; the file may be damaged`);
+        }
+        const seg = unpackSegment(bytes);
+        segments.push(seg.id === p.id ? seg : { ...seg, id: p.id });
+      }
+      // the browser's copy gives way to the one on disk
+      this.sync.detach();
+      this.recordingId = null;
+      await this.db.clear();
+      await this.db.putSlideSource(source);
+      for (const seg of segments) await this.db.putSegment(seg);
+      this.exportRequest = normalizeExportRequest(
+        rec.exportRequest ?? this.exportRequest,
+        this.serverCaps?.defaultDirectory ?? null,
+      );
+      const meta: ProjectMeta = {
+        order: rec.phrases.map((p) => p.id),
+        current: rec.current,
+        settings: rec.settings,
+        savedAt: Date.now(),
+        segmentCounter: rec.counter,
+        exportRequest: this.exportRequest,
+        recordingId: id,
+        sitting: rec.sitting,
+        sittings: rec.sittings,
+      };
+      await this.db.putMeta(meta);
+      s.segments = [];
+      s.deleted = [];
+      this.pendingInk = [];
+      this.hideLoading();
+      await this.restore(meta, source, segments);
+    } catch (error) {
+      console.error(error);
+      this.toast.show(`Could not continue the recording: ${(error as Error).message}`);
+    } finally {
+      this.hideLoading();
+    }
+  }
+
+  /**
+   * A new recording of the same deck, from the first slide. What this browser holds stays on this
+   * computer as the recording it was (its last phrases are sent first), then gives way.
+   */
+  async startAgain(r: RecordingSummary): Promise<void> {
+    const s = this.store.state;
+    if (s.exporting) return;
+    if (s.segments.length > 0) {
+      const ok = await this.confirm.ask({
+        title: 'Start a new recording?',
+        message: `The ${s.segments.length === 1 ? 'phrase' : `${s.segments.length} phrases`} in this browser (${fmtTime(totalDuration(s.segments))}) ${this.recordingId ? 'stay on this computer as the recording they belong to, and leave this browser' : 'leave this browser and cannot be brought back'}. The new recording starts on slide 1 of ${r.name}.`,
+        confirm: 'Start again',
+        cancel: 'Keep working',
+      });
+      if (!ok) return;
+    }
+    if (s.armed) this.stopMic();
+    if (s.previewing) this.stopPreview();
+    this.welcome.close();
+    this.library.close();
+    this.showLoading('Starting a new recording…');
+    try {
+      if (this.recordingId && this.sync.pending > 0) {
+        this.refs.loadingText.textContent = 'Saving the last phrases first…';
+        await this.sync.flush();
+      }
+      let source = s.slideSource;
+      if (source?.hash !== r.deckHash) {
+        const rec = await this.api.getRecording(r.id);
+        const files: SlideSource['files'] = [];
+        for (const [i, f] of rec.deck.files.entries()) {
+          this.refs.loadingText.textContent = `Loading the deck (${i + 1} of ${rec.deck.files.length})…`;
+          files.push({ name: f.name, type: f.type, blob: await this.api.fetchRecordingDeck(r.id, i) });
+        }
+        source = { kind: rec.deck.kind, files, hash: rec.deck.hash };
+        if (rec.deck.origin) source.origin = rec.deck.origin;
+      }
+      this.sync.detach();
+      this.recordingId = null;
+      await this.db.clear();
+      this.endInk();
+      s.segments = [];
+      s.deleted = [];
+      s.current = 0;
+      this.pendingInk = [];
+      if (source !== s.slideSource) await this.loadSlideSource(source);
+      else this.showSlide(0);
+      await this.db.putSlideSource(source);
+      this.list.render(s.segments, s.slides, false);
+      this.updateSlideStats();
+      this.updateButtons();
+      this.syncInk();
+      this.hideLoading();
+      await this.openRecording(source, r.id);
+      this.saveMeta();
+      this.toast.show(`A new recording of ${r.name}. The earlier one stays under Library › Recordings.`);
+    } catch (error) {
+      console.error(error);
+      this.toast.show(`Could not start again: ${(error as Error).message}`);
+    } finally {
+      this.hideLoading();
+    }
   }
 
   /**
@@ -1199,7 +1661,7 @@ export class App {
       if (!verdict) return;
       seg.speaker = verdict;
       if (!this.store.state.segments.includes(seg)) return; // deleted meanwhile
-      void this.db.putSegment(seg);
+      this.persistSegment(seg);
       this.list.render(this.store.state.segments, this.store.state.slides, false);
     });
   }
@@ -1428,6 +1890,7 @@ export class App {
 
   /** A drawing as a clip: silence for the time it took, with the strokes to draw over it. */
   private addInkSegment(slide: number, ink: ClipInk, durationMs: number): Segment {
+    this.ensureSitting(slide);
     const seg: Segment = {
       id: this.nextSegmentId(),
       slide,
@@ -1436,11 +1899,12 @@ export class App {
       joined: false,
       prevId: null,
       createdAt: Date.now(),
+      sitting: this.sitting,
       video: null,
       ink,
     };
     this.store.state.segments.push(seg);
-    void this.db.putSegment(seg);
+    this.persistSegment(seg);
     this.saveMeta();
     this.list.render(this.store.state.segments, this.store.state.slides, true);
     this.updateSlideStats();
@@ -1737,6 +2201,7 @@ export class App {
   private onBlock(block: Float32Array): void {
     const recorder = this.recorder;
     if (!recorder) return;
+    this.filteredBlocks = this.mic.engine !== 'off';
     const scorer = this.scorer;
     scorer?.push(block, this.sampleRate);
     recorder.process(block, scorer?.prob ?? null);
@@ -1773,6 +2238,7 @@ export class App {
     scroll: boolean,
     at: BlockRange,
   ): Segment {
+    this.ensureSitting(slide);
     const seg: Segment = {
       id: this.nextSegmentId(),
       slide,
@@ -1781,6 +2247,7 @@ export class App {
       joined,
       prevId,
       createdAt: Date.now(),
+      sitting: this.sitting,
       // the camera's picture for exactly these blocks, when it was on
       video: this.camera.recording ? this.camera.take(at.from * BLOCK_MS, at.to * BLOCK_MS) : null,
     };
@@ -1790,7 +2257,7 @@ export class App {
     const faces = this.facesOf(at);
     if (faces) seg.faces = faces;
     this.store.state.segments.push(seg);
-    void this.db.putSegment(seg);
+    this.persistSegment(seg);
     this.saveMeta();
     this.list.render(this.store.state.segments, this.store.state.slides, scroll);
     this.updateSlideStats();
@@ -1802,7 +2269,7 @@ export class App {
   /** The phrase as the microphone heard it, from the tape, lined up with the filtered blocks; null with no filter on. */
   private rawOf(blocks: readonly Float32Array[], at: BlockRange): Int16Array | null {
     const tape = this.tape;
-    if (!tape || this.mic.engine === 'off') return null;
+    if (!tape || !this.filteredBlocks) return null;
     let n = 0;
     for (const b of blocks) n += b.length;
     const filtered = new Float32Array(n);
@@ -1841,9 +2308,21 @@ export class App {
     const index = s.segments.findIndex((seg) => seg.id === next.id);
     if (index < 0) return false;
     s.segments[index] = next;
-    void this.db.putSegment(next);
+    this.persistSegment(next);
     this.list.render(s.segments, s.slides, false);
     return true;
+  }
+
+  /** Writes a phrase to this browser's store and queues it for the recording on this computer. */
+  private persistSegment(seg: Segment): void {
+    void this.db.putSegment(seg);
+    this.sync.putSegment(seg);
+  }
+
+  /** Removes a phrase from this browser's store and from the recording on this computer. */
+  private forgetSegment(id: string): void {
+    void this.db.deleteSegment(id);
+    this.sync.deleteSegment(id);
   }
 
   /** A version from the studio landed for a phrase: kept with it, so it plays and exports from now on. */
@@ -1919,7 +2398,7 @@ export class App {
     const seg = s.segments[index];
     if (!seg) return;
     s.segments.splice(index, 1);
-    void this.db.deleteSegment(seg.id);
+    this.forgetSegment(seg.id);
     s.deleted.push({ seg, index });
     this.saveMeta();
     this.list.render(s.segments, s.slides, false);
@@ -1964,7 +2443,7 @@ export class App {
     const d = s.deleted.pop();
     if (!d) return;
     s.segments.splice(Math.min(d.index, s.segments.length), 0, d.seg);
-    void this.db.putSegment(d.seg);
+    this.persistSegment(d.seg);
     this.saveMeta();
     this.list.render(s.segments, s.slides, false);
     this.updateSlideStats();
@@ -2011,8 +2490,18 @@ export class App {
     const s = this.store.state;
     const before = new Map(s.segments.map((seg) => [seg.id, seg]));
     const after = new Map(next.map((seg) => [seg.id, seg]));
-    for (const id of before.keys()) if (!after.has(id)) void this.db.deleteSegment(id);
-    for (const [id, seg] of after) if (before.get(id) !== seg) void this.db.putSegment(seg);
+    for (const id of before.keys()) if (!after.has(id)) this.forgetSegment(id);
+    for (const [id, seg] of after) {
+      if (before.get(id) === seg) continue;
+      // a clip the editor made (a take, a split, a join) belongs to this sitting
+      const tagged = seg.sitting === undefined && !before.has(id) ? { ...seg, sitting: this.sitting } : seg;
+      if (tagged !== seg) {
+        const k = next.indexOf(seg);
+        if (k >= 0) next[k] = tagged;
+      }
+      this.persistSegment(tagged);
+    }
+    if (next.some((seg) => seg.sitting === this.sitting)) this.ensureSitting(this.store.state.current);
     s.segments = next.slice();
     this.saveMeta();
     this.list.render(s.segments, s.slides, false);
@@ -2252,8 +2741,20 @@ export class App {
         savedAt: Date.now(),
         segmentCounter: this.segmentCounter,
         exportRequest: this.exportRequest,
+        recordingId: this.recordingId,
+        sitting: this.sitting,
+        sittings: this.sittings,
       };
       void this.db.putMeta(meta);
+      this.sync.putMeta({
+        order: meta.order,
+        current: meta.current,
+        sitting: this.sitting,
+        sittings: this.sittings,
+        settings: { ...this.store.settings },
+        exportRequest: this.exportRequest,
+        counter: this.segmentCounter,
+      });
     }, 300);
   }
 
@@ -2272,6 +2773,12 @@ export class App {
       this.syncSliders();
     }
     if (meta?.segmentCounter) this.segmentCounter = meta.segmentCounter;
+    // a new sitting begins: one more than any sitting that recorded something (a visit that recorded
+    // nothing takes no number), and the first for a project with nothing in it yet
+    this.sittings = meta?.sittings ?? [];
+    this.sitting = Math.max(0, ...segments.map((s) => s.sitting ?? 1), ...this.sittings.map((x) => x.n)) + 1;
+    this.list.setSittings(this.sittings);
+    this.refs.saved.hidden = true;
     if (files) await this.loadSlideSource(files);
     // Resume was clicked: the checks can load now rather than at Start mic
     this.warmChecks();
@@ -2298,9 +2805,11 @@ export class App {
     this.updateSlideStats();
     this.updateButtons();
     this.syncInk();
+    const n = this.store.state.segments.length;
     this.toast.show(
-      `Restored ${this.store.state.segments.length} phrases (${fmtTime(totalDuration(this.store.state.segments))})`,
+      `Restored ${n} ${n === 1 ? 'phrase' : 'phrases'} (${fmtTime(totalDuration(this.store.state.segments))}). Sitting ${this.sitting}: new phrases go after the ones so far.`,
     );
+    await this.reattachRecording(meta?.recordingId ?? null);
   }
 
   /**
@@ -2317,11 +2826,14 @@ export class App {
     this.endInk();
     this.recorder?.setPaused(true);
     const n = s.segments.length;
+    const mirrored = this.recordingId !== null && this.syncState.kind !== 'off';
     if (n > 0) {
       const ok = await this.confirm.ask({
         title: 'Close these slides?',
-        message: `The ${n === 1 ? 'phrase' : `${n} phrases`} recorded on them (${fmtTime(totalDuration(s.segments))}) will be deleted. This cannot be undone.`,
-        confirm: 'Close and delete',
+        message: mirrored
+          ? `The ${n === 1 ? 'phrase' : `${n} phrases`} recorded on them (${fmtTime(totalDuration(s.segments))}) leave this browser. The recording stays on this computer: find it under Library › Recordings to continue or delete it.`
+          : `The ${n === 1 ? 'phrase' : `${n} phrases`} recorded on them (${fmtTime(totalDuration(s.segments))}) will be deleted. This cannot be undone.`,
+        confirm: mirrored ? 'Close' : 'Close and delete',
         cancel: 'Keep working',
       });
       if (!ok) {
@@ -2331,7 +2843,36 @@ export class App {
     }
     if (s.armed) this.stopMic();
     if (s.previewing) this.stopPreview();
+    if (mirrored && this.sync.pending > 0) {
+      this.showLoading('Saving the last phrases to this computer…');
+      await this.sync.flush();
+      this.hideLoading();
+    }
+    const id = this.recordingId;
+    this.sync.detach();
+    this.recordingId = null;
+    // a recording with nothing in it is not worth a folder
+    if (id && n === 0) await this.api.deleteRecording(id).catch(() => undefined);
+    await this.clearProject();
+    this.toast.show(
+      n > 0
+        ? mirrored
+          ? `Slides closed. The recording (${n === 1 ? '1 phrase' : `${n} phrases`}) stays on this computer.`
+          : `Slides closed. ${n === 1 ? 'The phrase was' : `${n} phrases were`} deleted.`
+        : 'Slides closed.',
+    );
+  }
+
+  /** Empties this browser of the project: the deck, the phrases, the saved copy; the stage is back to "Load your slides". */
+  private async clearProject(): Promise<void> {
+    const s = this.store.state;
+    if (s.armed) this.stopMic();
+    if (s.previewing) this.stopPreview();
+    this.endInk();
     await this.db.clear();
+    this.sitting = 1;
+    this.sittings = [];
+    this.list.setSittings(this.sittings);
     s.segments = [];
     s.deleted = [];
     s.current = 0;
@@ -2354,11 +2895,8 @@ export class App {
     this.updateSlideStats();
     this.updateButtons();
     this.syncInk();
-    this.toast.show(
-      n > 0
-        ? `Slides closed. ${n === 1 ? 'The phrase was' : `${n} phrases were`} deleted.`
-        : 'Slides closed.',
-    );
+    this.updateSyncPill();
+    void this.showSavedRecordings();
   }
 
   /** Internals exposed for the end-to-end test runner. */
@@ -2423,8 +2961,27 @@ export class App {
       startPreview: (from: number) => this.startPreview(from),
       stopPreview: () => this.stopPreview(),
       exportDialog: this.exportDialog,
-      openLibrary: () => this.library.open(),
+      openLibrary: (tab?: LibraryTab) => this.library.open(tab),
       library: this.library,
+      /** The recording on this computer: its id, the sitting, how the mirror stands. */
+      recording: () => ({
+        id: this.recordingId,
+        sitting: this.sitting,
+        sittings: this.sittings,
+        sync: this.syncState,
+        pending: this.sync.pending,
+      }),
+      flushSync: () => this.sync.flush(),
+      listRecordings: () => this.api.listRecordings(),
+      continueRecording: (id: string) => this.continueRecording(id),
+      startAgain: async (id: string) => {
+        const r = (await this.api.listRecordings()).find((x) => x.id === id);
+        if (!r) throw new Error('no such recording');
+        await this.startAgain(r);
+      },
+      recordings: this.recordings,
+      savedRecordings: () => this.savedRecordings,
+      choice: this.choice,
       openEditor: () => this.openEditor(),
       editor: this.editor,
       serverCaps: () => this.serverCaps,

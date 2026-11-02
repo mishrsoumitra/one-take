@@ -13,6 +13,8 @@ export interface ServerConfig {
   defaultDirectory: string;
   /** Where the server keeps its own small files: the list of finished exports. */
   dataDir: string;
+  /** Where recordings are mirrored, one folder each (see services/recordings.ts); `<data dir>/recordings` by default. */
+  recordingsDir: string;
   /**
    * Folders a client model file (the voice check, the lip check) may be in, searched in order: the built
    * client, `packages/client/public/models` (where `npm run models` puts them), the data folder's
@@ -80,6 +82,7 @@ export function loadConfig(
       static: { type: 'string' },
       dir: { type: 'string', short: 'd' },
       'data-dir': { type: 'string' },
+      'recordings-dir': { type: 'string' },
       ffmpeg: { type: 'string' },
       ffprobe: { type: 'string' },
       fonts: { type: 'string' },
@@ -117,6 +120,9 @@ export function loadConfig(
   const dataDir = path.resolve(
     values['data-dir'] ?? env.ONE_TAKE_DATA_DIR ?? path.join(os.homedir(), '.one-take'),
   );
+  const recordingsDir = path.resolve(
+    values['recordings-dir'] ?? env.ONE_TAKE_RECORDINGS_DIR ?? path.join(dataDir, 'recordings'),
+  );
   const staticDir = values['no-static'] ? null : (values.static ?? env.ONE_TAKE_STATIC ?? builtClientDir());
   return {
     host: values.host ?? env.ONE_TAKE_HOST ?? '127.0.0.1',
@@ -124,6 +130,7 @@ export function loadConfig(
     staticDir,
     defaultDirectory,
     dataDir,
+    recordingsDir,
     modelDirs: modelSearchDirs(dataDir, staticDir),
     ffmpegPath: values.ffmpeg ?? env.FFMPEG_PATH ?? null,
     ffprobePath: values.ffprobe ?? env.FFPROBE_PATH ?? null,

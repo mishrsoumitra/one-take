@@ -11,6 +11,7 @@ import { registerExportRoutes } from './routes/exports.js';
 import { registerFsRoutes } from './routes/fs.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import { registerModelRoutes } from './routes/models.js';
+import { registerRecordingRoutes } from './routes/recordings.js';
 import { registerStudioRoutes } from './routes/studio.js';
 import { registerTranscribeRoutes } from './routes/transcribe.js';
 import { type ConverterService } from './services/convert.js';
@@ -18,6 +19,7 @@ import { type JobManager } from './services/jobs.js';
 import { type ExportLibrary } from './services/library.js';
 import { type LoadMonitor } from './services/load.js';
 import { type ModelStore } from './services/models.js';
+import { type RecordingStore } from './services/recordings.js';
 import { type StudioManager } from './services/studio.js';
 import { type TranscriptionManager } from './services/transcribe.js';
 import { ApiError, errorMessage } from './util/errors.js';
@@ -37,6 +39,8 @@ export interface AppDependencies {
   studio: StudioManager;
   /** The client's model files (the voice check, the lip check), found or fetched by the server. */
   models: ModelStore;
+  /** The recordings mirrored to this computer, one folder each, to continue from any browser. */
+  recordings: RecordingStore;
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
@@ -125,6 +129,7 @@ export function buildApp(deps: AppDependencies): FastifyInstance {
   registerStudioRoutes(app, deps);
   registerConvertRoutes(app, deps);
   registerModelRoutes(app, deps);
+  registerRecordingRoutes(app, deps);
 
   if (config.staticDir) {
     void app.register(fastifyStatic, {

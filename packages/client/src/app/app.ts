@@ -683,7 +683,10 @@ export class App {
         void this.listCameras();
       });
     }
-    window.addEventListener('pagehide', () => this.camera.close());
+    window.addEventListener('pagehide', () => {
+      this.flushMeta();
+      this.camera.close();
+    });
     installKeyboard(
       {
         next: () => this.goTo(this.store.state.current + 1),
@@ -981,6 +984,7 @@ export class App {
     this.showLoading('Loading the recording…');
     try {
       // what this browser holds of another recording is on its way to the disk: let it land first
+      this.flushMeta();
       if (this.recordingId && this.recordingId !== id && this.sync.pending > 0) {
         this.refs.loadingText.textContent = 'Saving the last phrases first…';
         await this.sync.flush();
@@ -1064,6 +1068,7 @@ export class App {
     this.library.close();
     this.showLoading('Starting a new recording…');
     try {
+      this.flushMeta();
       if (this.recordingId && this.sync.pending > 0) {
         this.refs.loadingText.textContent = 'Saving the last phrases first…';
         await this.sync.flush();
@@ -2731,31 +2736,46 @@ export class App {
   /* Persistence                                                         */
   /* ------------------------------------------------------------------ */
 
+  /** Writes the project state a moment after the last change (see `writeMeta`). */
   private saveMeta(): void {
     clearTimeout(this.metaTimer);
     this.metaTimer = window.setTimeout(() => {
-      const meta: ProjectMeta = {
-        order: this.store.state.segments.map((s) => s.id),
-        current: this.store.state.current,
-        settings: { ...this.store.settings },
-        savedAt: Date.now(),
-        segmentCounter: this.segmentCounter,
-        exportRequest: this.exportRequest,
-        recordingId: this.recordingId,
-        sitting: this.sitting,
-        sittings: this.sittings,
-      };
-      void this.db.putMeta(meta);
-      this.sync.putMeta({
-        order: meta.order,
-        current: meta.current,
-        sitting: this.sitting,
-        sittings: this.sittings,
-        settings: { ...this.store.settings },
-        exportRequest: this.exportRequest,
-        counter: this.segmentCounter,
-      });
+      this.metaTimer = 0;
+      this.writeMeta();
     }, 300);
+  }
+
+  /** A write still waiting for its moment goes now: before the project is let go of or the page leaves. */
+  private flushMeta(): void {
+    if (this.metaTimer === 0) return;
+    clearTimeout(this.metaTimer);
+    this.metaTimer = 0;
+    this.writeMeta();
+  }
+
+  /** The project state, to this browser's store and to the recording on this computer. */
+  private writeMeta(): void {
+    const meta: ProjectMeta = {
+      order: this.store.state.segments.map((s) => s.id),
+      current: this.store.state.current,
+      settings: { ...this.store.settings },
+      savedAt: Date.now(),
+      segmentCounter: this.segmentCounter,
+      exportRequest: this.exportRequest,
+      recordingId: this.recordingId,
+      sitting: this.sitting,
+      sittings: this.sittings.slice(),
+    };
+    void this.db.putMeta(meta);
+    this.sync.putMeta({
+      order: meta.order,
+      current: meta.current,
+      sitting: this.sitting,
+      sittings: this.sittings.slice(),
+      settings: { ...this.store.settings },
+      exportRequest: this.exportRequest,
+      counter: this.segmentCounter,
+    });
   }
 
   private async restore(
@@ -2843,6 +2863,7 @@ export class App {
     }
     if (s.armed) this.stopMic();
     if (s.previewing) this.stopPreview();
+    this.flushMeta();
     if (mirrored && this.sync.pending > 0) {
       this.showLoading('Saving the last phrases to this computer…');
       await this.sync.flush();

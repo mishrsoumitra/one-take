@@ -208,7 +208,7 @@ export class RecordingsPanel {
             current ? h('span', { class: 'chip-tag' }, 'open now') : null,
             r.deckReady ? null : h('span', { class: 'chip-tag warning' }, 'deck incomplete'),
           ),
-          h('small', null, describeRecording(r)),
+          h('small', { class: 'facts' }, describeRecording(r)),
           h('small', { class: 'where', title: r.path }, where),
         ),
         h('div', { class: 'actions inline' }, btnContinue, btnAgain, btnReveal, btnDelete),

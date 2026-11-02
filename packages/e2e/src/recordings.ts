@@ -489,6 +489,11 @@ check(await ev<boolean>('__onetake.flushSync()', 60_000), 'the new recording’s
     `the new recording has its own phrases in sitting 1 (${r2.phrases.length})`,
   );
   checkFiles(r2, 'the new recording');
+  const s2 = (await api<Summary[]>('/api/recordings')).find((x) => x.id === rec2);
+  check(
+    s2?.phrases === r2.phrases.length && s2.sittings === 1 && s2.lastSlide === 0,
+    `the summary of the new recording counts its phrase and one sitting (${s2?.sittings ?? 0})`,
+  );
 }
 
 page.step('loading the same deck again');

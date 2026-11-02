@@ -462,7 +462,8 @@ export function summarize(rec: StoredRecording, folder: string): RecordingSummar
     seconds: phrases.reduce((n, p) => n + p.seconds, 0),
     current: rec.current,
     lastSlide: phrases.reduce((m, p) => Math.max(m, p.slide), -1),
-    sittings: rec.sittings.length,
+    // the phrases' own tags are the truth; the list only adds when each sitting began
+    sittings: Math.max(rec.sittings.length, new Set(phrases.map((p) => p.sitting)).size),
     camera: phrases.some((p) => p.camera),
     ink: phrases.some((p) => p.kind === 'ink'),
     createdAt: rec.createdAt,

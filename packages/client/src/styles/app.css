@@ -2693,6 +2693,9 @@ button.x .ico {
 .library .rec.current {
   border-color: var(--ok-line);
 }
+.library .rec .meta small.facts {
+  white-space: normal;
+}
 .library .rec .actions > button.continue:disabled {
   opacity: 0.55;
 }

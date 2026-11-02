@@ -177,6 +177,17 @@ describe('RecordingStore', () => {
     });
     expect(back.sittings).toHaveLength(2);
     expect((await again.list())[0]).toMatchObject({ sittings: 2, current: 3 });
+    // the phrases' own sitting tags count even when the list of sittings has not caught up
+    await again.update(rec.id, { sittings: [] });
+    expect((await again.list())[0]).toMatchObject({ sittings: 1 });
+    await again.writePhrase(rec.id, 'c', meta({ sitting: 3 }), stream('c'), null);
+    expect((await again.list())[0]).toMatchObject({ sittings: 2 });
+    await again.update(rec.id, {
+      sittings: [
+        { n: 1, startedAt: 'x', fromSlide: 0 },
+        { n: 2, startedAt: 'y', fromSlide: 3 },
+      ],
+    });
     // a phrase arriving after the order was set joins at the end
     await again.writePhrase(rec.id, 'd', meta(), stream('d'), null);
     expect((await again.get(rec.id)).order).toEqual(['b', 'a', 'c', 'd']);

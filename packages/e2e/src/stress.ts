@@ -173,6 +173,8 @@ const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 
 /* ------------------------------------------------------------------ the two modes, deterministically */
 
 page.step('checking the two modes');
+// the camera is recorded by default; the voice alone keeps this run about the recorder
+await ev('__onetake.setRecordMode("voice")');
 // the first mic start offers the voice enrollment; skipped, so the run is about the recorder
 await ev('void __onetake.startMic()');
 if (await page.waitFor('__onetake.enroll.isOpen', 30, 100))

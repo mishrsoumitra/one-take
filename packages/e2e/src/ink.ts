@@ -163,8 +163,10 @@ await sleep(1500);
 await page.setFiles('#fileIn', [fixtures.pdf]);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 4; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 4, 'four slides rendered');
-// the lip check is not what this run is about, and it loads a model
-await ev('__onetake.setCamera("off")');
+// the camera is recorded by default; this run begins from the voice alone, and the lip check (which
+// loads a model) is not what it is about
+await ev('__onetake.setRecordMode("voice")');
+await ev('__onetake.setLipCheck(false)');
 
 /* ------------------------------------------------------------ the mode */
 page.step('pen mode');

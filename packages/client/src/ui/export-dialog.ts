@@ -323,10 +323,14 @@ export class ExportDialog {
     /** The hardware switch and the line under it saying what was found. */
     hardware: HTMLInputElement;
     hardwareNote: HTMLElement;
-    /** The camera section: shown when any phrase has a picture; the switch leaves it out of the video. */
+    /** The camera section: the switch leaves the picture out of the video; with no picture, it says why. */
     cameraSection: HTMLElement;
+    /** The include switch and the cleanup; hidden when no phrase has a picture. */
+    cameraControls: HTMLElement[];
     cameraInclude: HTMLInputElement;
     cameraNote: HTMLElement;
+    /** Why there is no picture, and how to get one next time; shown instead of the controls. */
+    cameraNone: HTMLElement;
     /** The pen's drawings: shown when any clip draws on a slide. */
     inkSection: HTMLElement;
     inkNote: HTMLElement;
@@ -811,8 +815,15 @@ export class ExportDialog {
       this.update((q) => {
         q.enhance.camera.exposure = e.cameraExposure.checked;
       });
-    e.cameraSection = section(
-      'Camera',
+    e.cameraNone = row(
+      'Speaker',
+      h(
+        'div',
+        { class: 'hint', id: 'cameraNone' },
+        'No phrase has a camera picture: the camera was off while they were recorded, so the video shows the slides alone. To have your picture over the slides, pick a camera in the Camera list under the level meter (or Voice + camera on the Record switch) and record; every phrase from then on carries it.',
+      ),
+    );
+    e.cameraControls = [
       row(
         'Speaker',
         h(
@@ -832,7 +843,8 @@ export class ExportDialog {
         check(e.cameraExposure, 'even out the exposure and take the colour cast out'),
         'A stretch of the brightness, a gamma towards a middle grey and grey-world colour balance, within limits, followed slowly so the picture never flickers.',
       ),
-    );
+    ];
+    e.cameraSection = section('Camera', e.cameraNone, ...e.cameraControls);
     e.cameraSection.id = 'cameraSection';
     // The pen's drawings over the slides: always in the video, as they were made.
     e.inkNote = h('div', { class: 'hint', id: 'inkNote' });
@@ -1505,9 +1517,12 @@ export class ExportDialog {
     e.sumSegs.textContent = String(tl.items.length);
     e.sumSlides.textContent = String(new Set(tl.items.map((i) => i.seg.slide)).size);
 
-    // Camera: only phrases recorded with the camera on have a picture
+    // Camera: only phrases recorded with the camera on have a picture; with none, the section
+    // says so and how to get one, rather than leaving the speaker to find out from the video
     const withCamera = tl.items.filter((it) => it.seg.video && it.seg.video.pieces.length > 0).length;
-    e.cameraSection.hidden = withCamera === 0;
+    e.cameraSection.hidden = tl.items.length === 0;
+    for (const control of e.cameraControls) control.hidden = withCamera === 0;
+    e.cameraNone.hidden = withCamera > 0;
     e.cameraInclude.checked = this.includeCamera;
     if (withCamera > 0) {
       const where = describeLayout(this.deps.cameraLayout());

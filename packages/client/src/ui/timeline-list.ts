@@ -93,6 +93,8 @@ export class TimelineList {
       // a drawing made with the pen, not a phrase: what it drew, and a pen mark in place of a verdict
       const ink = seg.ink;
       const inkTitle = ink ? `A drawing: ${describeInk(ink)}, ${fmtSec(segmentDuration(seg))}` : '';
+      // a phrase recorded with the camera on carries its picture; a camera mark says so
+      const filmed = !ink && !!seg.video && seg.video.pieces.length > 0;
       const row = h(
         'div',
         {
@@ -129,6 +131,13 @@ export class TimelineList {
             null,
             `Slide ${seg.slide + 1}`,
             ink ? h('span', { class: 'pen-mark' }, icon('pen', 16)) : null,
+            filmed
+              ? h(
+                  'span',
+                  { class: 'cam-mark', title: 'Recorded with the camera: its picture goes over the slide' },
+                  icon('video', 16),
+                )
+              : null,
           ),
           h(
             'small',

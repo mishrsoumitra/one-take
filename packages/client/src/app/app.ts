@@ -215,7 +215,9 @@ export class App {
   private tape: Tape | null = null;
   /** The engines the user has been told about falling back, so each is said once per session. */
   private fallbackTold = false;
-  private selfNoteShown = '';
+  private lipNoteShown = '';
+  /** The camera has been opened once in this tab: the browser names the cameras from then on. */
+  private cameraOpened = false;
   /** The start in progress, so a second Start (a double press, a held R key) joins it instead of racing it. */
   private micStarting: Promise<void> | null = null;
   /** The microphone has been opened once: the browser now tells the microphones apart by name. */
@@ -410,7 +412,8 @@ export class App {
   async init(): Promise<void> {
     this.store.state.mode = this.prefs.captureMode;
     this.refs.noiseFilter.value = this.prefs.noiseFilter;
-    this.refs.camSelect.value = this.prefs.lipCheck ? this.prefs.cameraDeviceId : 'off';
+    this.syncCameraPicker();
+    this.refs.lipCheck.checked = this.prefs.lipCheck;
     this.updateVoiceButton();
     this.wire();
     this.syncSliders();
@@ -643,8 +646,12 @@ export class App {
     r.btnRecCamera.onclick = () => void this.setRecordMode('camera');
     r.btnRecInk.onclick = () => void this.setRecordMode('annotate');
     r.camSelect.onchange = () => {
-      this.setCamera(r.camSelect.value);
+      void this.setCamera(r.camSelect.value);
       r.camSelect.blur();
+    };
+    r.lipCheck.onchange = () => {
+      this.setLipCheck(r.lipCheck.checked);
+      r.lipCheck.blur();
     };
     r.btnVoice.onclick = () => void this.enrollVoice();
     for (const [corner, button] of Object.entries(r.camCorners) as [Corner, HTMLButtonElement][]) {
@@ -677,6 +684,7 @@ export class App {
       this.saveMeta();
     };
     window.addEventListener('resize', () => this.drawMeter());
+    // a microphone or camera plugged in or pulled out shows up in both lists at once
     if ('mediaDevices' in navigator) {
       navigator.mediaDevices.addEventListener('devicechange', () => {
         void this.listMics();
@@ -1352,12 +1360,12 @@ export class App {
     const devices = await MicCapture.listDevices();
     const sel = this.refs.micSelect;
     while (sel.options.length > 1) sel.remove(1);
-    for (const d of devices) {
+    devices.forEach((d, i) => {
       const o = document.createElement('option');
       o.value = d.deviceId;
-      o.textContent = d.label || 'Microphone';
+      o.textContent = d.label || `Microphone ${i + 1}`;
       sel.appendChild(o);
-    }
+    });
     if (devices.length === 0 && !this.micOpened) {
       const o = document.createElement('option');
       o.value = '';
@@ -1369,19 +1377,36 @@ export class App {
     sel.value = devices.some((d) => d.deviceId === wanted) ? wanted : '';
   }
 
-  /** Fills the camera picker the same way; "Off" (no lip check) stays whatever is plugged in. */
+  /** Fills the camera picker the same way; "Off" and "Default camera" stay whatever is plugged in. */
   private async listCameras(): Promise<void> {
-    const devices = await LipWatcher.listDevices();
+    const devices = await CameraCapture.listDevices();
     const sel = this.refs.camSelect;
     while (sel.options.length > 2) sel.remove(2);
-    for (const d of devices) {
+    devices.forEach((d, i) => {
       const o = document.createElement('option');
       o.value = d.deviceId;
-      o.textContent = d.label || 'Camera';
+      o.textContent = d.label || `Camera ${i + 1}`;
+      sel.appendChild(o);
+    });
+    if (devices.length === 0 && !this.cameraOpened) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.disabled = true;
+      o.textContent = 'Open the camera once to list the others';
       sel.appendChild(o);
     }
+    this.syncCameraPicker();
+  }
+
+  /** The camera picker shows the record switch's choice: Off for the voice alone, else the camera chosen. */
+  private syncCameraPicker(): void {
+    const sel = this.refs.camSelect;
+    if (!recordsCamera(this.prefs.record)) {
+      sel.value = 'off';
+      return;
+    }
     const wanted = this.prefs.cameraDeviceId;
-    sel.value = !this.prefs.lipCheck ? 'off' : devices.some((d) => d.deviceId === wanted) ? wanted : '';
+    sel.value = [...sel.options].some((o) => o.value === wanted && !o.disabled) ? wanted : '';
   }
 
   /** Chooses the noise filter: at once while the mic is on, and for every mic from now on. */
@@ -1418,63 +1443,66 @@ export class App {
   }
 
   /**
-   * Picks the camera, or turns the lip check off; takes effect at once while the mic is on. The
-   * camera being recorded (the switch next to the picker) follows the chosen device and keeps
-   * going when the lip check is turned off.
+   * The Camera list: which camera goes into the video, or Off. A camera chosen while the voice
+   * alone was recorded turns the record switch to Voice + camera, so the camera that is on the
+   * stage is the camera in the video; Off turns it back to Voice and closes the camera. Takes
+   * effect at once, mic on or off: a new device reopens the camera, and the lip check follows it.
    */
-  setCamera(value: string): void {
-    const on = value !== 'off';
-    const before = this.prefs.cameraDeviceId;
-    this.prefs = savePrefs({ lipCheck: on, cameraDeviceId: on ? value : this.prefs.cameraDeviceId });
-    this.refs.camSelect.value = value;
-    const reopen = on && value !== before && this.camera.state !== 'off';
-    if (reopen) void this.openCamera();
-    if (!this.store.state.armed) return;
-    if (!on) {
-      this.lips.stop();
-      this.updateSelfView();
-    } else if (!reopen) {
-      void this.watchLips(); // else the camera's state callback restarts the lip check on the new device
+  async setCamera(value: string): Promise<void> {
+    if (value === 'off') {
+      if (recordsCamera(this.prefs.record)) await this.setRecordMode('voice');
+      else this.syncCameraPicker();
+      return;
     }
+    const before = this.prefs.cameraDeviceId;
+    this.prefs = savePrefs({ cameraDeviceId: value });
+    if (!recordsCamera(this.prefs.record)) {
+      await this.setRecordMode('camera'); // opens the camera chosen
+    } else if (value !== before && this.camera.state !== 'off') {
+      await this.openCamera(); // the state callback moves the lip check to the new device
+    }
+    this.syncCameraPicker();
+  }
+
+  /** The lip check, on or off; the camera is recorded either way. Takes effect at once while the mic is on. */
+  setLipCheck(on: boolean): void {
+    this.prefs = savePrefs({ lipCheck: on });
+    this.refs.lipCheck.checked = on;
+    if (on) void this.watchLips();
+    else this.lips.stop();
+    this.updateLipNote();
   }
 
   /**
-   * Opens the camera and starts the lip check; says why when it cannot. A camera already open to
-   * be recorded lends the lip check its track, so the device is opened once for both.
+   * Starts the lip check on the recorded camera: a clone of its track, so the device is opened
+   * once for both. Nothing to do while the mic is off, the lip check is off, or there is no camera.
    */
   private async watchLips(): Promise<void> {
-    const shared = this.camera.on ? (this.camera.liveStream?.getVideoTracks()[0] ?? null) : null;
-    const ok = await this.lips.start(this.prefs.cameraDeviceId || undefined, shared);
-    if (!this.store.state.armed) {
+    const track = this.camera.on ? (this.camera.liveStream?.getVideoTracks()[0] ?? null) : null;
+    const armed = () => this.store.state.armed;
+    if (!armed() || !this.prefs.lipCheck || !track) return;
+    const ok = await this.lips.start(undefined, track);
+    if (!armed()) {
+      // the mic stopped while the model loaded
       this.lips.stop();
     } else if (!ok && this.lips.note) {
       this.toast.show(`The lip check is off: ${this.lips.note}`);
     }
-    this.updateSelfView();
+    this.updateLipNote();
   }
 
   /**
-   * Shows the camera in the corner of the stage while it is watched, and what it sees under it; not
-   * while the stage already shows the camera picture where it goes in the video (the lip check's
-   * note moves to the camera row then).
+   * One line on what the lip check sees (a face in view, the lips moving), in the camera row while
+   * the mic is on and the camera is watched.
    */
-  private updateSelfView(): void {
-    const video = this.store.state.armed && !this.camStage.shown ? this.lips.video : null;
-    this.refs.selfBox.hidden = video === null;
-    if (this.refs.selfView.srcObject !== video) this.refs.selfView.srcObject = video;
-    this.selfNoteShown = '';
-    this.updateSelfNote();
-  }
-
-  /**
-   * One line on what the lip check sees (a face in view, the lips moving): under the self-view, or
-   * in the camera row while the stage shows the camera picture instead.
-   */
-  private updateSelfNote(): void {
+  private updateLipNote(): void {
     const r = this.refs;
-    const inRow = r.selfBox.hidden && this.store.state.armed && this.prefs.lipCheck && !r.camRow.hidden;
-    if (r.camLips.hidden === inRow) r.camLips.hidden = !inRow;
-    if (r.selfBox.hidden && !inRow) return;
+    const show = this.store.state.armed && this.prefs.lipCheck && !r.camRow.hidden && this.camera.on;
+    if (r.camLips.hidden === show) r.camLips.hidden = !show;
+    if (!show) {
+      this.lipNoteShown = '';
+      return;
+    }
     let text: string;
     let kind = '';
     if (this.lips.state === 'watching') {
@@ -1496,12 +1524,11 @@ export class App {
     } else {
       text = 'Camera starting…';
     }
-    const shown = `${inRow}|${kind}|${text}`;
-    if (shown === this.selfNoteShown) return;
-    this.selfNoteShown = shown;
-    const note = inRow ? r.camLips : r.selfNote;
-    note.textContent = text;
-    note.className = `note${kind ? ` ${kind}` : ''}`;
+    const shown = `${kind}|${text}`;
+    if (shown === this.lipNoteShown) return;
+    this.lipNoteShown = shown;
+    r.camLips.textContent = text;
+    r.camLips.className = `note${kind ? ` ${kind}` : ''}`;
   }
 
   /** A model is being fetched from its publisher: said once per model, since it takes a moment. */
@@ -1686,6 +1713,7 @@ export class App {
     if (mode === 'camera' && !CameraCapture.supported()) mode = 'voice';
     this.prefs = savePrefs({ record: mode });
     this.updateRecordSwitch();
+    this.syncCameraPicker();
     this.syncCameraControls();
     // a drawing in progress is kept as it is when the pen is put away
     if (before === 'annotate' && mode !== 'annotate') this.endInk();
@@ -1709,6 +1737,7 @@ export class App {
   private async openCamera(): Promise<boolean> {
     if (!CameraCapture.supported()) return false;
     const ok = await this.camera.open(this.prefs.cameraDeviceId || undefined, this.camStage.video);
+    if (ok) this.cameraOpened = true;
     void this.listCameras();
     return ok;
   }
@@ -1726,17 +1755,13 @@ export class App {
       if (this.prefs.record === 'camera') {
         this.prefs = savePrefs({ record: 'voice' });
         this.updateRecordSwitch();
+        this.syncCameraPicker();
       }
     }
-    // the lip check watches the same camera: a clone of its track once it is open, its own stream otherwise
-    if (
-      this.store.state.armed &&
-      this.prefs.lipCheck &&
-      (state === 'on' || state === 'error') &&
-      this.lips.shared !== (state === 'on')
-    ) {
-      void this.watchLips();
-    }
+    // the lip check watches the same camera, a clone of its track: it starts with the camera and
+    // stops with it (a device change closes the old camera first, so the check moves over)
+    if (state === 'on') void this.watchLips();
+    else this.lips.stop();
     this.syncCamStage();
     this.syncCameraControls();
     this.updateCoach();
@@ -1748,7 +1773,7 @@ export class App {
     const stream = this.camera.liveStream;
     if (this.camera.on && stream) this.camStage.showLive(stream, this.camera.aspect);
     else this.camStage.hide();
-    this.updateSelfView();
+    this.updateLipNote();
   }
 
   /** Where the picture goes and how big it is; saved when the change is final (a drag that ended, a click). */
@@ -2149,8 +2174,8 @@ export class App {
         if (!ok && this.voiceCheck.note) this.toast.show(`The voice check is off: ${this.voiceCheck.note}`);
       });
     }
-    if (this.prefs.lipCheck) void this.watchLips();
-    this.updateSelfView();
+    void this.watchLips();
+    this.updateLipNote();
     if (!this.prefs.tips) {
       this.toast.show(
         s.mode === 'hold'
@@ -2184,7 +2209,7 @@ export class App {
     s.held = false;
     s.speaking = false;
     this.lips.stop();
-    this.updateSelfView();
+    this.updateLipNote();
     this.updateStatus();
     this.updateButtons();
     this.syncInk();
@@ -2580,7 +2605,7 @@ export class App {
     cancelAnimationFrame(this.meterRaf);
     const loop = () => {
       this.drawMeter();
-      this.updateSelfNote();
+      this.updateLipNote();
       if (this.store.state.armed) this.meterRaf = requestAnimationFrame(loop);
     };
     loop();
@@ -2656,7 +2681,6 @@ export class App {
     this.previewSerial = -1;
     if (this.previewOverlay) {
       this.camStage.showPlayback(this.camera.aspect);
-      this.updateSelfView();
     }
     // and the recorded drawings appear as they were made
     this.previewInk = InkTrack.hasInk(tl) ? new InkTrack(tl) : null;
@@ -2936,6 +2960,7 @@ export class App {
       setNoiseFilter: (mode: NoiseFilterMode | boolean) =>
         this.setNoiseFilter(typeof mode === 'boolean' ? (mode ? 'deep' : 'off') : mode),
       setCamera: (value: string) => this.setCamera(value),
+      setLipCheck: (on: boolean) => this.setLipCheck(on),
       prefs: () => this.prefs,
       mic: this.mic,
       camera: this.camera,

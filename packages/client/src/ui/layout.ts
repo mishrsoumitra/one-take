@@ -28,7 +28,7 @@ export interface LayoutRefs {
   micSelect: HTMLSelectElement;
   /** Which noise filter runs over the microphone (deep, classic, off); next to the picker. */
   noiseFilter: HTMLSelectElement;
-  /** Which camera to use: watched for the lip check (or not, with "off") and recorded with the switch next to it. */
+  /** Which camera goes into the video (Off, the default one, or a device); it is also what the lip check watches. */
   camSelect: HTMLSelectElement;
   /** What is recorded with the voice: nothing, the camera, or the camera and the pen; a three-option segmented control. */
   recordSwitch: HTMLElement;
@@ -43,14 +43,12 @@ export interface LayoutRefs {
   camSizeV: HTMLElement;
   /** What the camera is doing: opening, the error, or where the picture is. */
   camNote: HTMLElement;
-  /** What the lip check sees, in the camera row while the stage shows the camera picture instead of the self-view. */
+  /** Whether the recorded camera is also watched for the lip check; in the camera row. */
+  lipCheck: HTMLInputElement;
+  /** What the lip check sees (a face, the lips moving), in the camera row. */
   camLips: HTMLElement;
   /** Enrolls the speaker's voice for the voice check, or does it again. */
   btnVoice: HTMLButtonElement;
-  /** The camera's picture in a corner of the stage while the lip check watches it, with a note under it. */
-  selfBox: HTMLElement;
-  selfView: HTMLVideoElement;
-  selfNote: HTMLElement;
   btnArm: HTMLButtonElement;
   /** Auto / press to speak, as a two-button segmented control. */
   modeSwitch: HTMLElement;
@@ -418,13 +416,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     icon('close', 16),
   );
   const coach = h('div', { id: 'coach', hidden: true }, coachText, btnCoachClose);
-  const selfView = h('video', {
-    id: 'selfView',
-    attrs: { autoplay: '', playsinline: '', 'aria-label': 'Your camera' },
-  });
-  selfView.muted = true;
-  const selfNote = h('span', { class: 'note' }, 'Camera');
-  const selfBox = h('div', { id: 'self', hidden: true }, selfView, selfNote);
   const stage = h(
     'main',
     { id: 'stage' },
@@ -438,7 +429,6 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     previewFlag,
     restore,
     coach,
-    selfBox,
     loading,
   );
 
@@ -454,7 +444,11 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   );
   const micSelect = h(
     'select',
-    { id: 'micSel', title: 'Which microphone to use' },
+    {
+      id: 'micSel',
+      title:
+        'Which microphone to use. Every microphone this computer has is listed by name once the browser has been allowed to use one; the list follows what is plugged in. The choice is remembered.',
+    },
     h('option', { value: '' }, 'Default microphone'),
   );
   const noiseFilter = h(
@@ -473,10 +467,10 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     {
       id: 'camSel',
       title:
-        'Which camera to use. While you record, it watches your mouth for the lip check, so a phrase someone else says while your lips are still is marked as another voice; choose Voice + camera next to it to put its picture in the video too. Off: no lip check (the picture can still be recorded). The picture stays on this computer. The choice is remembered.',
+        'Which camera goes into the video: its picture is recorded with your voice and laid over the slides, and the same camera watches your mouth for the lip check. Every camera this computer has is listed by name once one has been opened; the list follows what is plugged in. Off: no camera, the slides and your voice alone. The picture stays on this computer. The choice is remembered.',
     },
+    h('option', { value: 'off' }, 'Off'),
     h('option', { value: '' }, 'Default camera'),
-    h('option', { value: 'off' }, 'Off (no lip check)'),
   );
   const btnVoice = h(
     'button',
@@ -494,13 +488,13 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     'recVoice',
     'mic',
     'Voice',
-    'Voice only: the slides and what you say. The camera, if one is chosen, only watches your lips for the lip check.',
+    'Voice only: the slides and what you say. The camera stays off.',
   );
   const btnRecCamera = modeOption(
     'recCamera',
     'video',
     'Voice + camera',
-    'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size.',
+    'Record your camera along with your voice. The picture is laid over the slides in the video; put it in a corner, or drag it anywhere, and choose its size. The Camera list says which camera.',
   );
   const btnRecInk = modeOption(
     'recInk',
@@ -559,6 +553,7 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
   });
   const camSizeV = h('b', { id: 'camSizeV' }, `${Math.round(CAMERA_SIZE_DEFAULT * 100)} %`);
   const camNote = h('span', { class: 'hint', id: 'camNote' });
+  const lipCheck = h('input', { type: 'checkbox', id: 'lipCheck', checked: true });
   const camLips = h('span', { class: 'note', id: 'camLips', hidden: true });
   const camRow = h(
     'div',
@@ -583,6 +578,16 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
       h('span', { class: 'label' }, 'Size'),
       camSize,
       camSizeV,
+    ),
+    h(
+      'label',
+      {
+        class: 'check',
+        title:
+          'The lip check: the camera watches your mouth while you record, so a phrase someone else says while your lips are still is marked as another voice. Off saves the work of finding your face on a slow computer; the picture is recorded either way.',
+      },
+      lipCheck,
+      h('span', { class: 'label' }, 'Lip check'),
     ),
     camNote,
     camLips,
@@ -682,11 +687,9 @@ export function buildLayout(root: HTMLElement): LayoutRefs {
     camSize,
     camSizeV,
     camNote,
+    lipCheck,
     camLips,
     btnVoice,
-    selfBox,
-    selfView,
-    selfNote,
     btnArm,
     modeSwitch,
     btnModeAuto,

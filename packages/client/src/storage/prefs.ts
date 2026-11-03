@@ -5,6 +5,11 @@ import { DEFAULT_CAMERA_LAYOUT, normalizeLayout, type CameraLayout } from '../co
 import { type CaptureMode } from '../core/recorder.js';
 
 const KEY = 'one-take.prefs';
+/**
+ * Bumped when the meaning of a saved preference changes. 2: the camera is only ever open when it is
+ * recorded; before, the lip check opened it on its own while the record switch said voice.
+ */
+const VERSION = 2;
 
 /** grauity's two themes; the class on <html> picks one. */
 export type Theme = 'dark' | 'light';
@@ -41,7 +46,7 @@ export interface Prefs {
   micDeviceId: string;
   /** Which noise filter runs over the microphone: the deep one (DeepFilterNet3), the classic one, or none. */
   noiseFilter: NoiseFilterMode;
-  /** Watch the camera for the lip check while recording. */
+  /** While the camera is recorded, also watch it for the lip check. */
   lipCheck: boolean;
   /** The chosen camera's device id; empty for the browser's default. */
   cameraDeviceId: string;
@@ -54,7 +59,11 @@ export interface Prefs {
    * choice: forcing the hardware there softened the 360p picture for no gain.
    */
   hardwareEncoding: boolean;
-  /** What is recorded along with the voice: the switch under the level meter. */
+  /**
+   * What is recorded along with the voice: the Camera list and the Record switch under the level
+   * meter, two views of the same choice (Off on the list is Voice on the switch). The camera is
+   * only ever open when it is recorded, so what is on the stage is what goes into the video.
+   */
   record: RecordMode;
   /** Where the camera picture sits on the slide and how big it is. */
   cameraLayout: CameraLayout;
@@ -73,7 +82,7 @@ const DEFAULT_PREFS: Prefs = {
   cameraDeviceId: '',
   voiceCheck: true,
   hardwareEncoding: true,
-  record: 'voice',
+  record: 'camera',
   cameraLayout: { ...DEFAULT_CAMERA_LAYOUT },
   pen: { ...DEFAULT_PEN },
 };
@@ -82,9 +91,14 @@ function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
-/** The record switch; before it had three options, `camera: true` meant the camera. */
-function recordMode(value: unknown, legacyCamera: unknown): RecordMode {
-  if (value === 'voice' || value === 'camera' || value === 'annotate') return value;
+/**
+ * The record switch; before it had three options, `camera: true` meant the camera. Preferences
+ * saved before version 2 could say voice while the lip check kept the camera open on the stage: the
+ * camera the speaker saw there is recorded from now on, since that is what seeing it suggests.
+ */
+function recordMode(value: unknown, legacyCamera: unknown, lipCheck: unknown, version: number): RecordMode {
+  if (value === 'camera' || value === 'annotate') return value;
+  if (value === 'voice') return version < 2 && lipCheck !== false ? 'camera' : 'voice';
   if (legacyCamera === true) return 'camera';
   return DEFAULT_PREFS.record;
 }
@@ -101,7 +115,8 @@ export function loadPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw) as Partial<Record<keyof Prefs | 'camera', unknown>>;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof Prefs | 'camera' | 'v', unknown>>;
+    const version = typeof parsed.v === 'number' ? parsed.v : 1;
     return {
       welcomeSeen: bool(parsed.welcomeSeen, DEFAULT_PREFS.welcomeSeen),
       tips: bool(parsed.tips, DEFAULT_PREFS.tips),
@@ -117,7 +132,7 @@ export function loadPrefs(): Prefs {
         typeof parsed.cameraDeviceId === 'string' ? parsed.cameraDeviceId : DEFAULT_PREFS.cameraDeviceId,
       voiceCheck: bool(parsed.voiceCheck, DEFAULT_PREFS.voiceCheck),
       hardwareEncoding: bool(parsed.hardwareEncoding, DEFAULT_PREFS.hardwareEncoding),
-      record: recordMode(parsed.record, parsed.camera),
+      record: recordMode(parsed.record, parsed.camera, parsed.lipCheck, version),
       cameraLayout: normalizeLayout(parsed.cameraLayout),
       pen: normalizePen(parsed.pen),
     };
@@ -129,7 +144,7 @@ export function loadPrefs(): Prefs {
 export function savePrefs(patch: Partial<Prefs>): Prefs {
   const next = { ...loadPrefs(), ...patch };
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    localStorage.setItem(KEY, JSON.stringify({ ...next, v: VERSION }));
   } catch {
     /* private mode or storage blocked: the preference simply does not persist */
   }

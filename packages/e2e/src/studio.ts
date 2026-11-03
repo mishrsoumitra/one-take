@@ -82,7 +82,7 @@ page.step('loading slides');
 await page.setFiles('#fileIn', [pdf]);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 3; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 3, 'three slides rendered');
-await ev('__onetake.setCamera("off")'); // the fake camera has no face; the lip check is not what is tested here
+await ev('__onetake.setRecordMode("voice")'); // the fake camera has no face; neither it nor the lip check is what is tested here
 
 /* ------------------------------------------------------------ recording: the raw copy */
 page.step('recording');

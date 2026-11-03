@@ -169,15 +169,7 @@ export class CameraCapture {
     this.setState('opening');
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30, max: 60 },
-        },
-      });
+      stream = await openStream(deviceId);
     } catch (error) {
       if (gen === this.generation) this.setState('error', describeError(error));
       return false;
@@ -492,6 +484,29 @@ export class CameraCapture {
   private setState(state: CameraState, error?: string): void {
     this._state = state;
     this.callbacks.onState(state, error);
+  }
+}
+
+/**
+ * Opens the camera asked for; when the remembered one is not there any more (unplugged, or the
+ * recording continues on another computer), the default camera instead of no picture at all.
+ */
+async function openStream(deviceId: string | undefined): Promise<MediaStream> {
+  const constraints = (id: string | undefined): MediaStreamConstraints => ({
+    audio: false,
+    video: {
+      deviceId: id ? { exact: id } : undefined,
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30, max: 60 },
+    },
+  });
+  try {
+    return await navigator.mediaDevices.getUserMedia(constraints(deviceId));
+  } catch (error) {
+    const name = error instanceof DOMException ? error.name : '';
+    if (!deviceId || (name !== 'NotFoundError' && name !== 'OverconstrainedError')) throw error;
+    return navigator.mediaDevices.getUserMedia(constraints(undefined));
   }
 }
 

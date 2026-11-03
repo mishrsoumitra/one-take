@@ -1060,6 +1060,15 @@ button.x .ico {
 .seg .pen-mark .ico {
   font-size: 13px;
 }
+/* a phrase with the camera's picture: a camera after the slide number */
+.seg .cam-mark {
+  color: var(--muted);
+  display: inline-flex;
+  margin-left: var(--spacing-4px);
+}
+.seg .cam-mark .ico {
+  font-size: 13px;
+}
 
 /* ---------------------------------------------------------------- side panel */
 #side {

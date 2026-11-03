@@ -173,7 +173,7 @@ await at(16.5, () => Promise.resolve());
   // 16.5 s of microphone in 32 ms frames, less a little for the mic opening
   check(scored > 400, `the voice detector scored the microphone as it was heard (${scored} frames)`);
 }
-// 4-live. with the mic on: the deep filter is the one running, the camera is watched, the self-view shows
+// 4-live. with the mic on: the deep filter is the one running, the camera is recorded and watched
 check(
   await page.waitFor('__onetake.mic.engine === "deep"', 50, 100),
   `DeepFilterNet3 is running over the microphone (${await ev<string>('__onetake.mic.deepNote')})`,
@@ -183,12 +183,24 @@ check(
   'the meter note names the filter that is running',
 );
 check(
-  await ev<boolean>('document.getElementById("camSel").value === "" && __onetake.lips.state === "watching"'),
-  `the lip check is on by default and watching the camera (${await ev<string>('__onetake.lips.state')})`,
+  await ev<boolean>(
+    'document.getElementById("camSel").value === "" && __onetake.camera.on && __onetake.prefs().record === "camera"',
+  ),
+  'the default camera is recorded by default (the Camera list says Default camera, the Record switch Voice + camera)',
 );
 check(
-  !(await ev<boolean>('document.getElementById("self").hidden')),
-  'the self-view shows on the stage while the camera is watched',
+  await page.waitFor('__onetake.lips.state === "watching" && __onetake.lips.shared', 100, 100),
+  `the lip check watches a clone of the recorded camera (${await ev<string>('__onetake.lips.state')})`,
+);
+check(
+  await ev<boolean>('__onetake.camStage.shown && document.getElementById("self") === null'),
+  'the stage shows the camera where it goes in the video; there is no separate mirror',
+);
+check(
+  await ev<boolean>(
+    'document.getElementById("lipCheck").checked && !document.getElementById("camLips").hidden',
+  ),
+  'the camera row has the lip check box ticked and says what the camera sees',
 );
 {
   const samples = await ev<number>('__onetake.lips.track.length');
@@ -262,14 +274,31 @@ check(
   'the classic filter can be chosen too',
 );
 await ev('__onetake.setNoiseFilter("deep")');
-await ev('__onetake.setCamera("off")');
+await ev('void __onetake.setCamera("off")');
 check(
-  await ev<boolean>(
-    '__onetake.lips.state === "off" && document.getElementById("self").hidden && __onetake.prefs().lipCheck === false',
+  await page.waitFor(
+    '!__onetake.camera.on && __onetake.lips.state === "off" && __onetake.prefs().record === "voice" && document.getElementById("recVoice").getAttribute("aria-checked") === "true" && document.getElementById("camRow").hidden',
+    50,
+    100,
   ),
-  'Camera off stops the lip check at once and is remembered',
+  'Camera off closes the camera, stops the lip check and turns the Record switch to Voice',
 );
-await ev('__onetake.setCamera("")');
+await ev('void __onetake.setCamera("")');
+check(
+  await page.waitFor(
+    '__onetake.camera.on && __onetake.prefs().record === "camera" && document.getElementById("camSel").value === "" && document.getElementById("recCamera").getAttribute("aria-checked") === "true"',
+    100,
+    100,
+  ),
+  'choosing a camera again turns the Record switch back to Voice + camera and opens it',
+);
+await ev('void __onetake.setRecordMode("voice")');
+check(
+  await page.waitFor('!__onetake.camera.on && document.getElementById("camSel").value === "off"', 50, 100),
+  'Voice on the Record switch sets the Camera list to Off and closes the camera',
+);
+await ev('void __onetake.setRecordMode("camera")');
+check(await page.waitFor('__onetake.camera.on', 100, 100), 'Voice + camera opens the camera chosen again');
 
 // 4b. press to speak: the mic is on but hears nothing until Space is held. The WAV played once and is
 // now silent, so the mic is restarted (which rewinds the file) with the key work timed to its speech.

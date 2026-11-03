@@ -60,12 +60,14 @@ await sleep(1500);
 await page.setFiles('#fileIn', [fixtures.pdf]);
 for (let i = 0; i < 100 && (await ev<number>('__onetake.state.slides.length')) < 4; i++) await sleep(200);
 check((await ev<number>('__onetake.state.slides.length')) === 4, 'four slides rendered');
+// the camera is recorded by default; this run starts from the voice alone to see it switched on
+await ev('__onetake.setRecordMode("voice")');
 if (values.noise) {
   await ev(`__onetake.setNoiseFilter(${JSON.stringify(values.noise)})`);
   console.log(`noise filter: ${values.noise}`);
 }
 if (values.lips === 'off') {
-  await ev('__onetake.setCamera("off")');
+  await ev('__onetake.setLipCheck(false)');
   console.log('lip check: off');
 }
 

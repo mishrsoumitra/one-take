@@ -1,10 +1,10 @@
 /**
- * The lip check on the main thread: opens the camera, hands its frames to the lip worker
+ * The lip check on the main thread: hands the camera's frames to the lip worker
  * (`workers/lips.worker.ts`, MediaPipe's Face Landmarker) and keeps the samples that come back in a
- * `LipTrack`, so a phrase can ask what the mouth was doing over its span. The camera's stream is
- * also there for a self-view, so the speaker can see they are in the frame. When the camera is
- * already open to be recorded (`video/camera.ts`), a clone of its track is watched instead of
- * opening the device a second time; each side stops its own track and leaves the other's alone.
+ * `LipTrack`, so a phrase can ask what the mouth was doing over its span. The camera is the one
+ * being recorded (`video/camera.ts`): a clone of its track is watched, so the device is opened once
+ * for both, and each side stops its own track and leaves the other's alone. (Given a device id and
+ * no track, it opens the camera itself; the app no longer does that.)
  *
  * Chrome's `MediaStreamTrackProcessor` is what gets the frames to the worker without the page in
  * the way; a browser without it gets no lip check, and says why.
@@ -109,11 +109,6 @@ export class LipWatcher {
   /** Watching a clone of a track opened elsewhere (the recorded camera) rather than its own stream. */
   get shared(): boolean {
     return this._shared;
-  }
-
-  /** The camera's stream, for a self-view, while it is open. */
-  get video(): MediaStream | null {
-    return this.stream;
   }
 
   /** The newest sample, or null before the first. */
